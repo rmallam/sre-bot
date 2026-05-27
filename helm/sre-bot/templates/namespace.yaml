@@ -1,0 +1,8 @@
+{{- if .Values.namespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "sre-bot.namespace" . }}
+  labels:
+    {{- include "sre-bot.labels" . | nindent 4 }}
+{{- end }}

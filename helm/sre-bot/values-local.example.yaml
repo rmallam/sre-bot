@@ -1,0 +1,36 @@
+# Example local overrides — copy to my-values.yaml (gitignored via .env patterns; do not commit secrets)
+
+global:
+  imageOwner: rmallam
+  imageTag: main
+  imagePullSecrets: []
+  # - name: ghcr-credentials
+
+secrets:
+  create: true
+  geminiApiKey: "YOUR_GEMINI_KEY"
+  openrouterApiKey: ""
+  gitopsRepoUrl: "git@github.com:your-org/your-gitops-repo.git"
+  githubToken: "ghp_xxx"
+  allowedUsers: "123456789"
+  telegramBotToken: "your-telegram-bot-token"
+  telegramAlertChatId: "-100xxxxxxxx"
+  slackBotToken: ""
+  slackAppToken: ""
+  slackSigningSecret: ""
+  gitSshPrivateKey: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    ...
+    -----END OPENSSH PRIVATE KEY-----
+
+postgres:
+  auth:
+    password: "change-me-in-production"
+
+orchestrator:
+  registryDryRun: "true"
+
+ingress:
+  hil:
+    enabled: false
+    host: hil.your-domain.example

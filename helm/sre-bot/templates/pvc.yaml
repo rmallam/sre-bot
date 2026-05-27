@@ -1,0 +1,18 @@
+{{- if and .Values.agents.gitops.enabled .Values.gitops.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitops-mirror-pvc
+  namespace: {{ include "sre-bot.namespace" . }}
+  labels:
+    {{- include "sre-bot.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.gitops.persistence.storageClass }}
+  storageClassName: {{ .Values.gitops.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.gitops.persistence.size }}
+{{- end }}

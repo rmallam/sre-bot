@@ -1,0 +1,732 @@
+{{- $ns := include "sre-bot.namespace" . }}
+{{- $secret := include "sre-bot.secretName" . }}
+{{- if and (eq .Values.runStore.backend "redis") (not .Values.redis.enabled) }}
+{{- fail "runStore.backend=redis requires redis.enabled=true" }}
+{{- end }}
+
+{{- if .Values.agents.watcher.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: watcher-agent
+  namespace: {{ $ns }}
+  labels:
+    {{- include "sre-bot.labels" . | nindent 4 }}
+    sre-bot/agent: watcher
+spec:
+  replicas: {{ .Values.agents.watcher.replicas }}
+  selector:
+    matchLabels:
+      app: watcher-agent
+  template:
+    metadata:
+      labels:
+        app: watcher-agent
+        sre-bot/agent: watcher
+    spec:
+      serviceAccountName: watcher-agent
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: watcher
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "watcher") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: INVESTIGATOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "investigator" "root" .) | quote }}
+            - name: ORCHESTRATOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "orchestrator" "root" .) | quote }}
+            - name: USE_ORCHESTRATOR
+              value: {{ .Values.watcher.useOrchestrator | quote }}
+            - name: COOLDOWN_MINUTES
+              value: {{ .Values.watcher.cooldownMinutes | quote }}
+            - name: WATCH_NAMESPACES
+              value: {{ .Values.watcher.watchNamespaces | quote }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.agents.watcher.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: watcher-agent
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app: watcher-agent
+  ports:
+    - port: 8080
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.commander.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: commander-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.commander.replicas }}
+  selector:
+    matchLabels:
+      app: commander-agent
+  template:
+    metadata:
+      labels:
+        app: commander-agent
+    spec:
+      serviceAccountName: commander-agent
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: commander
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "commander") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: ORCHESTRATOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "orchestrator" "root" .) | quote }}
+            - name: INVESTIGATOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "investigator" "root" .) | quote }}
+            - name: SECURITY_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "security" "root" .) | quote }}
+            - name: USE_ORCHESTRATOR
+              value: {{ .Values.commander.useOrchestrator | quote }}
+            - name: ALLOWED_USERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: allowed_users
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: gemini_api_key
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: openrouter_api_key
+                  optional: true
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: slack_bot_token
+                  optional: true
+            - name: SLACK_APP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: slack_app_token
+                  optional: true
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: telegram_bot_token
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.agents.commander.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: commander-agent
+  namespace: {{ $ns }}
+spec:
+  type: {{ .Values.service.commander.type }}
+  selector:
+    app: commander-agent
+  ports:
+    - port: {{ .Values.service.commander.port }}
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.investigator.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: investigator-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.investigator.replicas }}
+  selector:
+    matchLabels:
+      app: investigator-agent
+  template:
+    metadata:
+      labels:
+        app: investigator-agent
+    spec:
+      serviceAccountName: investigator-agent
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: investigator
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "investigator") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: BRAIN_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "brain" "root" .) | quote }}
+            - name: ORCHESTRATOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "orchestrator" "root" .) | quote }}
+            - name: USE_ORCHESTRATOR
+              value: "true"
+            - name: INVESTIGATOR_SAFE_MODE
+              value: {{ .Values.investigator.safeMode | quote }}
+            - name: GIT_SYNC_INTERVAL_SECONDS
+              value: {{ .Values.investigator.gitSyncIntervalSeconds | quote }}
+            - name: GITOPS_REPO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: gitops_repo_url
+          {{- if .Values.secrets.gitSshPrivateKey }}
+          volumeMounts:
+            - name: git-credentials
+              mountPath: /root/.ssh
+              readOnly: true
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.agents.investigator.resources | nindent 12 }}
+      {{- if .Values.secrets.gitSshPrivateKey }}
+      volumes:
+        - name: git-credentials
+          secret:
+            secretName: sre-bot-git-ssh
+            defaultMode: 0400
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: investigator-agent
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app: investigator-agent
+  ports:
+    - port: 8080
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.brain.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.brain.replicas }}
+  selector:
+    matchLabels:
+      app: brain-agent
+  template:
+    metadata:
+      labels:
+        app: brain-agent
+    spec:
+      serviceAccountName: brain-agent
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: brain
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "brain") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: HIL_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "hil" "root" .) | quote }}
+            - name: GEMINI_MODEL
+              value: {{ .Values.brain.geminiModel | quote }}
+            - name: CIRCUIT_BREAKER_LIMIT
+              value: {{ .Values.brain.circuitBreakerLimit | quote }}
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: gemini_api_key
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: openrouter_api_key
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.agents.brain.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain-agent
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app: brain-agent
+  ports:
+    - port: 8080
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.security.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.security.replicas }}
+  selector:
+    matchLabels:
+      app: security-agent
+  template:
+    metadata:
+      labels:
+        app: security-agent
+    spec:
+      serviceAccountName: security-agent
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: security
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "security") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SECURITY_BLOCK_ON_FINDINGS
+              value: {{ .Values.security.blockOnFindings | quote }}
+            - name: SECURITY_MAX_LOG_BYTES
+              value: {{ .Values.security.maxLogBytes | toString | quote }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.agents.security.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: security-agent
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app: security-agent
+  ports:
+    - port: 8080
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.executor.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: executor-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.executor.replicas }}
+  selector:
+    matchLabels:
+      app: executor-agent
+  template:
+    metadata:
+      labels:
+        app: executor-agent
+    spec:
+      serviceAccountName: executor-agent
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: executor
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "executor") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.agents.executor.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: executor-agent
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app: executor-agent
+  ports:
+    - port: 8080
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.orchestrator.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.orchestrator.replicas }}
+  selector:
+    matchLabels:
+      app: orchestrator-agent
+  template:
+    metadata:
+      labels:
+        app: orchestrator-agent
+    spec:
+      serviceAccountName: orchestrator-agent
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: orchestrator
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "orchestrator") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: INVESTIGATOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "investigator" "root" .) | quote }}
+            - name: SECURITY_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "security" "root" .) | quote }}
+            - name: BRAIN_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "brain" "root" .) | quote }}
+            - name: EXECUTOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "executor" "root" .) | quote }}
+            - name: GITOPS_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "gitops" "root" .) | quote }}
+            - name: HIL_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "hil" "root" .) | quote }}
+            - name: COMMANDER_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "commander" "root" .) | quote }}
+            - name: AUTONOMY_MODE
+              value: {{ .Values.orchestrator.autonomyMode | quote }}
+            - name: AUTONOMY_MAX_ITERATIONS
+              value: {{ .Values.orchestrator.maxIterations | quote }}
+            - name: RUN_STORE_BACKEND
+              value: {{ .Values.runStore.backend | quote }}
+            - name: USE_CAPABILITY_PLANNER
+              value: {{ .Values.orchestrator.useCapabilityPlanner | quote }}
+            - name: PER_TOOL_HIL
+              value: {{ .Values.orchestrator.perToolHil | quote }}
+            - name: REGISTRY_DRY_RUN
+              value: {{ .Values.orchestrator.registryDryRun | quote }}
+            {{- if eq .Values.runStore.backend "postgres" }}
+            - name: DATABASE_URL
+              value: {{ include "sre-bot.databaseUrl" . | quote }}
+            {{- else if eq .Values.runStore.backend "redis" }}
+            - name: REDIS_URL
+              value: {{ include "sre-bot.redisUrl" . | quote }}
+            {{- else }}
+            - name: RUN_STORE_PATH
+              value: "/data/runs"
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- if eq .Values.runStore.backend "file" }}
+          volumeMounts:
+            - name: run-data
+              mountPath: /data/runs
+          {{- end }}
+          resources:
+            {{- toYaml .Values.agents.orchestrator.resources | nindent 12 }}
+      {{- if eq .Values.runStore.backend "file" }}
+      volumes:
+        - name: run-data
+          emptyDir: {}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-agent
+  namespace: {{ $ns }}
+spec:
+  type: {{ .Values.service.orchestrator.type }}
+  selector:
+    app: orchestrator-agent
+  ports:
+    - port: {{ .Values.service.orchestrator.port }}
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.hil.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hil-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.hil.replicas }}
+  selector:
+    matchLabels:
+      app: hil-agent
+  template:
+    metadata:
+      labels:
+        app: hil-agent
+    spec:
+      serviceAccountName: hil-agent
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: hil
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "hil") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: GITOPS_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "gitops" "root" .) | quote }}
+            - name: EXECUTOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "executor" "root" .) | quote }}
+            - name: ORCHESTRATOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "orchestrator" "root" .) | quote }}
+            - name: BRAIN_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "brain" "root" .) | quote }}
+            - name: APPROVAL_TIMEOUT_MINUTES
+              value: {{ .Values.hil.approvalTimeoutMinutes | quote }}
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: slack_bot_token
+                  optional: true
+            - name: SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: slack_signing_secret
+                  optional: true
+            - name: SLACK_ALERT_CHANNEL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: slack_alert_channel
+                  optional: true
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: telegram_bot_token
+                  optional: true
+            - name: TELEGRAM_ALERT_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: telegram_alert_chat_id
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.agents.hil.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hil-agent
+  namespace: {{ $ns }}
+spec:
+  type: {{ .Values.service.hil.type }}
+  selector:
+    app: hil-agent
+  ports:
+    - port: {{ .Values.service.hil.port }}
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.gitops.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitops-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.gitops.replicas }}
+  selector:
+    matchLabels:
+      app: gitops-agent
+  template:
+    metadata:
+      labels:
+        app: gitops-agent
+    spec:
+      serviceAccountName: gitops-agent
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: gitops
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "gitops") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: COMMANDER_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "commander" "root" .) | quote }}
+            - name: HIL_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "hil" "root" .) | quote }}
+            - name: GITOPS_REPO_PATH
+              value: {{ .Values.gitops.repoPath | quote }}
+            - name: GITOPS_USE_PR
+              value: {{ .Values.gitops.usePr | quote }}
+            - name: DEPLOY_PUSH_APP_REPO
+              value: {{ .Values.gitops.deployPushAppRepo | quote }}
+            - name: DEPLOY_PUSH_GITOPS
+              value: {{ .Values.gitops.deployPushGitops | quote }}
+            - name: GITOPS_REPO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: gitops_repo_url
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: github_token
+                  optional: true
+            - name: ARGOCD_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: argocd_url
+                  optional: true
+            - name: ARGOCD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: argocd_token
+                  optional: true
+          {{- if or .Values.secrets.gitSshPrivateKey .Values.gitops.persistence.enabled }}
+          volumeMounts:
+            {{- if .Values.secrets.gitSshPrivateKey }}
+            - name: git-credentials
+              mountPath: /root/.ssh
+              readOnly: true
+            {{- end }}
+            {{- if .Values.gitops.persistence.enabled }}
+            - name: gitops-mirror
+              mountPath: {{ .Values.gitops.repoPath }}
+            {{- end }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.agents.gitops.resources | nindent 12 }}
+      volumes:
+        {{- if .Values.secrets.gitSshPrivateKey }}
+        - name: git-credentials
+          secret:
+            secretName: sre-bot-git-ssh
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.gitops.persistence.enabled }}
+        - name: gitops-mirror
+          persistentVolumeClaim:
+            claimName: gitops-mirror-pvc
+        {{- else }}
+        - name: gitops-mirror
+          emptyDir: {}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitops-agent
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app: gitops-agent
+  ports:
+    - port: 8080
+      targetPort: http
+{{- end }}

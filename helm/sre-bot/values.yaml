@@ -1,0 +1,175 @@
+# Default values for sre-bot.
+# Images are built by GitHub Actions → ghcr.io/<owner>/sre-bot-<agent>:<tag>
+
+global:
+  imageRegistry: ghcr.io
+  imageOwner: rmallam
+  imageTag: main
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+  # e.g. [{ name: ghcr-credentials }]
+
+namespace:
+  create: true
+  name: sre-bot-system
+
+# Set secrets.create=false and secrets.existingSecret when using an external Secret
+secrets:
+  create: true
+  existingSecret: ""
+  geminiApiKey: ""
+  openrouterApiKey: ""
+  gitopsRepoUrl: ""
+  githubToken: ""
+  allowedUsers: ""
+  slackBotToken: ""
+  slackAppToken: ""
+  slackSigningSecret: ""
+  slackAlertChannel: "#sre-alerts"
+  telegramBotToken: ""
+  telegramAlertChatId: ""
+  argocdUrl: ""
+  argocdToken: ""
+  # SSH private key for git clone (investigator + gitops)
+  gitSshPrivateKey: ""
+  gitSshKnownHosts: |
+    github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+
+crd:
+  install: true
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  auth:
+    username: sre
+    password: sre
+    database: sre_runs
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClass: ""
+
+redis:
+  enabled: false
+  image: redis:7-alpine
+
+runStore:
+  # postgres | redis | file
+  backend: postgres
+
+orchestrator:
+  autonomyMode: low_risk_only
+  maxIterations: 5
+  useCapabilityPlanner: false
+  perToolHil: false
+  registryDryRun: "true"
+
+investigator:
+  safeMode: true
+  gitSyncIntervalSeconds: 60
+
+watcher:
+  cooldownMinutes: 2
+  watchNamespaces: ""
+  useOrchestrator: true
+
+gitops:
+  repoPath: /data/gitops-mirror
+  deployPushAppRepo: true
+  deployPushGitops: true
+  usePr: false
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClass: ""
+
+brain:
+  geminiModel: gemini-2.5-pro
+  circuitBreakerLimit: 3
+
+hil:
+  approvalTimeoutMinutes: 60
+
+security:
+  blockOnFindings: true
+  maxLogBytes: 16384
+
+commander:
+  useOrchestrator: true
+
+# Per-agent toggles and resources
+agents:
+  watcher:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 200m, memory: 256Mi }
+  commander:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 200m, memory: 256Mi }
+  investigator:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+  brain:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+  orchestrator:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+  hil:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 200m, memory: 256Mi }
+  gitops:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+  executor:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 200m, memory: 256Mi }
+  security:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 200m, memory: 256Mi }
+
+# Optional external access (LoadBalancer / NodePort / Ingress)
+service:
+  commander:
+    type: ClusterIP
+    port: 8080
+  orchestrator:
+    type: ClusterIP
+    port: 8080
+  hil:
+    type: ClusterIP
+    port: 8080
+
+ingress:
+  hil:
+    enabled: false
+    className: nginx
+    host: sre-bot.example.com
+    annotations: {}

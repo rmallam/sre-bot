@@ -1,0 +1,28 @@
+SRE Bot has been deployed to namespace {{ include "sre-bot.namespace" . }}.
+
+1. Verify pods:
+   kubectl get pods -n {{ include "sre-bot.namespace" . }}
+
+2. Health checks (port-forward):
+   kubectl port-forward -n {{ include "sre-bot.namespace" . }} svc/orchestrator-agent 8084:8080
+   curl http://localhost:8084/health
+
+3. HIL dashboard:
+{{- if .Values.ingress.hil.enabled }}
+   https://{{ .Values.ingress.hil.host }}
+{{- else }}
+   kubectl port-forward -n {{ include "sre-bot.namespace" . }} svc/hil-agent 8085:8080
+   open http://localhost:8085
+{{- end }}
+
+4. Images (GHCR):
+   {{ .Values.global.imageRegistry }}/{{ .Values.global.imageOwner }}/sre-bot-<agent>:{{ .Values.global.imageTag }}
+
+{{- if .Values.secrets.create }}
+{{- if not .Values.secrets.geminiApiKey }}
+
+WARNING: secrets.geminiApiKey is empty — brain/orchestrator LLM calls will fail until you upgrade with real secrets.
+{{- end }}
+{{- end }}
+
+See helm/sre-bot/README.md for upgrade and external-secret patterns.

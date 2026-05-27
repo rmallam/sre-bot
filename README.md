@@ -83,6 +83,25 @@ If you omit strategy flags, the bot now inspects the repo first and asks you to 
 
 On Telegram this choice is shown with inline buttons.
 
+## Kubernetes (Helm)
+
+Deploy all agents into your cluster:
+
+```bash
+cp helm/sre-bot/values-local.example.yaml my-values.yaml
+# edit secrets in my-values.yaml
+
+helm upgrade --install sre-bot ./helm/sre-bot \
+  -f my-values.yaml \
+  --namespace sre-bot-system \
+  --create-namespace \
+  --wait
+```
+
+Chart docs: [helm/sre-bot/README.md](helm/sre-bot/README.md)
+
+Legacy Kustomize manifests under `k8s/` are partial; prefer Helm for a full stack.
+
 ## Container images (GHCR)
 
 On push to `main` or version tags (`v*`), GitHub Actions builds and publishes images to GHCR:
