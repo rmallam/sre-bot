@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: watcher-agent
+  namespace: sre-bot-system
+  labels:
+    app: watcher-agent
+    sre-bot/component: watcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: watcher-agent
+  template:
+    metadata:
+      labels:
+        app: watcher-agent
+        sre-bot/component: watcher
+    spec:
+      serviceAccountName: watcher-agent
+      containers:
+        - name: watcher
+          image: ghcr.io/your-org/sre-bot/watcher-agent:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: PORT
+              value: "8080"
+            - name: INVESTIGATOR_URL
+              value: "http://investigator-agent:8080"
+            - name: WATCH_NAMESPACES
+              value: ""
+            - name: COOLDOWN_MINUTES
+              value: "5"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: watcher-agent
+  namespace: sre-bot-system
+spec:
+  selector:
+    app: watcher-agent
+  ports:
+    - port: 8080
+      targetPort: 8080

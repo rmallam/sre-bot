@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hil-agent
+  namespace: sre-bot-system
+  labels:
+    app: hil-agent
+    sre-bot/component: hil
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hil-agent
+  template:
+    metadata:
+      labels:
+        app: hil-agent
+        sre-bot/component: hil
+    spec:
+      serviceAccountName: hil-agent
+      containers:
+        - name: hil
+          image: ghcr.io/your-org/sre-bot/hil-agent:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: PORT
+              value: "8080"
+            - name: GITOPS_URL
+              value: "http://gitops-agent:8080"
+            - name: BRAIN_URL
+              value: "http://brain-agent:8080"
+            - name: APPROVAL_TIMEOUT_MINUTES
+              value: "60"
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: slack_bot_token
+                  optional: true
+            - name: SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: slack_signing_secret
+                  optional: true
+            - name: SLACK_ALERT_CHANNEL
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: slack_alert_channel
+                  optional: true
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: telegram_bot_token
+                  optional: true
+            - name: TELEGRAM_ALERT_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: telegram_alert_chat_id
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hil-agent
+  namespace: sre-bot-system
+spec:
+  selector:
+    app: hil-agent
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# Expose the HIL Dashboard externally so engineers can access it from their browser
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hil-dashboard
+  namespace: sre-bot-system
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: sre-bot.your-cluster.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hil-agent
+                port:
+                  number: 8080

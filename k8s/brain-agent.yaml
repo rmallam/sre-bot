@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain-agent
+  namespace: sre-bot-system
+  labels:
+    app: brain-agent
+    sre-bot/component: brain
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: brain-agent
+  template:
+    metadata:
+      labels:
+        app: brain-agent
+        sre-bot/component: brain
+    spec:
+      serviceAccountName: brain-agent
+      containers:
+        - name: brain
+          image: ghcr.io/your-org/sre-bot/brain-agent:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: PORT
+              value: "8080"
+            - name: HIL_URL
+              value: "http://hil-agent:8080"
+            - name: GEMINI_MODEL
+              value: "gemini-2.5-pro"
+            - name: CIRCUIT_BREAKER_LIMIT
+              value: "3"
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: gemini_api_key
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: brain-agent
+  namespace: sre-bot-system
+spec:
+  selector:
+    app: brain-agent
+  ports:
+    - port: 8080
+      targetPort: 8080

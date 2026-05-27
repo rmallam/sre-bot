@@ -1,0 +1,98 @@
+# Build and push all agent images to GitHub Container Registry (GHCR).
+#
+# Images: ghcr.io/<owner>/sre-bot-<agent>:<tag>
+# Example: ghcr.io/rmallam/sre-bot-orchestrator:main
+#
+# Required: repo Settings → Actions → General → Workflow permissions →
+#   "Read and write permissions" (for GITHUB_TOKEN to publish packages).
+
+name: Publish Docker images
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: ${{ matrix.agent }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        agent:
+          - watcher
+          - commander
+          - investigator
+          - brain
+          - orchestrator
+          - hil
+          - gitops
+          - executor
+          - security
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/sre-bot-${{ matrix.agent }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/${{ matrix.agent }}/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.agent }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.agent }}
+
+  summary:
+    name: Image summary
+    needs: build
+    if: github.event_name != 'pull_request' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print image names
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          REF="${{ github.ref_name }}"
+          for agent in watcher commander investigator brain orchestrator hil gitops executor security; do
+            echo "ghcr.io/${OWNER}/sre-bot-${agent}:${REF}"
+            echo "ghcr.io/${OWNER}/sre-bot-${agent}:latest (main only)"
+          done

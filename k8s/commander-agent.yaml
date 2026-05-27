@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: commander-agent
+  namespace: sre-bot-system
+  labels:
+    app: commander-agent
+    sre-bot/component: commander
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: commander-agent
+  template:
+    metadata:
+      labels:
+        app: commander-agent
+        sre-bot/component: commander
+    spec:
+      serviceAccountName: commander-agent
+      containers:
+        - name: commander
+          image: ghcr.io/your-org/sre-bot/commander-agent:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: PORT
+              value: "8080"
+            - name: INVESTIGATOR_URL
+              value: "http://investigator-agent:8080"
+            - name: ALLOWED_USERS
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: allowed_users
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: slack_bot_token
+                  optional: true
+            - name: SLACK_APP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: slack_app_token
+                  optional: true
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: telegram_bot_token
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: commander-agent
+  namespace: sre-bot-system
+spec:
+  selector:
+    app: commander-agent
+  ports:
+    - port: 8080
+      targetPort: 8080

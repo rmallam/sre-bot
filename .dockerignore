@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+.github
+
+# Dependencies (installed in image)
+**/node_modules
+
+# Docs and tests (not needed in runtime images)
+docs/
+test/
+**/*.md
+!agents/**/README.md
+
+# Local dev / secrets
+.env
+.env.*
+secrets.yaml
+secrets.yml
+scratch/
+gitops-mirror/
+bin/
+k8s/
+policy/
+
+# CI / editor
+.vscode
+.idea
+*.log
+coverage/
+.DS_Store
+
+# Compose-only infra (images use external postgres/redis in prod)
+docker-compose*.yml

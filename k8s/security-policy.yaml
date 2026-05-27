@@ -1,0 +1,6 @@
+sanitize:
+  blockOnHigh: true
+  maxLogBytes: 16384
+authorize:
+  allowedActions: [restart, git_patch, helm_deploy, noop, escalate_human]
+  prodNamespaces: [production, prod]

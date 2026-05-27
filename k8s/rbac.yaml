@@ -1,0 +1,187 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# RBAC — Principle of Least Privilege per agent
+#
+# Each agent gets its own ServiceAccount with exactly the permissions it needs.
+# No agent has more access than required.
+#
+# Summary:
+#   watcher     → watch Events + list/get Pods (read-only)
+#   investigator → get/list Pods, Deployments, StatefulSets, Events, Pods/log + read SREIncidents
+#   brain       → get/patch/create SREIncidents (circuit breaker state)
+#   hil         → get/patch SREIncidents (approval state machine)
+#   gitops      → get/patch SREIncidents (reset on success) + exec kubectl dry-run
+#   commander   → no cluster access
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── ServiceAccounts ────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: watcher-agent
+  namespace: sre-bot-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: investigator-agent
+  namespace: sre-bot-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: brain-agent
+  namespace: sre-bot-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hil-agent
+  namespace: sre-bot-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitops-agent
+  namespace: sre-bot-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: commander-agent
+  namespace: sre-bot-system
+
+# ── watcher: read-only Events + Pods ──────────────────────────────────────────
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-bot-watcher
+rules:
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-bot-watcher-binding
+subjects:
+  - kind: ServiceAccount
+    name: watcher-agent
+    namespace: sre-bot-system
+roleRef:
+  kind: ClusterRole
+  name: sre-bot-watcher
+  apiGroup: rbac.authorization.k8s.io
+
+# ── investigator: deep read-only access across workload types + logs ──────────
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-bot-investigator
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "namespaces", "resourcequotas"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["sre.bot"]
+    resources: ["sreincidents"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-bot-investigator-binding
+subjects:
+  - kind: ServiceAccount
+    name: investigator-agent
+    namespace: sre-bot-system
+roleRef:
+  kind: ClusterRole
+  name: sre-bot-investigator
+  apiGroup: rbac.authorization.k8s.io
+
+# ── brain: manage SREIncident CRs for circuit breaker state ──────────────────
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-bot-brain
+rules:
+  - apiGroups: ["sre.bot"]
+    resources: ["sreincidents", "sreincidents/status"]
+    verbs: ["get", "list", "create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-bot-brain-binding
+subjects:
+  - kind: ServiceAccount
+    name: brain-agent
+    namespace: sre-bot-system
+roleRef:
+  kind: ClusterRole
+  name: sre-bot-brain
+  apiGroup: rbac.authorization.k8s.io
+
+# ── hil: patch SREIncident approval status ───────────────────────────────────
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-bot-hil
+rules:
+  - apiGroups: ["sre.bot"]
+    resources: ["sreincidents", "sreincidents/status"]
+    verbs: ["get", "list", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-bot-hil-binding
+subjects:
+  - kind: ServiceAccount
+    name: hil-agent
+    namespace: sre-bot-system
+roleRef:
+  kind: ClusterRole
+  name: sre-bot-hil
+  apiGroup: rbac.authorization.k8s.io
+
+# ── gitops: reset circuit breaker on success + kubectl dry-run ────────────────
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-bot-gitops
+rules:
+  - apiGroups: ["sre.bot"]
+    resources: ["sreincidents", "sreincidents/status"]
+    verbs: ["get", "list", "patch", "update"]
+  # Needed for kubectl apply --dry-run=server
+  - apiGroups: ["", "apps", "batch", "networking.k8s.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-bot-gitops-binding
+subjects:
+  - kind: ServiceAccount
+    name: gitops-agent
+    namespace: sre-bot-system
+roleRef:
+  kind: ClusterRole
+  name: sre-bot-gitops
+  apiGroup: rbac.authorization.k8s.io

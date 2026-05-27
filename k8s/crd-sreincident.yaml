@@ -1,0 +1,45 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sreincidents.sre.bot
+spec:
+  group: sre.bot
+  scope: Namespaced
+  names:
+    plural: sreincidents
+    singular: sreincident
+    kind: SREIncident
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                resourceName:
+                  type: string
+            status:
+              type: object
+              properties:
+                incidentId:
+                  type: string
+                attemptCount:
+                  type: integer
+                approvalStatus:
+                  type: string
+                escalated:
+                  type: boolean
+                currentRunId:
+                  type: string
+                lastVerifyStatus:
+                  type: string
+                actionHistory:
+                  type: array
+                  items:
+                    type: object
+      subresources:
+        status: {}

@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitops-agent
+  namespace: sre-bot-system
+  labels:
+    app: gitops-agent
+    sre-bot/component: gitops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitops-agent
+  template:
+    metadata:
+      labels:
+        app: gitops-agent
+        sre-bot/component: gitops
+    spec:
+      serviceAccountName: gitops-agent
+      containers:
+        - name: gitops
+          image: ghcr.io/your-org/sre-bot/gitops-agent:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: PORT
+              value: "8080"
+            - name: COMMANDER_URL
+              value: "http://commander-agent:8080"
+            - name: HIL_URL
+              value: "http://hil-agent:8080"
+            - name: GITOPS_REPO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: gitops_repo_url
+            - name: GITOPS_REPO_PATH
+              value: "/data/gitops-mirror"
+            - name: GITOPS_USE_PR
+              value: "false"
+            - name: GIT_AUTHOR_NAME
+              value: "sre-bot"
+            - name: GIT_AUTHOR_EMAIL
+              value: "sre-bot@cluster.local"
+            - name: ARGOCD_URL
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: argocd_url
+                  optional: true
+            - name: ARGOCD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: argocd_token
+                  optional: true
+          volumeMounts:
+            - name: git-credentials
+              mountPath: /root/.ssh
+              readOnly: true
+            - name: gitops-mirror
+              mountPath: /data/gitops-mirror
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: git-credentials
+          secret:
+            secretName: sre-bot-git-ssh
+            defaultMode: 0400
+        # Persistent volume for the pre-cloned GitOps repo mirror (fixes Issue #5)
+        - name: gitops-mirror
+          persistentVolumeClaim:
+            claimName: gitops-mirror-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitops-agent
+  namespace: sre-bot-system
+spec:
+  selector:
+    app: gitops-agent
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# PVC for the persistent GitOps repo mirror
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitops-mirror-pvc
+  namespace: sre-bot-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi

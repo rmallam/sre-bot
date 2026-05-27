@@ -1,0 +1,74 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment and secrets (never commit)
+.env
+.env.*
+!.env.example
+.env.local
+.env.*.local
+secrets.yaml
+secrets.yml
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# Runtime / local data
+gitops-mirror/
+/data/
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+.next/
+out/
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.code-workspace
+
+# Docker local overrides
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# Kubernetes / local kubeconfig copies
+kubeconfig
+*.kubeconfig
+
+# Local binaries (e.g. vendored kubectl for dev)
+bin/kubectl
+bin/*.exe
+
+# Scratch and temp
+scratch/
+tmp/
+temp/
+*.tmp
+
+# OPA / policy test artifacts
+policy/**/*.gen.rego
+
+# Optional: keep example secrets template tracked
+!secrets.example.yaml

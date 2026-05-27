@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: investigator-agent
+  namespace: sre-bot-system
+  labels:
+    app: investigator-agent
+    sre-bot/component: investigator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: investigator-agent
+  template:
+    metadata:
+      labels:
+        app: investigator-agent
+        sre-bot/component: investigator
+    spec:
+      serviceAccountName: investigator-agent
+      containers:
+        - name: investigator
+          image: ghcr.io/your-org/sre-bot/investigator-agent:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: PORT
+              value: "8080"
+            - name: BRAIN_URL
+              value: "http://brain-agent:8080"
+            - name: GITOPS_REPO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: gitops_repo_url
+            - name: GIT_SYNC_INTERVAL_SECONDS
+              value: "60"
+          volumeMounts:
+            - name: git-credentials
+              mountPath: /root/.ssh
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: git-credentials
+          secret:
+            secretName: sre-bot-git-ssh
+            defaultMode: 0400
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: investigator-agent
+  namespace: sre-bot-system
+spec:
+  selector:
+    app: investigator-agent
+  ports:
+    - port: 8080
+      targetPort: 8080

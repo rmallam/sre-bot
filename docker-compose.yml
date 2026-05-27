@@ -1,0 +1,215 @@
+version: "3.9"
+
+networks:
+  sre-net:
+    driver: bridge
+
+volumes:
+  gitops-mirror:
+  run-data:
+  postgres-data:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    networks: [sre-net]
+    environment:
+      POSTGRES_USER: sre
+      POSTGRES_PASSWORD: sre
+      POSTGRES_DB: sre_runs
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U sre -d sre_runs']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    networks: [sre-net]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  watcher-agent:
+    build:
+      context: .
+      dockerfile: agents/watcher/Dockerfile
+    networks: [sre-net]
+    environment:
+      - PORT=8080
+      - INVESTIGATOR_URL=http://investigator-agent:8080
+      - ORCHESTRATOR_URL=http://orchestrator-agent:8080
+      - USE_ORCHESTRATOR=true
+      - COOLDOWN_MINUTES=2
+      - KUBECONFIG=/root/.kube/config
+    volumes:
+      - ~/.kube:/root/.kube:ro
+
+  commander-agent:
+    build:
+      context: .
+      dockerfile: agents/commander/Dockerfile
+    networks: [sre-net]
+    ports:
+      - "8081:8080"
+    environment:
+      - PORT=8080
+      - ORCHESTRATOR_URL=http://orchestrator-agent:8080
+      - INVESTIGATOR_URL=http://investigator-agent:8080
+      - SECURITY_URL=http://security-agent:8080
+      - USE_ORCHESTRATOR=true
+      - ALLOWED_USERS=${ALLOWED_USERS}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+
+  investigator-agent:
+    build:
+      context: .
+      dockerfile: agents/investigator/Dockerfile
+    networks: [sre-net]
+    ports:
+      - "8082:8080"
+    environment:
+      - PORT=8080
+      - BRAIN_URL=http://brain-agent:8080
+      - ORCHESTRATOR_URL=http://orchestrator-agent:8080
+      - USE_ORCHESTRATOR=true
+      - GITOPS_REPO_URL=${GITOPS_REPO_URL}
+      - INVESTIGATOR_SAFE_MODE=true
+      - GIT_SYNC_INTERVAL_SECONDS=60
+      - KUBECONFIG=/root/.kube/config
+    volumes:
+      - ~/.kube:/root/.kube:ro
+      - ~/.ssh:/root/.ssh:ro
+
+  brain-agent:
+    build:
+      context: .
+      dockerfile: agents/brain/Dockerfile
+    networks: [sre-net]
+    ports:
+      - "8083:8080"
+    environment:
+      - PORT=8080
+      - HIL_URL=http://hil-agent:8080
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - GEMINI_MODEL=gemini-2.5-pro
+      - CIRCUIT_BREAKER_LIMIT=3
+      - KUBECONFIG=/root/.kube/config
+    volumes:
+      - ~/.kube:/root/.kube:ro
+
+  orchestrator-agent:
+    build:
+      context: .
+      dockerfile: agents/orchestrator/Dockerfile
+    networks: [sre-net]
+    ports:
+      - "8084:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - PORT=8080
+      - INVESTIGATOR_URL=http://investigator-agent:8080
+      - SECURITY_URL=http://security-agent:8080
+      - BRAIN_URL=http://brain-agent:8080
+      - EXECUTOR_URL=http://executor-agent:8080
+      - GITOPS_URL=http://gitops-agent:8080
+      - HIL_URL=http://hil-agent:8080
+      - COMMANDER_URL=http://commander-agent:8080
+      - AUTONOMY_MODE=low_risk_only
+      - AUTONOMY_MAX_ITERATIONS=5
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DATABASE_URL=postgresql://sre:sre@postgres:5432/sre_runs
+      - RUN_STORE_BACKEND=postgres
+      - USE_CAPABILITY_PLANNER=false
+      - PER_TOOL_HIL=false
+    volumes:
+      - run-data:/data/runs
+
+  security-agent:
+    build:
+      context: .
+      dockerfile: agents/security/Dockerfile
+    networks: [sre-net]
+    ports:
+      - "8088:8080"
+    environment:
+      - PORT=8080
+      - SECURITY_BLOCK_ON_FINDINGS=true
+      - SECURITY_MAX_LOG_BYTES=16384
+
+  executor-agent:
+    build:
+      context: .
+      dockerfile: agents/executor/Dockerfile
+    networks: [sre-net]
+    ports:
+      - "8087:8080"
+    environment:
+      - PORT=8080
+      - KUBECONFIG=/root/.kube/config
+    volumes:
+      - ~/.kube:/root/.kube:ro
+
+  hil-agent:
+    build:
+      context: .
+      dockerfile: agents/hil/Dockerfile
+    networks: [sre-net]
+    ports:
+      - "8085:8080"
+    environment:
+      - PORT=8080
+      - GITOPS_URL=http://gitops-agent:8080
+      - EXECUTOR_URL=http://executor-agent:8080
+      - ORCHESTRATOR_URL=http://orchestrator-agent:8080
+      - BRAIN_URL=http://brain-agent:8080
+      - APPROVAL_TIMEOUT_MINUTES=60
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      - SLACK_ALERT_CHANNEL=${SLACK_ALERT_CHANNEL}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ALERT_CHAT_ID=${TELEGRAM_ALERT_CHAT_ID}
+
+  gitops-agent:
+    build:
+      context: .
+      dockerfile: agents/gitops/Dockerfile
+    networks: [sre-net]
+    ports:
+      - "8086:8080"
+    environment:
+      - PORT=8080
+      - COMMANDER_URL=http://commander-agent:8080
+      - HIL_URL=http://hil-agent:8080
+      - GITOPS_REPO_URL=${GITOPS_REPO_URL}
+      - GITOPS_REPO_PATH=/data/gitops-mirror
+      - DEPLOY_PUSH_APP_REPO=true
+      - DEPLOY_PUSH_GITOPS=true
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITOPS_USE_PR=false
+      - ARGOCD_URL=${ARGOCD_URL}
+      - ARGOCD_TOKEN=${ARGOCD_TOKEN}
+      - KUBECONFIG=/root/.kube/config
+    volumes:
+      - gitops-mirror:/data/gitops-mirror
+      - ~/.kube:/root/.kube:ro
+      - ~/.ssh:/root/.ssh:ro
+
+  # v2: optional AI gateway (enable AI_GATEWAY_URL in orchestrator/brain)
+  ai-gateway:
+    image: nginx:alpine
+    networks: [sre-net]
+    profiles: ["v2"]
+    ports:
+      - "8090:80"
