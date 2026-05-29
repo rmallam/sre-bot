@@ -10,6 +10,7 @@ import type { Request, Response } from 'express';
 import type { WebClient } from '@slack/web-api';
 import type { Telegraf } from 'telegraf';
 import type { RemediationResult } from '../../../shared/src/types.js';
+import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
 import { log } from '../../../shared/src/http.js';
 
 const AGENT = 'commander-agent';
@@ -31,28 +32,21 @@ export function registerTelegramBot(bot: Telegraf): void {
 // ── Message formatters ────────────────────────────────────────────────────────
 
 function formatSuccess(result: RemediationResult): string {
-  const lines: string[] = [
-    `✅ *Remediation complete* — Incident \`${result.incidentId}\``,
-    `• Resource: \`${result.namespace}/${result.resourceName}\``,
-  ];
+  const lines: string[] = [`Done — ${result.resourceName} in namespace ${result.namespace}.`];
   if (result.gitCommitUrl) {
-    lines.push(`• Commit: <${result.gitCommitUrl}|${result.gitCommitSha ?? 'view'}>`);
+    lines.push(`Git: ${result.gitCommitUrl}`);
   }
   if (result.argoCDAppUrl) {
-    lines.push(`• ArgoCD: <${result.argoCDAppUrl}|${result.argoCDSyncStatus ?? 'view'}>`);
+    lines.push(`Argo CD: ${result.argoCDAppUrl}`);
   }
   return lines.join('\n');
 }
 
 function formatFailure(result: RemediationResult): string {
-  const lines: string[] = [
-    `❌ *Remediation failed* — Incident \`${result.incidentId}\``,
-    `• Resource: \`${result.namespace}/${result.resourceName}\``,
-  ];
-  if (result.error) {
-    lines.push(`• Error: ${result.error}`);
-  }
-  return lines.join('\n');
+  return [
+    `Deploy failed — ${result.resourceName} / ${result.namespace}`,
+    humanizeOperatorError(result.error),
+  ].join('\n\n');
 }
 
 // ── Express handler ───────────────────────────────────────────────────────────

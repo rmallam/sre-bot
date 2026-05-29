@@ -49,11 +49,38 @@ app.post('/runs', async (req: Request, res: Response) => {
   res.status(202).json({ accepted: true, incidentId: body.incidentId });
 
   startRun(body)
-    .then(({ runId, status }) => {
-      log('info', AGENT, 'Run finished', { runId, status, incidentId: body.incidentId });
+    .then(({ runId, status, lastError }) => {
+      log('info', AGENT, 'Run finished', { runId, status, incidentId: body.incidentId, lastError });
     })
-    .catch((err) => {
-      log('error', AGENT, 'Run failed', { incidentId: body.incidentId, error: String(err) });
+    .catch(async (err) => {
+      const error = err instanceof Error ? err.message : String(err);
+      const cause =
+        err instanceof Error && err.cause instanceof Error ? err.cause.message : undefined;
+      log('error', AGENT, 'Run failed', {
+        incidentId: body.incidentId,
+        error,
+        cause,
+        hint: error.includes('investigator-agent')
+          ? 'Ensure investigator-agent is running and healthy (docker compose ps)'
+          : undefined,
+      });
+      if (body.platform && body.channelId && error.includes('GRAPH_RECURSION_LIMIT')) {
+        const { notifyUser, buildRuntimeContext } = await import('./tools.js');
+        const ctx = buildRuntimeContext({
+          runId: body.incidentId,
+          incidentId: body.incidentId,
+          request: body,
+          namespace: body.namespace,
+          resourceName: body.resourceName,
+          resourceKind: body.resourceKind,
+          mode: body.mode,
+        });
+        await notifyUser(
+          ctx,
+          `❌ Run stopped: the orchestrator looped too many times (verify/deploy may not have become healthy). ` +
+            `Check namespace \`${body.namespace}\` and deployment \`${body.resourceName}\`.`
+        ).catch(() => undefined);
+      }
     });
 });
 
@@ -103,8 +130,17 @@ app.post('/resume-run', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'approved command required' });
     return;
   }
-  const status = await resumeRunAfterApproval(body.command);
-  res.json({ status });
+  const runId = body.command.runId ?? body.command.incidentId;
+  // Respond immediately — remediation (act + verify) can take minutes.
+  res.status(202).json({ status: 'accepted', runId });
+
+  resumeRunAfterApproval(body.command).catch((err) => {
+    log('error', AGENT, 'resumeRunAfterApproval failed', {
+      runId,
+      incidentId: body.command!.incidentId,
+      error: String(err),
+    });
+  });
 });
 
 boot()

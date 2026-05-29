@@ -89,7 +89,14 @@ metadata:
   name: sre-bot-investigator
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "events", "namespaces", "resourcequotas"]
+    resources:
+      - pods
+      - pods/log
+      - events
+      - namespaces
+      - nodes
+      - services
+      - resourcequotas
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]

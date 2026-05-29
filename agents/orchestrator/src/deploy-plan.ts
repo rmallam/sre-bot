@@ -19,10 +19,31 @@ export async function buildDeployPlan(
   request: StartRunRequest
 ): Promise<RemediationPlan> {
   const githubRepo = request.githubRepo ?? ctx.githubRepo ?? '';
-  const gitRef = request.gitRef ?? 'main';
+  const gitRef = request.gitRef ?? ctx.resolvedGitRef ?? 'main';
   const appName = request.resourceName;
   const namespace = request.namespace;
   const deployStrategy = request.deployStrategy ?? 'gitops';
+  const containerImage = request.containerImage;
+
+  if (containerImage) {
+    const generatedPlan = buildHelmDeployPlan({
+      appName,
+      namespace,
+      githubRepo: appName,
+      gitRef,
+      existingManifest: false,
+      image: containerImage,
+    });
+    return {
+      ...generatedPlan,
+      action: 'repo_apply',
+      targetRepo: 'app',
+      githubRepo: undefined,
+      rootCause: `Deploy container image ${containerImage}`,
+      reasoning: `Catalog image deploy (${containerImage}) — apply generated Helm chart without cloning Git.`,
+      commitMessage: `feat(deploy): deploy ${appName} from ${containerImage}`,
+    };
+  }
 
   const mustGenerate = ctx.needsHelmGeneration === true;
 

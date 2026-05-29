@@ -20,6 +20,17 @@ import { registerSlackClient } from './confirm.js';
 import { registerSlackClientForNotify } from './notify.js';
 import { routeMessage } from './llm-router.js';
 import { buildDeployChoicePrompt, tryResolvePendingChoice } from './deploy-choice.js';
+import {
+  buildNamespaceCreatePrompt,
+  needsNamespaceCreatePrompt,
+  storeNamespaceCreatePrompt,
+  tryResolveNamespaceCreateChoice,
+} from './namespace-prompt.js';
+import {
+  resolveInvestigateFlow,
+  storeInvestigateChoice,
+  tryResolvePendingInvestigateChoice,
+} from './investigate-choice.js';
 
 const AGENT = 'commander-agent';
 const PLATFORM = 'slack' as const;
@@ -40,11 +51,20 @@ function ackMessage(incidentId: string, type: string, parsed?: import('./parser.
     return (
       "Sorry, I didn't understand that command. Try:\n" +
       '• `deploy <github-url> [@branch]`\n' +
+      '• `get namespaces` / `get pods in staging`\n' +
       '• `investigate [namespace/]<resource>`\n' +
       '• `rollback [namespace/]<resource>`'
     );
   }
   if (type === 'deploy' && parsed?.type === 'deploy') {
+    if (parsed.stackServices && parsed.stackServices.length > 1) {
+      return (
+        `🚀 Stack deploy started — tracking: \`${incidentId}\`\n` +
+        `Services: ${parsed.stackServices.map((s) => s.name).join(', ')}\n` +
+        `Namespace: ${parsed.namespace}\n` +
+        `Mode: ${parsed.deployStrategy === 'direct' ? 'Direct apply (generated Helm per service)' : 'GitOps'}`
+      );
+    }
     return (
       `🚀 Deploy started — tracking: \`${incidentId}\`\n` +
       `Repo: ${parsed.githubRepo} @ ${parsed.gitRef}\n` +
@@ -105,19 +125,54 @@ export function createSlackApp(): App {
       return;
     }
 
+    const nsPending = tryResolveNamespaceCreateChoice(PLATFORM, channelId, userId, rawText);
+    if (nsPending.status === 'cancelled') {
+      await say({ text: 'Deploy cancelled — namespace will not be created.', thread_ts: event.ts });
+      return;
+    }
+    if (nsPending.status === 'approved' && nsPending.deploy) {
+      const result = await handleCommand(nsPending.deploy, userId, PLATFORM, channelId, rawText);
+      await say({
+        text:
+          result.immediateReply ??
+          ackMessage(result.incidentId, nsPending.deploy.type, nsPending.deploy),
+        thread_ts: event.ts,
+      });
+      return;
+    }
+
     const pending = tryResolvePendingChoice(PLATFORM, channelId, userId, rawText);
     if (pending.status === 'cancelled') {
       await say({ text: 'Deploy request cancelled.', thread_ts: event.ts });
       return;
     }
     if (pending.status === 'selected' && pending.deploy) {
-      const incidentId = await handleCommand(pending.deploy, userId, PLATFORM, channelId, rawText);
-      await say({ text: ackMessage(incidentId, pending.deploy.type, pending.deploy), thread_ts: event.ts });
+      const result = await handleCommand(pending.deploy, userId, PLATFORM, channelId, rawText);
+      await say({
+        text: result.immediateReply ?? ackMessage(result.incidentId, pending.deploy.type, pending.deploy),
+        thread_ts: event.ts,
+      });
       return;
     }
 
-    const routed = await routeMessage(rawText, PLATFORM, userId);
-    const parsed = routed.parsed;
+    const invPending = tryResolvePendingInvestigateChoice(PLATFORM, channelId, userId, rawText);
+    if (invPending.status === 'cancelled') {
+      await say({ text: 'Investigation cancelled.', thread_ts: event.ts });
+      return;
+    }
+    if (invPending.status === 'selected' && invPending.command) {
+      const result = await handleCommand(invPending.command, userId, PLATFORM, channelId, rawText);
+      await say({
+        text:
+          result.immediateReply ??
+          ackMessage(result.incidentId, invPending.command.type, invPending.command),
+        thread_ts: event.ts,
+      });
+      return;
+    }
+
+    const routed = await routeMessage(rawText, PLATFORM, userId, channelId);
+    let parsed = routed.parsed;
     if (parsed.type === 'unknown' && routed.conversationalReply) {
       await say({ text: routed.conversationalReply, thread_ts: event.ts });
       return;
@@ -135,8 +190,33 @@ export function createSlackApp(): App {
         await say({ text: prompt, thread_ts: event.ts });
         return;
       }
-      const incidentId = await handleCommand(parsed, userId, PLATFORM, channelId, rawText);
-      await say({ text: ackMessage(incidentId, parsed.type, parsed), thread_ts: event.ts });
+      if (parsed.type === 'deploy') {
+        if (!parsed.createNamespace && (await needsNamespaceCreatePrompt(parsed))) {
+          storeNamespaceCreatePrompt(PLATFORM, channelId, userId, parsed);
+          await say({ text: buildNamespaceCreatePrompt(parsed), thread_ts: event.ts });
+          return;
+        }
+      }
+      if (parsed.type === 'investigate') {
+        const flow = await resolveInvestigateFlow(parsed, rawText);
+        if (flow.kind === 'reply') {
+          await say({ text: flow.text, thread_ts: event.ts });
+          return;
+        }
+        if (flow.kind === 'confirm') {
+          storeInvestigateChoice(PLATFORM, channelId, userId, rawText, parsed, flow.candidates);
+          await say({ text: flow.prompt, thread_ts: event.ts });
+          return;
+        }
+        if (flow.kind === 'ready') {
+          parsed = flow.command;
+        }
+      }
+      const result = await handleCommand(parsed, userId, PLATFORM, channelId, rawText);
+      await say({
+        text: result.immediateReply ?? ackMessage(result.incidentId, parsed.type, parsed),
+        thread_ts: event.ts,
+      });
     } catch (err) {
       log('error', AGENT, 'Error handling Slack app_mention', {
         incidentId: 'N/A',
@@ -173,19 +253,51 @@ export function createSlackApp(): App {
       return;
     }
 
+    const nsPending = tryResolveNamespaceCreateChoice(PLATFORM, channelId, userId, rawText);
+    if (nsPending.status === 'cancelled') {
+      await say({ text: 'Deploy cancelled — namespace will not be created.' });
+      return;
+    }
+    if (nsPending.status === 'approved' && nsPending.deploy) {
+      const result = await handleCommand(nsPending.deploy, userId, PLATFORM, channelId, rawText);
+      await say({
+        text:
+          result.immediateReply ??
+          ackMessage(result.incidentId, nsPending.deploy.type, nsPending.deploy),
+      });
+      return;
+    }
+
     const pending = tryResolvePendingChoice(PLATFORM, channelId, userId, rawText);
     if (pending.status === 'cancelled') {
       await say({ text: 'Deploy request cancelled.' });
       return;
     }
     if (pending.status === 'selected' && pending.deploy) {
-      const incidentId = await handleCommand(pending.deploy, userId, PLATFORM, channelId, rawText);
-      await say({ text: ackMessage(incidentId, pending.deploy.type, pending.deploy) });
+      const result = await handleCommand(pending.deploy, userId, PLATFORM, channelId, rawText);
+      await say({
+        text: result.immediateReply ?? ackMessage(result.incidentId, pending.deploy.type, pending.deploy),
+      });
       return;
     }
 
-    const routed = await routeMessage(rawText, PLATFORM, userId);
-    const parsed = routed.parsed;
+    const invPending = tryResolvePendingInvestigateChoice(PLATFORM, channelId, userId, rawText);
+    if (invPending.status === 'cancelled') {
+      await say({ text: 'Investigation cancelled.' });
+      return;
+    }
+    if (invPending.status === 'selected' && invPending.command) {
+      const result = await handleCommand(invPending.command, userId, PLATFORM, channelId, rawText);
+      await say({
+        text:
+          result.immediateReply ??
+          ackMessage(result.incidentId, invPending.command.type, invPending.command),
+      });
+      return;
+    }
+
+    const routed = await routeMessage(rawText, PLATFORM, userId, channelId);
+    let parsed = routed.parsed;
     if (parsed.type === 'unknown' && routed.conversationalReply) {
       await say({ text: routed.conversationalReply });
       return;
@@ -203,8 +315,30 @@ export function createSlackApp(): App {
         await say({ text: prompt });
         return;
       }
-      const incidentId = await handleCommand(parsed, userId, PLATFORM, channelId, rawText);
-      await say({ text: ackMessage(incidentId, parsed.type, parsed) });
+      if (parsed.type === 'deploy') {
+        if (!parsed.createNamespace && (await needsNamespaceCreatePrompt(parsed))) {
+          storeNamespaceCreatePrompt(PLATFORM, channelId, userId, parsed);
+          await say({ text: buildNamespaceCreatePrompt(parsed) });
+          return;
+        }
+      }
+      if (parsed.type === 'investigate') {
+        const flow = await resolveInvestigateFlow(parsed, rawText);
+        if (flow.kind === 'reply') {
+          await say({ text: flow.text });
+          return;
+        }
+        if (flow.kind === 'confirm') {
+          storeInvestigateChoice(PLATFORM, channelId, userId, rawText, parsed, flow.candidates);
+          await say({ text: flow.prompt });
+          return;
+        }
+        if (flow.kind === 'ready') {
+          parsed = flow.command;
+        }
+      }
+      const result = await handleCommand(parsed, userId, PLATFORM, channelId, rawText);
+      await say({ text: result.immediateReply ?? ackMessage(result.incidentId, parsed.type, parsed) });
     } catch (err) {
       log('error', AGENT, 'Error handling Slack DM', {
         incidentId: 'N/A',

@@ -12,6 +12,10 @@ Compiler migration roadmap:
 
 **[docs/TOOL-COMPILER-ROADMAP.md](docs/TOOL-COMPILER-ROADMAP.md)**
 
+OpenRouter multi-model + MCP guidance:
+
+**[docs/LLM-AND-MCP.md](docs/LLM-AND-MCP.md)**
+
 ```
 Slack/Telegram → commander → orchestrator (LangGraph)
 Watcher ──────────────────────┘
@@ -37,13 +41,63 @@ Tools: investigator | security | brain | executor | gitops | hil
 
 ```bash
 cp secrets.example.yaml .env.local
-# fill GEMINI_API_KEY, GITOPS_REPO_URL, ALLOWED_USERS, etc.
+# fill OPENROUTER_API_KEY, GITOPS_REPO_URL, ALLOWED_USERS, etc.
 
 export $(grep -v '^#' .env.local | xargs)
-docker-compose up --build
+
+# Podman Desktop: cluster API is on the host (e.g. https://127.0.0.1:50750).
+# Containers reach it via host.containers.internal — no kube-proxy required.
+
+# Podman (recommended): clean start avoids stale dependency errors
+./scripts/compose-up.sh
+
+# Or manually:
+# podman compose down --remove-orphans && podman compose up --build
 ```
 
 HIL dashboard: http://localhost:8085
+
+## Suggest your own fix (HIL)
+
+For every pending incident you can override the bot plan:
+
+- **Telegram**: tap **Suggest fix** on the approval message, then reply (e.g. `restart`, `add imagePullSecrets ghcr-creds`, `set image to ghcr.io/org/app:v2`). You get a parsed plan preview, then **Apply my fix** or **Approve**.
+- **Web**: open the HIL dashboard — each card has a **Suggest your own fix** form (update plan or apply immediately).
+
+Suggestions are parsed with fast rules when possible, otherwise **brain** `POST /suggest-plan` (LLM). The stored approval plan is replaced before execution.
+
+## Direct cluster patch (no GitOps)
+
+For approved `git_patch` fixes you can apply changes **straight to the cluster** (Deployment/StatefulSet JSON patch) without committing to a GitOps repo:
+
+| `GITOPS_PATCH_MODE` | Behavior |
+|---------------------|----------|
+| `cluster` | **Default in compose.** Live API patch only; no mirror/Argo. |
+| `gitops` | GitOps mirror + push only (`GITOPS_REPO_URL` required). |
+| `auto` | Cluster first; fall back to GitOps mirror only when `GITOPS_REPO_URL` is set. |
+
+Set in `.env.local` (see `secrets.example.yaml`). Operator suggestions from **Suggest fix** default to `patchTarget: cluster` on the plan.
+
+Per-plan override: `"patchTarget": "cluster"` on `RemediationPlan` (e.g. from brain or HIL).
+
+Legacy: `GITOPS_CLUSTER_PATCH_FIRST=false` forces gitops-only when mode is `auto`.
+
+## Namespace creation (deploy)
+
+If the target namespace does not exist, the bot **asks before creating it** (Telegram buttons or reply `yes` / `create namespace`). After you approve, gitops runs `kubectl apply` for the Namespace, then continues the deploy.
+
+## Failure analyst (deploy / act errors)
+
+When a deploy or remediation step fails, the orchestrator calls **brain** `POST /analyze-failure` (LLM + deterministic fallback). The model decides **retry with a changed plan** (e.g. different git branch) or **escalate** — it does not blindly run Helm after a kubectl TLS error. Disable with `FAILURE_ANALYSIS_ENABLED=false`.
+
+## Post-deploy verification recovery (reusable)
+
+After apply succeeds, unhealthy pods are classified by a reusable artifact (`shared/src/post-deploy-recovery.ts`):
+- `auto_retry` for safe transient issues (single restart attempt)
+- `ask_confirmation` when a retry may help but is uncertain (e.g. image pull failures)
+- `none` to escalate with a clear reason
+
+This prevents post-deploy runtime issues from being misclassified as apply failures.
 
 ## Autonomy
 
@@ -70,8 +124,12 @@ HIL dashboard: http://localhost:8085
 ## Telegram examples
 
 ```
+deploy httpd in simple namespace
+deploy nginx container to staging namespace
 deploy github.com/your-org/your-app on branch feature/x
 deploy github.com/bitnami/charts --namespace sandbox --no-git-push
+get all namespaces
+get pods in staging
 what's wrong with production/payments-api?
 rollback staging/frontend
 ```

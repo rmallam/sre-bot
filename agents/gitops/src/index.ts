@@ -12,6 +12,7 @@ import type { RemediateCommand } from '../../../shared/src/types.js';
 import { RepoMirror } from './repo-mirror.js';
 import { setRepoMirror, handleRemediate } from './remediator.js';
 import { handleArgoWaitSync, handleArgoRolloutPromote } from './argo-tools.js';
+import { undeployWorkload } from './undeploy.js';
 
 const AGENT = 'gitops-agent';
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
@@ -86,6 +87,26 @@ async function main(): Promise<void> {
         }
       });
     return;
+  });
+
+  app.post('/undeploy', async (req: Request, res: Response) => {
+    const body = req.body as { namespace?: string; releaseName?: string; incidentId?: string };
+    const namespace = body.namespace?.trim();
+    const releaseName = body.releaseName?.trim();
+    const incidentId = body.incidentId ?? 'undeploy';
+
+    if (!namespace || !releaseName) {
+      res.status(400).json({ error: 'namespace and releaseName are required' });
+      return;
+    }
+
+    try {
+      const result = await undeployWorkload({ namespace, releaseName, incidentId });
+      res.json(result);
+    } catch (err) {
+      log('error', AGENT, 'POST /undeploy failed', { incidentId, error: String(err) });
+      res.status(500).json({ ok: false, error: String(err) });
+    }
   });
 
   app.post('/argo/wait-sync', async (req: Request, res: Response) => {

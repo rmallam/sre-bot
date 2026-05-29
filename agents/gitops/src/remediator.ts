@@ -8,6 +8,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { buildKubeConfig } from './kube-config.js';
 import { log, postWithRetry } from '../../../shared/src/http.js';
 import type { RemediateCommand, RemediationResult } from '../../../shared/src/types.js';
 import { RepoMirror } from './repo-mirror.js';
@@ -15,6 +16,14 @@ import { waitForSync } from './argocd.js';
 import { pushHelmToAppRepo, buildArgoApplicationManifest } from './app-repo.js';
 import * as YAML from 'yaml';
 import { applyRepoDirect } from './repo-direct.js';
+import { applyClusterGitPatch } from './cluster-patch.js';
+import {
+  gitPatchTarget,
+  shouldTryClusterPatch,
+  shouldTryGitOpsMirror,
+} from './patch-strategy.js';
+import { sendDeployProgress } from '../../../shared/src/deploy-notify.js';
+import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
 
 const AGENT = 'gitops-agent';
 
@@ -40,8 +49,7 @@ const GITOPS_USE_PR = (process.env['GITOPS_USE_PR'] ?? 'false').toLowerCase() ==
 
 function makeK8sClient(): k8s.CustomObjectsApi | null {
   try {
-    const kc = new k8s.KubeConfig();
-    kc.loadFromDefault();
+    const kc = buildKubeConfig();
     return kc.makeApiClient(k8s.CustomObjectsApi);
   } catch (err: unknown) {
     log('warn', AGENT, 'Failed to initialise Kubernetes client — CRD reset will be skipped', {
@@ -156,6 +164,10 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
         resourceName,
         plan,
         dryRun: cmd.executionOptions?.dryRun,
+        createNamespace: cmd.executionOptions?.createNamespace,
+        platform,
+        channelId,
+        orchestratorManaged: Boolean(runId),
       });
       argoCDSyncStatus = 'Unknown';
     } else if (plan.action === 'helm_deploy') {
@@ -202,6 +214,70 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
       });
       commitSha = applyResult.commitSha;
       commitUrl = applyResult.commitUrl;
+    } else if (plan.action === 'git_patch') {
+      const patchTarget = gitPatchTarget(cmd);
+      const hasGitOpsRepo = Boolean(process.env['GITOPS_REPO_URL']?.trim());
+      log('info', AGENT, 'git_patch apply strategy', {
+        incidentId,
+        patchTarget,
+        hasGitOpsRepo,
+      });
+
+      let clusterApplied = false;
+      if (shouldTryClusterPatch(patchTarget, plan.proposedPatch.length > 0)) {
+        const clusterResult = await applyClusterGitPatch(cmd);
+        if (clusterResult.success) {
+          clusterApplied = true;
+          success = true;
+          dryRunPassed = true;
+          argoCDSyncStatus = 'Unknown';
+          log('info', AGENT, 'git_patch applied on cluster', {
+            incidentId,
+            patchTarget,
+            target: `${clusterResult.targetKind}/${clusterResult.targetName}`,
+          });
+          if (platform && channelId) {
+            await sendDeployProgress(
+              { incidentId, platform, channelId },
+              `✅ Applied fix on cluster: ${clusterResult.targetKind}/${clusterResult.targetName}`
+            );
+          }
+        } else if (patchTarget === 'cluster' || (patchTarget === 'auto' && !hasGitOpsRepo)) {
+          throw new Error(
+            clusterResult.error ??
+              'Could not apply fix on the cluster (check gitops-agent kubeconfig / API access)'
+          );
+        } else {
+          log('warn', AGENT, 'Cluster patch failed — trying GitOps mirror', {
+            incidentId,
+            patchTarget,
+            error: clusterResult.error,
+          });
+        }
+      }
+
+      if (
+        shouldTryGitOpsMirror(patchTarget, clusterApplied, hasGitOpsRepo) &&
+        plan.proposedPatch.length > 0
+      ) {
+        const applyResult = await repoMirror.applyPatchAndPush({
+          incidentId,
+          manifestPath: plan.targetManifestPath,
+          patch: plan.proposedPatch,
+          commitMessage: plan.commitMessage,
+          openPR: GITOPS_USE_PR,
+        });
+        commitSha = applyResult.commitSha;
+        commitUrl = applyResult.commitUrl;
+        if (patchTarget === 'gitops' || !clusterApplied) {
+          success = true;
+          dryRunPassed = true;
+        }
+      } else if (patchTarget === 'gitops' && !hasGitOpsRepo) {
+        throw new Error(
+          'GITOPS_PATCH_MODE=gitops requires GITOPS_REPO_URL; use cluster or auto for direct cluster patches'
+        );
+      }
     } else {
       const applyResult = await repoMirror.applyPatchAndPush({
         incidentId,
@@ -214,31 +290,34 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
       commitUrl = applyResult.commitUrl;
     }
 
-    dryRunPassed = true;
+    if (!success) {
+      dryRunPassed = true;
 
-    if (plan.action !== 'repo_apply' && ARGOCD_URL) {
-      const argoAppName = `${namespace}-${resourceName}`;
-      const syncStatus = await waitForSync(argoAppName, ARGOCD_SYNC_TIMEOUT_MS);
-      switch (syncStatus) {
-        case 'Synced':
-          argoCDSyncStatus = 'Synced';
-          break;
-        case 'Degraded':
-          argoCDSyncStatus = 'Degraded';
-          break;
-        case 'Timeout':
-          argoCDSyncStatus = 'OutOfSync';
-          break;
-        default:
-          argoCDSyncStatus = 'Unknown';
+      if (plan.action !== 'repo_apply' && ARGOCD_URL) {
+        const argoAppName = `${namespace}-${resourceName}`;
+        const syncStatus = await waitForSync(argoAppName, ARGOCD_SYNC_TIMEOUT_MS);
+        switch (syncStatus) {
+          case 'Synced':
+            argoCDSyncStatus = 'Synced';
+            break;
+          case 'Degraded':
+            argoCDSyncStatus = 'Degraded';
+            break;
+          case 'Timeout':
+            argoCDSyncStatus = 'OutOfSync';
+            break;
+          default:
+            argoCDSyncStatus = 'Unknown';
+        }
+      } else if (plan.action !== 'repo_apply') {
+        argoCDSyncStatus = 'Unknown';
       }
-    } else if (plan.action !== 'repo_apply') {
-      argoCDSyncStatus = 'Unknown';
+
+      success = plan.action === 'repo_apply'
+        ? true
+        : argoCDSyncStatus === 'Synced' || argoCDSyncStatus === 'Unknown';
     }
 
-    success = plan.action === 'repo_apply'
-      ? true
-      : argoCDSyncStatus === 'Synced' || argoCDSyncStatus === 'Unknown';
     if (success) {
       await resetAttemptCount(incidentId, namespace, resourceName);
     }
@@ -247,6 +326,21 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
     dryRunPassed = dryRunPassed ?? false;
     success = false;
     log('error', AGENT, 'Remediation failed', { incidentId, error });
+    if (platform && channelId) {
+      await sendDeployProgress(
+        { incidentId, platform, channelId },
+        `Deploy failed: ${humanizeOperatorError(error)}`
+      );
+    }
+  }
+
+  // For orchestrator-managed runs, final success/failure messaging happens in
+  // orchestrator verifyNode to avoid "completed" before readiness is verified.
+  if (success && platform && channelId && !runId) {
+    await sendDeployProgress(
+      { incidentId, platform, channelId },
+      `Deploy completed successfully.\nVerify: oc get ns ${namespace}\noc get pods -n ${namespace}`
+    );
   }
 
   const result: RemediationResult = {
@@ -263,19 +357,23 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
     ...(error ? { error } : {}),
   };
 
-  await postWithRetry({
-    url: `${COMMANDER_URL}/confirm`,
-    payload: result,
-    incidentId,
-    callerAgent: AGENT,
-  });
+  // Orchestrator-managed runs already own user messaging and final status.
+  // Avoid duplicate/conflicting "Done"/"failed" messages from gitops in chat.
+  if (!runId) {
+    await postWithRetry({
+      url: `${COMMANDER_URL}/confirm`,
+      payload: result,
+      incidentId,
+      callerAgent: AGENT,
+    });
 
-  await postWithRetry({
-    url: `${HIL_URL}/confirm`,
-    payload: result,
-    incidentId,
-    callerAgent: AGENT,
-  });
+    await postWithRetry({
+      url: `${HIL_URL}/confirm`,
+      payload: result,
+      incidentId,
+      callerAgent: AGENT,
+    });
+  }
 
   return result;
 }

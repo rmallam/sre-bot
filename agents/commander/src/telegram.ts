@@ -29,6 +29,24 @@ import {
   resolvePendingChoiceSelection,
   tryResolvePendingChoice,
 } from './deploy-choice.js';
+import {
+  buildNamespaceCreatePrompt,
+  needsNamespaceCreatePrompt,
+  resolveNamespaceCreateSelection,
+  storeNamespaceCreatePrompt,
+  tryResolveNamespaceCreateChoice,
+} from './namespace-prompt.js';
+import {
+  resolveInvestigateFlow,
+  resolveInvestigateChoiceSelection,
+  storeInvestigateChoice,
+  tryResolvePendingInvestigateChoice,
+} from './investigate-choice.js';
+import {
+  buildSuggestFixPrompt,
+  storeHilSuggestPrompt,
+  tryConsumeSuggestReply,
+} from './hil-suggest-pending.js';
 
 const AGENT = 'commander-agent';
 const PLATFORM = 'telegram' as const;
@@ -46,19 +64,60 @@ function channelId(ctx: Context): string {
 
 function ackMessage(incidentId: string, type: string, parsed?: import('./parser.js').ParsedCommand): string {
   if (type === 'unknown') {
-    return "Sorry, I didn't understand that. Try:\n/deploy github.com/org/repo\nor: deploy my app github.com/org/repo --namespace staging";
+    return (
+      "Sorry, I didn't understand that. Try:\n" +
+      '• get all namespaces\n' +
+      '• get pods in staging\n' +
+      '• investigate my cluster health\n' +
+      '• /deploy github.com/org/repo'
+    );
   }
   if (type === 'deploy' && parsed?.type === 'deploy') {
+    if (parsed.stackServices && parsed.stackServices.length > 1) {
+      return (
+        `🚀 Stack deploy started — tracking \`${incidentId}\`\n` +
+        `Services: ${parsed.stackServices.map((s) => s.name).join(', ')}\n` +
+        `Namespace: ${parsed.namespace}\n` +
+        `Mode: ${parsed.deployStrategy === 'direct' ? 'Direct apply (generated Helm per service)' : 'GitOps'}\n\n` +
+        `I'll infer service dependencies from code, create Helm charts per service, and deploy in dependency order.`
+      );
+    }
     const strategyText =
       parsed.deployStrategy === 'direct'
         ? 'Direct apply from source repo (no Git push)'
         : 'GitOps flow (push app/GitOps repos + Argo CD)';
+    if (parsed.containerImage) {
+      return (
+        `🚀 Deploy started — tracking \`${incidentId}\`\n` +
+        `Image: ${parsed.containerImage}\n` +
+        `App: ${parsed.appName ?? 'app'}\n` +
+        `Namespace: ${parsed.namespace}\n` +
+        `Mode: direct apply (generated Helm chart)\n\n` +
+        `I'll send step-by-step updates here.`
+      );
+    }
     return (
       `🚀 Deploy started — tracking \`${incidentId}\`\n` +
       `Repo: ${parsed.githubRepo} @ ${parsed.gitRef}\n` +
       `Namespace: ${parsed.namespace}\n` +
       `Mode: ${strategyText}\n\n` +
-      `I'll clone the repo, choose the right deploy path, and message you when done.`
+      `I'll send step-by-step updates here (namespace, clone, apply, fallbacks).`
+    );
+  }
+  if (type === 'delete' && parsed?.type === 'delete') {
+    return `🗑️ Removing \`${parsed.resourceName}\` from namespace \`${parsed.namespace}\`…`;
+  }
+  if (type === 'investigate' && parsed?.type === 'investigate') {
+    const detail =
+      parsed.scope === 'cluster'
+        ? 'Checking overall cluster health (nodes, deployments, recent warnings)...'
+        : parsed.scope === 'namespace'
+          ? `Checking everything in the ${parsed.namespace} namespace...`
+          : `Looking into ${parsed.label}${parsed.podName ? ` (pod ${parsed.podName})` : ''}...`;
+    return (
+      `🔍 Investigation started — \`${incidentId}\`\n` +
+      `${detail}\n\n` +
+      `I'll dig through pods, events, and logs and report back.`
     );
   }
   return `Got it! Autonomous run started — tracking: ${incidentId}\nI'll message you when done.`;
@@ -76,6 +135,139 @@ async function safeReply(ctx: Context, text: string): Promise<void> {
   }
 }
 
+/** Replace an HIL approval card — plain text, strip buttons (original is MarkdownV2). */
+async function editHilApprovalCard(ctx: Context, text: string, incidentId: string): Promise<void> {
+  try {
+    await ctx.editMessageText(text, { reply_markup: { inline_keyboard: [] } });
+  } catch (err) {
+    log('warn', AGENT, 'editMessageText failed for HIL approval card', {
+      incidentId,
+      error: String(err),
+    });
+    await safeReply(ctx, text).catch(() => {});
+  }
+}
+
+/** Forward approve/reject to HIL without blocking the Telegram callback handler. */
+function forwardHilAction(
+  ctx: Context,
+  action: string,
+  incidentId: string,
+  userId: string
+): void {
+  void (async () => {
+    try {
+      const res = await fetch(`${HIL_URL}/api/${action}/${incidentId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, platform: PLATFORM }),
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      if (res.ok) return;
+
+      const errJson = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        status?: string;
+        currentStatus?: string;
+      };
+      const errMsg = errJson?.error ?? `HTTP ${res.status}`;
+      if (errJson?.status === 'already_handled') {
+        await safeReply(
+          ctx,
+          `ℹ️ Incident ${incidentId} was already handled (${errJson.currentStatus ?? 'unknown'}).`
+        );
+      } else if (errMsg === 'not_found') {
+        await safeReply(
+          ctx,
+          `⚠️ Incident ${incidentId} is no longer pending — it may have expired or the bot restarted.`
+        );
+      } else if (errMsg === 'expired') {
+        await safeReply(ctx, `⏰ Approval window expired for ${incidentId}.`);
+      } else {
+        await safeReply(ctx, `⚠️ HIL ${action} failed for ${incidentId}: ${errMsg}`);
+      }
+    } catch (err) {
+      log('error', AGENT, 'Failed to forward Telegram callback query to HIL agent', {
+        incidentId,
+        error: String(err),
+      });
+      await safeReply(
+        ctx,
+        `⚠️ Could not reach HIL agent for ${incidentId}. Approval may still be processing — check run status.`
+      );
+    }
+  })();
+}
+
+async function submitOperatorSuggestion(
+  ctx: Context,
+  incidentId: string,
+  suggestion: string,
+  uid: string
+): Promise<void> {
+  try {
+    const res = await fetch(`${HIL_URL}/api/suggest-fix/${incidentId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        suggestion,
+        userId: uid,
+        platform: PLATFORM,
+        applyNow: false,
+      }),
+    });
+    const body = (await res.json()) as {
+      ok?: boolean;
+      error?: string;
+      summary?: string;
+      source?: string;
+    };
+    if (!res.ok || !body.ok) {
+      await safeReply(
+        ctx,
+        `Could not parse suggestion: ${body.error ?? res.statusText}\nTry again or tap Suggest fix on the incident.`
+      );
+      return;
+    }
+    const sourceLabel = body.source === 'rules' ? 'quick parse' : 'AI parse';
+    await ctx.reply(
+      `Your suggested fix (${sourceLabel}):\n\n${body.summary ?? 'Plan updated.'}\n\n` +
+        `Tap **Apply my fix** to run it, or **Approve** if you are happy with the updated plan.`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('Apply my fix', `hil_approve_${incidentId}`)],
+        [Markup.button.callback('Reject', `hil_reject_${incidentId}`)],
+      ])
+    );
+  } catch (err) {
+    log('error', AGENT, 'Failed to submit operator suggestion', { incidentId, error: String(err) });
+    await safeReply(ctx, 'Failed to send suggestion to HIL. Please try again.');
+  }
+}
+
+async function launchDeploy(ctx: Context, deploy: import('./parser.js').DeployCmd, rawText: string): Promise<void> {
+  const uid = userId(ctx);
+  const cid = channelId(ctx);
+
+  if (!deploy.createNamespace && (await needsNamespaceCreatePrompt(deploy))) {
+    storeNamespaceCreatePrompt(PLATFORM, cid, uid, deploy);
+    await ctx.reply(
+      buildNamespaceCreatePrompt(deploy),
+      Markup.inlineKeyboard([
+        [Markup.button.callback('Yes, create namespace', 'namespace_create_yes')],
+        [Markup.button.callback('Cancel', 'namespace_create_cancel')],
+      ])
+    );
+    return;
+  }
+
+  const result = await handleCommand(deploy, uid, PLATFORM, cid, rawText);
+  await safeReply(
+    ctx,
+    result.immediateReply ?? ackMessage(result.incidentId, deploy.type, deploy)
+  );
+}
+
 async function processText(ctx: Context, rawText: string): Promise<void> {
   const uid = userId(ctx);
   const cid = channelId(ctx);
@@ -85,23 +277,55 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
     return;
   }
 
+  const suggestReply = tryConsumeSuggestReply(PLATFORM, cid, uid, rawText);
+  if (suggestReply.status === 'ready') {
+    await submitOperatorSuggestion(ctx, suggestReply.incidentId, suggestReply.suggestion, uid);
+    return;
+  }
+
+  const nsDecision = tryResolveNamespaceCreateChoice(PLATFORM, cid, uid, rawText);
+  if (nsDecision.status === 'cancelled') {
+    await safeReply(ctx, 'Deploy cancelled — namespace will not be created.');
+    return;
+  }
+  if (nsDecision.status === 'approved' && nsDecision.deploy) {
+    await launchDeploy(ctx, nsDecision.deploy, rawText);
+    return;
+  }
+
   const decision = tryResolvePendingChoice(PLATFORM, cid, uid, rawText);
   if (decision.status === 'cancelled') {
     await safeReply(ctx, 'Deploy request cancelled.');
     return;
   }
   if (decision.status === 'selected' && decision.deploy) {
-    const incidentId = await handleCommand(decision.deploy, uid, PLATFORM, cid, rawText);
-    await safeReply(ctx, ackMessage(incidentId, decision.deploy.type, decision.deploy));
+    await launchDeploy(ctx, decision.deploy, rawText);
     return;
   }
 
-  const routed = await routeMessage(rawText, PLATFORM, uid);
-  const parsed = routed.parsed;
+  const invDecision = tryResolvePendingInvestigateChoice(PLATFORM, cid, uid, rawText);
+  if (invDecision.status === 'cancelled') {
+    await safeReply(ctx, 'Investigation cancelled.');
+    return;
+  }
+  if (invDecision.status === 'selected' && invDecision.command) {
+    const result = await handleCommand(invDecision.command, uid, PLATFORM, cid, rawText);
+    await safeReply(
+      ctx,
+      result.immediateReply ?? ackMessage(result.incidentId, invDecision.command.type, invDecision.command)
+    );
+    return;
+  }
+
+  const routed = await routeMessage(rawText, PLATFORM, uid, cid);
+  let parsed = routed.parsed;
 
   if (parsed.type === 'unknown' && routed.conversationalReply) {
     await safeReply(ctx, routed.conversationalReply);
     return;
+  }
+  if (routed.conversationalReply && parsed.type === 'deploy') {
+    await safeReply(ctx, routed.conversationalReply);
   }
   log('info', AGENT, 'Telegram message received', {
     incidentId: 'N/A',
@@ -125,8 +349,38 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
       );
       return;
     }
-    const incidentId = await handleCommand(parsed, uid, PLATFORM, cid, rawText);
-    await safeReply(ctx, ackMessage(incidentId, parsed.type, parsed));
+    if (parsed.type === 'investigate') {
+      const flow = await resolveInvestigateFlow(parsed, rawText);
+      if (flow.kind === 'reply') {
+        await safeReply(ctx, flow.text);
+        return;
+      }
+      if (flow.kind === 'confirm') {
+        storeInvestigateChoice(PLATFORM, cid, uid, rawText, parsed, flow.candidates);
+        const choiceButtons = flow.candidates.slice(0, 4).map((c, i) =>
+          Markup.button.callback(`${i + 1}. ${c.resourceName}`, `investigate_choice_${i}`)
+        );
+        const rows: ReturnType<typeof Markup.button.callback>[][] = [];
+        for (let i = 0; i < choiceButtons.length; i += 2) {
+          rows.push(choiceButtons.slice(i, i + 2));
+        }
+        rows.push([Markup.button.callback('Cancel', 'investigate_choice_cancel')]);
+        await ctx.reply(flow.prompt, Markup.inlineKeyboard(rows));
+        return;
+      }
+      if (flow.kind === 'ready') {
+        parsed = flow.command;
+      }
+    }
+    if (parsed.type === 'deploy') {
+      await launchDeploy(ctx, parsed, rawText);
+      return;
+    }
+    const result = await handleCommand(parsed, uid, PLATFORM, cid, rawText);
+    await safeReply(
+      ctx,
+      result.immediateReply ?? ackMessage(result.incidentId, parsed.type, parsed)
+    );
   } catch (err) {
     log('error', AGENT, 'Error handling Telegram message', {
       incidentId: 'N/A',
@@ -165,7 +419,8 @@ export function createTelegramBot(): Telegraf {
         'Commands:\n' +
         '/deploy <github-url> [@branch] — deploy a service\n' +
         '/deploy <github-url> --no-git-push — deploy directly from source repo\n' +
-        '/investigate [namespace/]<resource> — diagnose issues\n' +
+        '/get namespaces|pods|deployments — or: get all pods\n' +
+        '/investigate — e.g. cluster health, frappe deployment\n' +
         '/rollback [namespace/]<resource> — roll back a deployment\n\n' +
         'You can also send free-form messages and I will try to understand.'
     );
@@ -182,6 +437,12 @@ export function createTelegramBot(): Telegraf {
       return;
     }
     await processText(ctx, `deploy ${rawText}`);
+  });
+
+  // ── /get ───────────────────────────────────────────────────────────────────
+  bot.command('get', async (ctx) => {
+    const rest = ctx.message.text.replace(/^\/get\s*/i, '').trim() || 'namespaces';
+    await processText(ctx, `get ${rest}`);
   });
 
   // ── /investigate ───────────────────────────────────────────────────────────
@@ -206,6 +467,55 @@ export function createTelegramBot(): Telegraf {
   // ── Callback Query handler ──────────────────────────────────────────────────
   bot.on('callback_query', async (ctx) => {
     const data = (ctx.callbackQuery as { data?: string }).data ?? '';
+    if (data.startsWith('investigate_choice_')) {
+      const uid = String(ctx.callbackQuery.from.id);
+      const cid = channelId(ctx);
+      const suffix = data.replace('investigate_choice_', '');
+      if (suffix === 'cancel') {
+        const resolved = resolveInvestigateChoiceSelection(PLATFORM, cid, uid, 'cancel');
+        await ctx.answerCbQuery('Cancelled');
+        if (resolved.status === 'cancelled') {
+          await ctx.editMessageText('Investigation cancelled.').catch(() => {});
+        }
+        return;
+      }
+      const index = parseInt(suffix, 10);
+      if (Number.isNaN(index)) {
+        await ctx.answerCbQuery('Invalid choice');
+        return;
+      }
+      const resolved = resolveInvestigateChoiceSelection(PLATFORM, cid, uid, index);
+      if (resolved.status === 'none') {
+        await ctx.answerCbQuery('Choice expired. Please try again.');
+        return;
+      }
+      if (!resolved.command) {
+        await ctx.answerCbQuery('No selection');
+        return;
+      }
+      await ctx.answerCbQuery('Starting investigation…');
+      try {
+        const result = await handleCommand(
+          resolved.command,
+          uid,
+          PLATFORM,
+          cid,
+          `investigate choice: ${resolved.command.label}`
+        );
+        await ctx.editMessageText(
+          result.immediateReply ??
+            ackMessage(result.incidentId, resolved.command.type, resolved.command)
+        ).catch(() => {});
+      } catch (err) {
+        log('error', AGENT, 'Failed to start investigate after workload selection', {
+          incidentId: 'N/A',
+          error: String(err),
+        });
+        await ctx.editMessageText('⚠️ Failed to start investigation. Please try again.').catch(() => {});
+      }
+      return;
+    }
+
     if (data.startsWith('deploy_choice_')) {
       const choice = data.replace('deploy_choice_', '') as 'gitops' | 'direct' | 'cancel';
       const uid = String(ctx.callbackQuery.from.id);
@@ -228,7 +538,18 @@ export function createTelegramBot(): Telegraf {
 
       await ctx.answerCbQuery(`Selected: ${choice}`);
       try {
-        const incidentId = await handleCommand(
+        if (!resolved.deploy.createNamespace && (await needsNamespaceCreatePrompt(resolved.deploy))) {
+          storeNamespaceCreatePrompt(PLATFORM, cid, uid, resolved.deploy);
+          await ctx.editMessageText(
+            buildNamespaceCreatePrompt(resolved.deploy),
+            Markup.inlineKeyboard([
+              [Markup.button.callback('Yes, create namespace', 'namespace_create_yes')],
+              [Markup.button.callback('Cancel', 'namespace_create_cancel')],
+            ])
+          ).catch(() => {});
+          return;
+        }
+        const result = await handleCommand(
           resolved.deploy,
           uid,
           PLATFORM,
@@ -236,7 +557,8 @@ export function createTelegramBot(): Telegraf {
           `deploy choice: ${choice}`
         );
         await ctx.editMessageText(
-          ackMessage(incidentId, resolved.deploy.type, resolved.deploy)
+          result.immediateReply ??
+            ackMessage(result.incidentId, resolved.deploy.type, resolved.deploy)
         ).catch(() => {});
       } catch (err) {
         log('error', AGENT, 'Failed to start deploy after strategy selection', {
@@ -247,6 +569,54 @@ export function createTelegramBot(): Telegraf {
         });
         await ctx.editMessageText('⚠️ Failed to start deploy. Please try again.').catch(() => {});
       }
+      return;
+    }
+
+    if (data === 'namespace_create_yes' || data === 'namespace_create_cancel') {
+      const uid = String(ctx.callbackQuery.from.id);
+      const cid = channelId(ctx);
+      const selection = data === 'namespace_create_yes' ? 'approve' : 'cancel';
+      const resolved = resolveNamespaceCreateSelection(PLATFORM, cid, uid, selection);
+      if (resolved.status === 'none') {
+        await ctx.answerCbQuery('Prompt expired. Run deploy again.');
+        return;
+      }
+      if (resolved.status === 'cancelled') {
+        await ctx.answerCbQuery('Cancelled');
+        await ctx.editMessageText('Deploy cancelled — namespace not created.').catch(() => {});
+        return;
+      }
+      if (!resolved.deploy) {
+        await ctx.answerCbQuery('No deploy context');
+        return;
+      }
+      await ctx.answerCbQuery('Creating namespace and starting deploy…');
+      try {
+        const result = await handleCommand(
+          resolved.deploy,
+          uid,
+          PLATFORM,
+          cid,
+          'namespace create approved'
+        );
+        await ctx.editMessageText(
+          result.immediateReply ??
+            ackMessage(result.incidentId, resolved.deploy.type, resolved.deploy)
+        ).catch(() => {});
+      } catch (err) {
+        log('error', AGENT, 'Failed deploy after namespace approval', { error: String(err) });
+        await ctx.editMessageText('⚠️ Failed to start deploy. Please try again.').catch(() => {});
+      }
+      return;
+    }
+
+    if (data.startsWith('hil_suggest_')) {
+      const incidentId = data.slice('hil_suggest_'.length);
+      const uid = String(ctx.callbackQuery.from.id);
+      const cid = channelId(ctx);
+      storeHilSuggestPrompt(PLATFORM, cid, uid, incidentId);
+      await ctx.answerCbQuery('Send your fix as the next message');
+      await safeReply(ctx, buildSuggestFixPrompt(incidentId));
       return;
     }
 
@@ -261,39 +631,32 @@ export function createTelegramBot(): Telegraf {
 
     log('info', AGENT, `Telegram callback query received: ${action}`, { incidentId, userId });
 
+    // Telegram requires answerCbQuery within a few seconds — do not await HIL first.
+    const ackLabel =
+      action === 'approve' ? '✅ Approved — applying…' : action === 'reject' ? '❌ Rejected' : 'Processing…';
     try {
-      const res = await fetch(`${HIL_URL}/api/${action}/${incidentId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, platform: PLATFORM }),
-      });
-
-      if (res.ok) {
-        if (action === 'approve') {
-          await ctx.answerCbQuery('✅ Approved! Dispatching remediation…');
-          await ctx.editMessageText(
-            `✅ *Approved* by @${userId} via Telegram.\nDispatching remediation for \`${incidentId}\`…`,
-            { parse_mode: 'Markdown' }
-          ).catch(() => {});
-        } else {
-          await ctx.answerCbQuery('❌ Rejected');
-          await ctx.editMessageText(
-            `❌ *Rejected* by @${userId} via Telegram.`,
-            { parse_mode: 'Markdown' }
-          ).catch(() => {});
-        }
-      } else {
-        const errJson = await res.json() as any;
-        const errMsg = errJson?.error ?? 'Request failed';
-        await ctx.answerCbQuery(`⚠️ Action failed: ${errMsg}`);
-      }
-    } catch (err) {
-      log('error', AGENT, 'Failed to forward Telegram callback query to HIL agent', {
+      await ctx.answerCbQuery(ackLabel);
+    } catch (ackErr) {
+      log('warn', AGENT, 'answerCbQuery failed (may be stale)', {
         incidentId,
-        error: String(err),
+        error: String(ackErr),
       });
-      await ctx.answerCbQuery('⚠️ Connection to HIL agent failed.');
     }
+
+    const actorLabel = ctx.callbackQuery.from.username
+      ? `@${ctx.callbackQuery.from.username}`
+      : `user ${userId}`;
+    if (action === 'approve') {
+      await editHilApprovalCard(
+        ctx,
+        `✅ Approved by ${actorLabel} via Telegram.\nDispatching remediation for ${incidentId}…`,
+        incidentId
+      );
+    } else if (action === 'reject') {
+      await editHilApprovalCard(ctx, `❌ Rejected by ${actorLabel} via Telegram.`, incidentId);
+    }
+
+    forwardHilAction(ctx, action, incidentId, userId);
   });
 
   // ── Error handler ──────────────────────────────────────────────────────────

@@ -20,7 +20,8 @@ import type {
 } from '../../../shared/src/types.js';
 import { postWithRetry, log } from '../../../shared/src/http.js';
 import { gatherPodFacts } from './k8s-facts.js';
-import { gatherPreDeployFacts } from './pre-deploy.js';
+import { gatherPreDeployFacts, checkNamespaceExists } from './pre-deploy.js';
+import { gatherStackPreDeployFacts } from './stack-predeploy.js';
 import {
   ensureMirrorSynced,
   startMirrorSyncScheduler,
@@ -29,6 +30,12 @@ import {
 } from './git-mirror.js';
 import { gatherFactsSync } from './facts-sync.js';
 import { verifyDeployment } from './verify.js';
+import { clusterGet, type ClusterGetResource } from './cluster-get.js';
+import {
+  resolveWorkloadCandidates,
+  needsUserConfirmation,
+  AUTO_CONFIRM_SCORE,
+} from './workload-resolve.js';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -70,6 +77,24 @@ app.get('/health', (_req: Request, res: Response) => {
   });
 });
 
+// ── GET /namespace-check — lightweight exists probe for commander preflight ───
+
+app.get('/namespace-check', async (req: Request, res: Response) => {
+  const namespace = String(req.query.namespace ?? '').trim();
+  const incidentId = String(req.query.incidentId ?? 'namespace-check');
+  if (!namespace) {
+    res.status(400).json({ error: 'namespace query parameter required' });
+    return;
+  }
+  try {
+    const { namespaceExists } = await checkNamespaceExists(namespace, incidentId);
+    res.json({ namespace, exists: namespaceExists });
+  } catch (err) {
+    log('warn', AGENT, 'namespace-check failed', { namespace, error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ── GET /facts — synchronous facts for orchestrator ───────────────────────────
 
 app.get('/facts', async (req: Request, res: Response) => {
@@ -80,7 +105,12 @@ app.get('/facts', async (req: Request, res: Response) => {
   const incidentId = String(req.query.incidentId ?? 'unknown');
   const mode = (String(req.query.mode ?? 'diagnose')) as DiagnosisContext['mode'];
   const githubRepo = req.query.githubRepo ? String(req.query.githubRepo) : undefined;
+  const containerImage = req.query.containerImage ? String(req.query.containerImage) : undefined;
   const gitRef = req.query.gitRef ? String(req.query.gitRef) : undefined;
+  const investigateScope = req.query.investigateScope
+    ? (String(req.query.investigateScope) as import('../../../shared/src/types.js').InvestigateScope)
+    : undefined;
+  const rawMessage = req.query.rawMessage ? String(req.query.rawMessage) : undefined;
 
   if (!resourceName) {
     res.status(400).json({ error: 'resourceName required' });
@@ -96,11 +126,78 @@ app.get('/facts', async (req: Request, res: Response) => {
       podName,
       mode,
       githubRepo,
+      containerImage,
       gitRef,
+      investigateScope,
+      rawMessage,
     });
     res.json(facts);
   } catch (err) {
     log('error', AGENT, 'GET /facts failed', { incidentId, error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── GET /resolve-workload — match vague hints to workloads (commander confirmation) ─
+
+app.get('/resolve-workload', async (req: Request, res: Response) => {
+  const hint = String(req.query.hint ?? '');
+  const namespace = req.query.namespace ? String(req.query.namespace) : undefined;
+  const incidentId = String(req.query.incidentId ?? 'resolve');
+
+  try {
+    const candidates = await resolveWorkloadCandidates(
+      hint,
+      namespace,
+      incidentId,
+      5
+    );
+    const confirm = needsUserConfirmation(candidates);
+    const auto =
+      candidates.length === 1 && candidates[0]!.score >= AUTO_CONFIRM_SCORE
+        ? candidates[0]
+        : undefined;
+
+    res.json({
+      hint,
+      needsConfirmation: confirm,
+      autoConfirm: !confirm && auto ? auto : undefined,
+      candidates,
+    });
+  } catch (err) {
+    log('error', AGENT, 'GET /resolve-workload failed', { incidentId, error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── GET /get — list cluster resources (read-only, for commander chat) ─────────
+
+const GET_RESOURCES = new Set<ClusterGetResource>([
+  'namespaces',
+  'pods',
+  'deployments',
+  'nodes',
+  'services',
+  'events',
+]);
+
+app.get('/get', async (req: Request, res: Response) => {
+  const resource = String(req.query.resource ?? '') as ClusterGetResource;
+  const namespace = req.query.namespace ? String(req.query.namespace) : undefined;
+  const incidentId = String(req.query.incidentId ?? 'get');
+
+  if (!GET_RESOURCES.has(resource)) {
+    res.status(400).json({
+      error: 'resource required: namespaces|pods|deployments|nodes|services|events',
+    });
+    return;
+  }
+
+  try {
+    const result = await clusterGet(resource, namespace, incidentId);
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'GET /get failed', { incidentId, resource, error: String(err) });
     res.status(500).json({ error: String(err) });
   }
 });
@@ -211,9 +308,15 @@ async function runAnalysis(body: AnomalyDetected): Promise<void> {
 app.post('/pre-deploy', async (req: Request, res: Response): Promise<void> => {
   const body = req.body as DeployRequest;
 
-  if (!body?.incidentId || !body?.githubRepo || !body?.namespace) {
+  if (!body?.incidentId || !body?.namespace) {
     res.status(400).json({
-      error: 'Missing required fields: incidentId, githubRepo, namespace',
+      error: 'Missing required fields: incidentId, namespace',
+    });
+    return;
+  }
+  if (!body.githubRepo && !body.containerImage) {
+    res.status(400).json({
+      error: 'Either githubRepo or containerImage is required for pre-deploy',
     });
     return;
   }
@@ -222,6 +325,26 @@ app.post('/pre-deploy', async (req: Request, res: Response): Promise<void> => {
   res.status(202).json({ status: 'accepted', incidentId: body.incidentId });
 
   setImmediate(() => runPreDeploy(body));
+});
+
+app.post('/stack-facts', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as DeployRequest;
+  if (!body?.incidentId || !body?.namespace || !body?.stackServices?.length) {
+    res.status(400).json({
+      error: 'Missing required fields: incidentId, namespace, stackServices',
+    });
+    return;
+  }
+  try {
+    const analysis = await gatherStackPreDeployFacts(body);
+    res.json(analysis);
+  } catch (err) {
+    log('error', AGENT, 'POST /stack-facts failed', {
+      incidentId: body.incidentId,
+      error: String(err),
+    });
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 async function runPreDeploy(body: DeployRequest): Promise<void> {
@@ -340,7 +463,10 @@ async function runManualInvestigation(
   try {
     // If a podName was specified use it; otherwise try to find the first pod
     // for the given resource (best-effort — may be unavailable for some kinds)
-    const effectivePodName = podName ?? await resolveFirstPod(namespace, resourceName, incidentId);
+    const { resolvePodForWorkload } = await import('./workload-resolve.js');
+    const effectivePodName =
+      podName ??
+      (await resolvePodForWorkload(namespace, resourceName, resourceKind, incidentId));
 
     const [k8sFacts, manifestResult] = await Promise.all([
       effectivePodName
@@ -400,69 +526,10 @@ async function runManualInvestigation(
  * Returns null if no pod can be found — fact-gathering will proceed
  * without pod-level data.
  */
-async function resolveFirstPod(
-  namespace: string,
-  resourceName: string,
-  incidentId: string
-): Promise<string | null> {
-  const { CoreV1Api, KubeConfig } = await import('@kubernetes/client-node');
-  const { existsSync } = await import('node:fs');
-  const kc2 = new KubeConfig();
-  const hasToken = existsSync('/var/run/secrets/kubernetes.io/serviceaccount/token');
-  if (hasToken) {
-    try {
-      kc2.loadFromCluster();
-    } catch {
-      kc2.loadFromDefault();
-    }
-  } else {
-    kc2.loadFromDefault();
-  }
-  const api = kc2.makeApiClient(CoreV1Api);
-
-  try {
-    const res = await api.listNamespacedPod(
-      namespace,
-      undefined, undefined, undefined, undefined,
-      `app=${resourceName}`,
-      1
-    );
-    const pod = (res.body as { items?: Array<{ metadata?: { name?: string } }> }).items?.[0];
-    if (pod?.metadata?.name) {
-      log('info', AGENT, `Resolved first pod for resource ${resourceName}`, {
-        incidentId,
-        podName: pod.metadata.name,
-      });
-      return pod.metadata.name;
-    }
-  } catch (err) {
-    log('warn', AGENT, `Could not resolve pod for resource ${resourceName}`, {
-      incidentId,
-      error: String(err),
-    });
-  }
-  return null;
-}
-
 // ── Startup ───────────────────────────────────────────────────────────────────
 
 async function start(): Promise<void> {
-  // Bootstrap GitOps mirror if a repo URL is configured
-  if (GITOPS_REPO_URL) {
-    try {
-      await ensureMirrorSynced(GITOPS_REPO_URL);
-      startMirrorSyncScheduler(GITOPS_REPO_URL, GIT_SYNC_INTERVAL_SECONDS);
-    } catch (err) {
-      // Non-fatal — the agent can still gather K8s facts without the mirror
-      log('warn', AGENT, 'GitOps mirror initial sync failed — continuing without mirror', {
-        repoUrl: GITOPS_REPO_URL,
-        error: String(err),
-      });
-    }
-  } else {
-    log('info', AGENT, 'GITOPS_REPO_URL not set — GitOps mirror disabled');
-  }
-
+  // Listen immediately so orchestrator /health and GET /facts are not blocked by git clone.
   app.listen(PORT, () => {
     log('info', AGENT, `investigator-agent listening`, {
       port: PORT,
@@ -471,6 +538,24 @@ async function start(): Promise<void> {
       gitSyncIntervalSeconds: GIT_SYNC_INTERVAL_SECONDS,
     });
   });
+
+  if (GITOPS_REPO_URL) {
+    setImmediate(() => {
+      void (async () => {
+        try {
+          await ensureMirrorSynced(GITOPS_REPO_URL);
+          startMirrorSyncScheduler(GITOPS_REPO_URL, GIT_SYNC_INTERVAL_SECONDS);
+        } catch (err) {
+          log('warn', AGENT, 'GitOps mirror initial sync failed — continuing without mirror', {
+            repoUrl: GITOPS_REPO_URL,
+            error: String(err),
+          });
+        }
+      })();
+    });
+  } else {
+    log('info', AGENT, 'GITOPS_REPO_URL not set — GitOps mirror disabled');
+  }
 }
 
 start().catch((err) => {

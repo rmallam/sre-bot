@@ -26,6 +26,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import { approvalStore } from './store.js';
 import { renderDashboard } from './dashboard.js';
 import { dispatch, onApproved, onRejected } from './dispatcher.js';
+import { applyOperatorSuggestion } from './suggest-fix.js';
 import { startSlack } from './slack-notifier.js';
 import { startTelegram } from './telegram-notifier.js';
 import { log } from '../../../shared/src/http.js';
@@ -78,10 +79,11 @@ app.post('/request-approval', async (req: Request, res: Response) => {
   res.status(202).json({
     status: 'accepted',
     incidentId: request.incidentId,
+    runId: request.runId,
     message: 'Approval request queued and notifications dispatched',
   });
 
-  // Fan-out asynchronously
+  // Fan-out asynchronously (dedupes duplicate asks for the same run/incident)
   dispatch(request).catch((err) => {
     log('error', AGENT, 'dispatch() failed', {
       incidentId: request.incidentId,
@@ -207,43 +209,106 @@ app.post('/reject/:incidentId', async (req: Request, res: Response) => {
 // ── API: Approve/Reject (called by other agents, e.g. commander Telegram callback) ───
 app.post('/api/approve/:incidentId', async (req: Request, res: Response) => {
   const { incidentId } = req.params;
+  if (!incidentId) {
+    res.status(400).json({ error: 'Missing incidentId' });
+    return;
+  }
   const { userId, platform } = req.body;
+  const via = platform === 'slack' || platform === 'telegram' || platform === 'web' ? platform : 'web';
+  const actor = typeof userId === 'string' && userId.trim() ? userId : 'api-operator';
 
-  log('info', AGENT, 'API approve action received', { incidentId, userId, platform });
+  log('info', AGENT, 'API approve action received', { incidentId, userId: actor, platform: via });
 
-  const result = approvalStore.tryApprove(incidentId, userId, platform);
+  const result = approvalStore.tryApprove(incidentId, actor, via);
 
   if (result === 'ok') {
     const entry = approvalStore.get(incidentId)!;
-    onApproved(entry, userId, platform).catch((err) =>
+    approvalStore.updateStatus(incidentId, 'EXECUTING');
+    // Respond immediately so Telegram/Slack callbacks are not blocked by orchestrator resume.
+    res.status(202).json({ status: 'accepted', incidentId });
+    onApproved(entry, actor, via).catch((err) => {
+      approvalStore.updateStatus(incidentId, 'FAILED');
       log('error', AGENT, 'onApproved failed after API approval', {
         incidentId,
         error: String(err),
-      })
-    );
-    res.json({ status: 'ok' });
+      });
+    });
+  } else if (result === 'already_handled') {
+    const entry = approvalStore.get(incidentId);
+    res.status(200).json({ status: 'already_handled', currentStatus: entry?.status });
   } else {
     res.status(400).json({ error: result });
   }
 });
 
+async function handleSuggestFix(req: Request, res: Response, applyNow: boolean): Promise<void> {
+  const incidentId = req.params.incidentId;
+  if (!incidentId) {
+    res.status(400).json({ error: 'Missing incidentId' });
+    return;
+  }
+  const suggestion =
+    (req.body as { suggestion?: string }).suggestion ??
+    (req.body as { fix?: string }).fix ??
+    '';
+  const { userId, platform } = req.body as { userId?: string; platform?: string };
+  const via =
+    platform === 'slack' || platform === 'telegram' || platform === 'web' ? platform : 'web';
+  const actor = typeof userId === 'string' && userId.trim() ? userId : 'web-operator';
+
+  const result = await applyOperatorSuggestion({
+    incidentId,
+    suggestion,
+    userId: actor,
+    platform: via,
+    applyNow,
+  });
+
+  if (!result.ok) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+}
+
+/** Web dashboard: preview operator suggestion (updates stored plan). */
+app.post('/suggest-fix/:incidentId', async (req: Request, res: Response) => {
+  const applyField = (req.body as { apply?: string }).apply;
+  await handleSuggestFix(req, res, applyField === '1');
+});
+
+/** API: commander Telegram / automation. */
+app.post('/api/suggest-fix/:incidentId', async (req: Request, res: Response) => {
+  const applyNow = (req.body as { applyNow?: boolean }).applyNow === true;
+  await handleSuggestFix(req, res, applyNow);
+});
+
 app.post('/api/reject/:incidentId', async (req: Request, res: Response) => {
   const { incidentId } = req.params;
+  if (!incidentId) {
+    res.status(400).json({ error: 'Missing incidentId' });
+    return;
+  }
   const { userId, platform, reason } = req.body;
+  const via = platform === 'slack' || platform === 'telegram' || platform === 'web' ? platform : 'web';
+  const actor = typeof userId === 'string' && userId.trim() ? userId : 'api-operator';
 
-  log('info', AGENT, 'API reject action received', { incidentId, userId, platform, reason });
+  log('info', AGENT, 'API reject action received', { incidentId, userId: actor, platform: via, reason });
 
-  const result = approvalStore.tryReject(incidentId, userId, platform, reason ?? 'Rejected via API');
+  const result = approvalStore.tryReject(incidentId, actor, via, reason ?? 'Rejected via API');
 
   if (result === 'ok') {
     const entry = approvalStore.get(incidentId)!;
-    onRejected(entry, userId, platform, reason ?? 'Rejected via API').catch((err) =>
+    res.status(202).json({ status: 'accepted', incidentId });
+    onRejected(entry, actor, via, reason ?? 'Rejected via API').catch((err) =>
       log('error', AGENT, 'onRejected failed after API rejection', {
         incidentId,
         error: String(err),
       })
     );
-    res.json({ status: 'ok' });
+  } else if (result === 'already_handled') {
+    const entry = approvalStore.get(incidentId);
+    res.status(200).json({ status: 'already_handled', currentStatus: entry?.status });
   } else {
     res.status(400).json({ error: result });
   }

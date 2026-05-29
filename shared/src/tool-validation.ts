@@ -53,13 +53,16 @@ export function validateToolCall(call: ToolCall): ToolValidationResult {
   return { ok: errors.length === 0, errors };
 }
 
-export function validateToolCalls(calls: ToolCall[]): ToolValidationResult {
+export function validateToolCalls(
+  calls: ToolCall[],
+  opts?: { allowEmpty?: boolean }
+): ToolValidationResult {
   const errors: string[] = [];
   for (const call of calls) {
     const result = validateToolCall(call);
     if (!result.ok) errors.push(...result.errors);
   }
-  if (calls.length === 0) {
+  if (calls.length === 0 && !opts?.allowEmpty) {
     errors.push('Compiled plan has no tool calls');
   }
   return { ok: errors.length === 0, errors };

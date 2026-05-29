@@ -6,10 +6,16 @@ global:
   imagePullSecrets: []
   # - name: ghcr-credentials
 
+llm:
+  provider: openrouter
+  openrouter:
+    brainModel: anthropic/claude-sonnet-4
+    commanderModel: google/gemini-2.5-flash
+
 secrets:
   create: true
-  geminiApiKey: "YOUR_GEMINI_KEY"
-  openrouterApiKey: ""
+  openrouterApiKey: "YOUR_OPENROUTER_KEY"
+  geminiApiKey: ""
   gitopsRepoUrl: "git@github.com:your-org/your-gitops-repo.git"
   githubToken: "ghp_xxx"
   allowedUsers: "123456789"

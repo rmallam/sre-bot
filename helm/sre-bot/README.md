@@ -53,6 +53,8 @@ Set in `my-values.yaml` under `secrets:` (or use `secrets.existingSecret`):
 | `gitopsRepoUrl` | investigator, gitops |
 | `allowedUsers` | commander |
 | `gitSshPrivateKey` | investigator, gitops (Git SSH clone) |
+
+Investigator ClusterRole includes read access for chat `get` commands: namespaces, pods, deployments, nodes, services, events.
 | `telegramBotToken` / `slackBotToken` | commander, hil (optional) |
 | `githubToken` | gitops (optional, HTTPS push) |
 

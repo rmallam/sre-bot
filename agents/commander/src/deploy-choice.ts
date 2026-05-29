@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { DeployCmd } from './parser.js';
+import { rememberDeployDraft } from './conversation.js';
 
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 const CHOICE_TTL_MS = parseInt(process.env['DEPLOY_CHOICE_TTL_MS'] ?? '180000', 10);
@@ -41,6 +42,7 @@ export async function buildDeployChoicePrompt(
     findings,
     expiresAt: Date.now() + CHOICE_TTL_MS,
   });
+  rememberDeployDraft(platform, channelId, userId, deploy);
 
   const discovered = findings
     ? findings.needsHelmGeneration

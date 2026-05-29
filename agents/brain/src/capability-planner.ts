@@ -135,9 +135,10 @@ For transient pod issues prefer executor.restart_workload. For manifest fixes us
   let toolCalls: ToolCall[] = [];
   let reasoning = 'Fallback to classic remediation plan';
   let confidence = 0.7;
+  let classic: RemediationPlan | undefined;
 
   try {
-    const classic = await diagnose(ctx);
+    classic = await diagnose(ctx);
     if (classic.action === 'restart') {
       toolCalls = parseToolCallsFromLlm(
         [{ name: 'executor.restart_workload' }, { name: 'investigator.verify_health' }],
@@ -152,14 +153,25 @@ For transient pod issues prefer executor.restart_workload. For manifest fixes us
       if (gitops) {
         (gitops.input as { plan: RemediationPlan }).plan = classic;
       }
+    } else if (classic.action === 'escalate_human' || classic.action === 'noop') {
+      toolCalls = [];
+      confidence = 0.9;
     }
     reasoning = classic.reasoning;
-    confidence = 0.85;
+    if (classic.action !== 'escalate_human' && classic.action !== 'noop') {
+      confidence = 0.85;
+    }
   } catch (err) {
     log('warn', AGENT, 'Capability plan fallback failed', { error: String(err) });
   }
 
-  if (ctx.platform && ctx.channelId && !toolCalls.some((t) => t.name === 'commander.notify')) {
+  if (
+    ctx.platform &&
+    ctx.channelId &&
+    !toolCalls.some((t) => t.name === 'commander.notify') &&
+    classic?.action !== 'escalate_human' &&
+    classic?.action !== 'noop'
+  ) {
     toolCalls.push({
       name: 'commander.notify',
       input: {
@@ -171,13 +183,17 @@ For transient pod issues prefer executor.restart_workload. For manifest fixes us
     });
   }
 
-  const validation = validateToolCalls(toolCalls);
+  const remediationPlan =
+    classic && (classic.action === 'escalate_human' || classic.action === 'noop')
+      ? classic
+      : toolCallsToPlan(toolCalls, ctx);
+
+  const allowEmpty = remediationPlan.action === 'escalate_human' || remediationPlan.action === 'noop';
+  const validation = validateToolCalls(toolCalls, { allowEmpty });
   if (!validation.ok) {
     log('warn', AGENT, 'Capability tool validation failed', { errors: validation.errors });
     confidence = 0.5;
   }
-
-  const remediationPlan = toolCallsToPlan(toolCalls, ctx);
   if (toolCalls.some((t) => t.name === 'gitops.apply_plan')) {
     const g = toolCalls.find((t) => t.name === 'gitops.apply_plan');
     if (g && (g.input as { plan?: RemediationPlan }).plan) {

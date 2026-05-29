@@ -163,6 +163,7 @@ export function buildHelmDeployPlan(opts: {
   gitRef: string;
   repoSignals?: RepoSignals;
   existingManifest?: boolean;
+  image?: string;
 }): import('./types.js').RemediationPlan {
   const chartPath = defaultChartPath(opts.appName);
   const helmChart = generateHelmChart({
@@ -170,6 +171,7 @@ export function buildHelmDeployPlan(opts: {
     namespace: opts.namespace,
     githubRepo: opts.githubRepo,
     repoSignals: opts.repoSignals,
+    image: opts.image,
   });
 
   return {

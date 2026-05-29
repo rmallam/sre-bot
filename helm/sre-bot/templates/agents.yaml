@@ -117,17 +117,18 @@ spec:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: allowed_users
-            - name: GEMINI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $secret }}
-                  key: gemini_api_key
             - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: openrouter_api_key
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: gemini_api_key
                   optional: true
+            {{- include "sre-bot.llmEnv" . | nindent 12 }}
             - name: SLACK_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -279,21 +280,20 @@ spec:
               value: "8080"
             - name: HIL_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "hil" "root" .) | quote }}
-            - name: GEMINI_MODEL
-              value: {{ .Values.brain.geminiModel | quote }}
             - name: CIRCUIT_BREAKER_LIMIT
               value: {{ .Values.brain.circuitBreakerLimit | quote }}
-            - name: GEMINI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $secret }}
-                  key: gemini_api_key
             - name: OPENROUTER_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: openrouter_api_key
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: gemini_api_key
                   optional: true
+            {{- include "sre-bot.llmEnv" . | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /health

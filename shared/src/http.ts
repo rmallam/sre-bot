@@ -114,6 +114,20 @@ export async function postWithRetry(opts: PostOptions): Promise<void> {
   );
 }
 
+/** Turn `TypeError: fetch failed` into a actionable message (host, ECONNREFUSED, etc.). */
+export function formatFetchError(err: unknown, url: string): Error {
+  const base = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : undefined;
+  const code =
+    err instanceof Error && err.cause && typeof err.cause === 'object' && 'code' in err.cause
+      ? String((err.cause as { code?: string }).code)
+      : undefined;
+  const parts = [`Request to ${url} failed: ${base}`];
+  if (code) parts.push(`code=${code}`);
+  if (cause && cause !== base) parts.push(`cause=${cause}`);
+  return new Error(parts.join('; '));
+}
+
 /**
  * Structured JSON logger used by all agents.
  */

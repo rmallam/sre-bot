@@ -36,10 +36,23 @@ const BRAIN_URL  = process.env['BRAIN_URL']  ?? 'http://brain-agent:8080';
  * Ingest a new ApprovalRequest, persist it, and fan out notifications.
  */
 export async function dispatch(request: ApprovalRequest): Promise<void> {
-  const { incidentId } = request;
+  const merge = approvalStore.mergeOrCreate(request);
+  const incidentId = merge.action === 'created' ? request.incidentId : merge.incidentId;
+
+  if (merge.action === 'duplicate') {
+    log('info', AGENT, 'Skipping duplicate HIL notification for same approval', {
+      incidentId,
+      runId: request.runId,
+      attemptNumber: request.attemptNumber,
+      action: request.plan.action,
+    });
+    return;
+  }
 
   log('info', AGENT, 'Dispatching approval request', {
     incidentId,
+    runId: request.runId,
+    mergeAction: merge.action,
     resourceName: request.resourceName,
     namespace: request.namespace,
     severity: request.plan.severity,
@@ -47,18 +60,40 @@ export async function dispatch(request: ApprovalRequest): Promise<void> {
     attemptNumber: request.attemptNumber,
   });
 
-  // 1. Add to store (idempotent)
-  approvalStore.add(request);
+  const notifyRequest: ApprovalRequest =
+    merge.action === 'created'
+      ? request
+      : { ...approvalStore.get(incidentId)!.request };
+
+  if (merge.action === 'updated') {
+    const updated = { ...notifyRequest, plan: { ...notifyRequest.plan } };
+    await Promise.allSettled([
+      notifySlack(updated).catch((err) =>
+        log('error', AGENT, 'Slack plan-update notification failed', {
+          incidentId,
+          error: String(err),
+        })
+      ),
+      notifyTelegram(updated, { prefix: '🔄 Plan updated — ' }).catch((err) =>
+        log('error', AGENT, 'Telegram plan-update notification failed', {
+          incidentId,
+          error: String(err),
+        })
+      ),
+    ]);
+    log('info', AGENT, 'Plan-update notification sent (same incident)', { incidentId });
+    return;
+  }
 
   // 2. Fan-out to all notification platforms concurrently
   const notifications: Promise<void>[] = [
-    notifySlack(request).catch((err) =>
+    notifySlack(notifyRequest).catch((err) =>
       log('error', AGENT, 'Slack notification failed', {
         incidentId,
         error: String(err),
       })
     ),
-    notifyTelegram(request).catch((err) =>
+    notifyTelegram(notifyRequest).catch((err) =>
       log('error', AGENT, 'Telegram notification failed', {
         incidentId,
         error: String(err),

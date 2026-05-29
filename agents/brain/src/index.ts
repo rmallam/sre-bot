@@ -13,6 +13,7 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import type { DiagnosisContext } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
+import { llmConfigSummary } from '../../../shared/src/llm-config.js';
 import { runBrain } from './brain.js';
 
 const AGENT = 'brain-agent';
@@ -35,7 +36,17 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 // ── Health check ──────────────────────────────────────────────────────────────
 
 app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', agent: AGENT });
+  const llm = llmConfigSummary();
+  res.json({
+    status: 'ok',
+    agent: AGENT,
+    llm: {
+      provider: llm.provider,
+      brain: llm.brain
+        ? { backend: llm.brain.backend, model: llm.brain.model }
+        : null,
+    },
+  });
 });
 
 // ── Handler factory ───────────────────────────────────────────────────────────
@@ -122,6 +133,66 @@ app.post('/plan-capability', async (req: Request, res: Response) => {
   }
 });
 
+/** Failure analyst for orchestrator — structured retry vs escalate after act failure. */
+app.post('/analyze-failure', async (req: Request, res: Response) => {
+  const body = req.body as Partial<import('../../../shared/src/types.js').FailureAnalysisRequest>;
+  if (
+    !body.incidentId ||
+    !body.mode ||
+    !body.namespace ||
+    !body.resourceName ||
+    !body.failedAction ||
+    !body.errorMessage ||
+    !body.facts
+  ) {
+    res.status(400).json({
+      error:
+        'Missing required fields: incidentId, mode, namespace, resourceName, failedAction, errorMessage, facts',
+    });
+    return;
+  }
+  try {
+    const { analyzeFailure } = await import('./failure-analyst.js');
+    const result = await analyzeFailure(body as import('../../../shared/src/types.js').FailureAnalysisRequest);
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'analyze-failure failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** Operator override: natural-language fix → RemediationPlan. */
+app.post('/suggest-plan', async (req: Request, res: Response) => {
+  const body = req.body as {
+    suggestion?: string;
+    approval?: {
+      incidentId: string;
+      namespace: string;
+      resourceKind: string;
+      resourceName: string;
+      mode: string;
+      plan: import('../../../shared/src/types.js').RemediationPlan;
+    };
+    facts?: Record<string, unknown>;
+  };
+  if (!body?.suggestion?.trim() || !body?.approval?.incidentId) {
+    res.status(400).json({ error: 'suggestion and approval.incidentId required' });
+    return;
+  }
+  try {
+    const { planFromSuggestion } = await import('./suggest-plan.js');
+    const result = await planFromSuggestion({
+      suggestion: body.suggestion.trim(),
+      approval: body.approval as import('./suggest-plan.js').SuggestPlanRequest['approval'],
+      facts: body.facts as import('../../../shared/src/types.js').DiagnosisContext | undefined,
+    });
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'suggest-plan failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 /** Synchronous plan for orchestrator — no HIL dispatch. */
 app.post('/plan-only', async (req: Request, res: Response) => {
   const body = req.body as Partial<DiagnosisContext>;
@@ -135,6 +206,27 @@ app.post('/plan-only', async (req: Request, res: Response) => {
     res.json(plan);
   } catch (err) {
     log('error', AGENT, 'plan-only failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** Pre-flight safety validation before authorize/act. */
+app.post('/validate-plan', async (req: Request, res: Response) => {
+  const body = req.body as Partial<import('../../../shared/src/types.js').PlanValidationRequest>;
+  if (!body.incidentId || !body.namespace || !body.mode || !body.resourceName || !body.resourceKind || !body.plan) {
+    res.status(400).json({
+      error: 'Missing required fields: incidentId, namespace, mode, resourceKind, resourceName, plan',
+    });
+    return;
+  }
+  try {
+    const { validatePlanPreflight } = await import('./plan-validator.js');
+    const result = await validatePlanPreflight(
+      body as import('../../../shared/src/types.js').PlanValidationRequest
+    );
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'validate-plan failed', { error: String(err) });
     res.status(500).json({ error: String(err) });
   }
 });
@@ -163,7 +255,7 @@ app.listen(PORT, () => {
   log('info', AGENT, `brain-agent listening`, {
     port: PORT,
     hilUrl: process.env['HIL_URL'] ?? 'http://hil-agent:8080',
-    geminiModel: process.env['GEMINI_MODEL'] ?? 'gemini-2.5-pro',
+    llm: llmConfigSummary(),
     circuitBreakerLimit: process.env['CIRCUIT_BREAKER_LIMIT'] ?? '3',
   });
 });

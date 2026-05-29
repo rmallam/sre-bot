@@ -56,6 +56,14 @@ function renderPatch(ops: JsonPatchOp[]): string {
     .join('\n');
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function renderCard(approval: PendingApproval): string {
   const { request, status, expiresAt, lockedBy, lockedVia, lockedAt, rejectionReason } = approval;
   const { plan, incidentId, resourceName, namespace, resourceKind, escalated } = request;
@@ -66,6 +74,10 @@ function renderCard(approval: PendingApproval): string {
     ? `<div class="escalation-banner">⚠️ ESCALATED — Circuit breaker fired. Human action required.</div>`
     : '';
 
+  const humanNote = request.humanSuggestion
+    ? `<div class="section-label">Your suggestion</div><div class="reasoning">${escapeHtml(request.humanSuggestion)}</div>`
+    : '';
+
   const actionButtons = isPending
     ? `
       <form method="POST" action="/approve/${encodeURIComponent(incidentId)}" style="display:inline">
@@ -74,7 +86,15 @@ function renderCard(approval: PendingApproval): string {
       <form method="POST" action="/reject/${encodeURIComponent(incidentId)}" style="display:inline">
         <input type="hidden" name="reason" value="Rejected via web dashboard" />
         <button type="submit" class="btn-reject">❌ Reject</button>
-      </form>`
+      </form>
+      <div class="suggest-box">
+        <div class="section-label">✏️ Suggest your own fix</div>
+        <form method="POST" action="/suggest-fix/${encodeURIComponent(incidentId)}">
+          <textarea name="suggestion" rows="3" placeholder="e.g. restart deployment, add imagePullSecrets ghcr-creds, set image to app:v2" required></textarea>
+          <button type="submit" name="apply" value="0" class="btn-suggest">Update plan from suggestion</button>
+          <button type="submit" name="apply" value="1" class="btn-approve">Apply suggestion now</button>
+        </form>
+      </div>`
     : `<div class="handled-badge" style="background:${statusColor(status)}; color:#fff">
         ${status}${lockedBy ? ` by ${lockedBy}` : ''}${lockedVia ? ` via ${lockedVia}` : ''}${lockedAt ? ` at ${new Date(lockedAt).toLocaleTimeString()}` : ''}
        </div>`;
@@ -99,6 +119,8 @@ function renderCard(approval: PendingApproval): string {
 
       <div class="section-label">Reasoning</div>
       <div class="reasoning">${plan.reasoning}</div>
+      ${humanNote}
+      ${request.planSource === 'human' ? '<div class="meta-row"><span>Plan source: <strong>operator suggestion</strong></span></div>' : ''}
 
       <div class="section-label">Proposed Patch — <code>${plan.targetManifestPath}</code></div>
       <div class="patch-block">
@@ -321,6 +343,31 @@ export function renderDashboard(approvals: PendingApproval[]): string {
       align-items: center;
     }
 
+    .suggest-box {
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid #30363d;
+    }
+    .suggest-box textarea {
+      width: 100%;
+      margin: 8px 0;
+      padding: 8px;
+      background: #0d1117;
+      color: #e6edf3;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      font-family: inherit;
+      resize: vertical;
+    }
+    .btn-suggest {
+      background: #1f6feb;
+      color: #fff;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-right: 8px;
+    }
     .btn-approve, .btn-reject {
       padding: 0.45rem 1.1rem;
       border: none;

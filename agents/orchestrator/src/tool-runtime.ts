@@ -8,6 +8,7 @@ import type { ToolTranscriptEntry } from '../../../shared/src/types.js';
 import type { CompiledPlan } from '../../../shared/src/tool-registry.js';
 import { getToolDefinition } from '../../../shared/src/tool-registry.js';
 import { log } from '../../../shared/src/http.js';
+import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
 
 const AGENT = 'orchestrator-tool-runtime';
 
@@ -66,12 +67,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 function buildNotifyMessage(ctx: RuntimeToolContext, success: boolean, detail: string): string {
-  const icon = success ? '✅' : '⚠️';
+  if (success) {
+    return `✅ ${ctx.resourceName} (${ctx.namespace}): step OK — ${detail}`;
+  }
+  const why = humanizeOperatorError(detail);
   return (
-    `${icon} *${ctx.resourceName}* (${ctx.namespace})\n` +
-    `Run: \`${ctx.runId}\`\n` +
-    `Action: ${ctx.plan.action}\n` +
-    `${detail}`
+    `⚠️ ${ctx.resourceName} (${ctx.namespace}): deploy step failed\n` +
+    `${why}\n` +
+    `(No pods will appear in ${ctx.namespace} until this succeeds.)`
   );
 }
 
@@ -132,6 +135,7 @@ async function executeToolCallOnce(
       ...cmd,
       executionOptions: {
         dryRun: REGISTRY_DRY_RUN && def.supportsDryRun,
+        createNamespace: cmd.executionOptions?.createNamespace,
       },
     };
     const result = await postJson<{

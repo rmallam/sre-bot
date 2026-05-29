@@ -5,6 +5,7 @@
 export type Platform = 'slack' | 'telegram' | 'teams' | 'web';
 export type ResourceKind = 'Deployment' | 'StatefulSet' | 'Pod' | 'Job' | 'DaemonSet';
 export type IncidentMode = 'diagnose' | 'pre-deploy' | 'rollback';
+export type InvestigateScope = 'workload' | 'namespace' | 'cluster';
 export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type ApprovalStatus =
   | 'PENDING'
@@ -64,13 +65,48 @@ export interface AnomalyDetected extends IncidentEnvelope {
 }
 
 export interface DeployRequest extends IncidentEnvelope {
-  githubRepo: string;
+  githubRepo?: string;
+  /** Deploy from a catalog/public image without a Git repository. */
+  containerImage?: string;
   gitRef?: string;
   deployStrategy?: 'gitops' | 'direct';
   requestedBy: string;
   platform: Platform;
   channelId: string;
   rawMessage: string;
+  /** Multi-service deploy from multiple repositories (single incident / approval). */
+  stackServices?: StackServiceRef[];
+}
+
+export interface StackServiceRef {
+  name: string;
+  githubRepo: string;
+  gitRef?: string;
+}
+
+export interface StackDependencyEdge {
+  from: string;
+  to: string;
+  reason: string;
+}
+
+export interface StackServiceAnalysis extends StackServiceRef {
+  entryPointKind: 'helm' | 'kustomize' | 'plain-yaml' | 'unknown';
+  manifestPath?: string;
+  needsHelmGeneration: boolean;
+  repoSignals?: RepoSignals;
+  resolvedGitRef?: string;
+  cloneError?: string;
+  dependencies: string[];
+}
+
+export interface StackDeployAnalysis {
+  stackName: string;
+  namespace: string;
+  services: StackServiceAnalysis[];
+  dependencyEdges: StackDependencyEdge[];
+  deploymentOrder: string[];
+  hasCycle: boolean;
 }
 
 export interface RepoSignals {
@@ -104,6 +140,21 @@ export interface DiagnosisContext extends IncidentEnvelope {
   repoSignals?: RepoSignals;
   priorActionSummary?: string;
   safeMode?: boolean;
+  /** Git ref actually cloned when it differed from the request (e.g. default branch fallback). */
+  resolvedGitRef?: string;
+  /** Set when repo clone failed after all ref fallbacks. */
+  cloneError?: string;
+  /** Optional analysis for multi-repo deploy runs. */
+  stackDeploy?: StackDeployAnalysis;
+  /** Parallel specialist summaries (workload/network/database). */
+  specialistDiagnostics?: SpecialistDiagnostic[];
+}
+
+export interface SpecialistDiagnostic {
+  specialist: 'workload' | 'network' | 'database';
+  summary: string;
+  confidence: number;
+  findings: string[];
 }
 
 /** Facts safe to send to an LLM after security-agent sanitization. */
@@ -136,6 +187,9 @@ export interface HelmChartPayload {
   files: Record<string, string>;
 }
 
+import type { PatchTarget } from './patch-target.js';
+export type { PatchTarget };
+
 export interface RemediationPlan {
   action: RemediationAction;
   rootCause: string;
@@ -145,6 +199,8 @@ export interface RemediationPlan {
   targetManifestPath: string;
   commitMessage: string;
   rollbackSafe: boolean;
+  /** cluster = live API patch only; gitops = mirror/Argo only; auto = env + fallback rules */
+  patchTarget?: PatchTarget;
   helmChart?: HelmChartPayload;
   targetRepo?: 'app' | 'gitops' | 'both';
   githubRepo?: string;
@@ -184,6 +240,8 @@ export interface RemediateCommand extends IncidentEnvelope {
   /** Runtime options derived from tool registry (e.g. dry-run before apply). */
   executionOptions?: {
     dryRun?: boolean;
+    /** User approved creating the target namespace before apply. */
+    createNamespace?: boolean;
   };
 }
 
@@ -205,6 +263,9 @@ export interface ApprovalRequest extends IncidentEnvelope {
   /** When set, approval is for a single tool step mid-run (not the whole plan). */
   approvalKind?: 'plan' | 'tool';
   pendingToolApproval?: PendingToolApproval;
+  /** Operator-provided fix text (replaces or refines bot plan). */
+  humanSuggestion?: string;
+  planSource?: 'bot' | 'human';
 }
 
 export interface RemediationResult extends IncidentEnvelope {
@@ -277,13 +338,21 @@ export interface StartRunRequest extends IncidentEnvelope {
   podName?: string;
   eventReason?: string;
   eventMessage?: string;
+  investigateScope?: InvestigateScope;
+  investigationLabel?: string;
   githubRepo?: string;
   gitRef?: string;
   deployStrategy?: 'gitops' | 'direct';
+  /** Public image deploy (e.g. httpd:2.4-alpine) when no githubRepo. */
+  containerImage?: string;
   requestedBy?: string;
   platform?: Platform;
   channelId?: string;
   rawMessage?: string;
+  /** User confirmed namespace should be created if missing. */
+  createNamespace?: boolean;
+  /** Multi-service deploy request with one incident lifecycle. */
+  stackServices?: StackServiceRef[];
 }
 
 export interface StartRunResponse {
@@ -345,4 +414,73 @@ export interface QueuedRequest<T = unknown> {
   maxAttempts: number;
   nextRetryAt: string;
   createdAt: string;
+}
+
+// ── Failure analyst (orchestrator → brain after act failure) ─────────────────
+
+export type FailureDecision = 'retry_with_plan' | 'escalate_human' | 'stop_noop';
+
+export interface FailureAnalysisRequest {
+  incidentId: string;
+  mode: IncidentMode;
+  namespace: string;
+  resourceName: string;
+  resourceKind: ResourceKind;
+  failedAction: RemediationAction;
+  errorMessage: string;
+  failureKind: string;
+  alternateStrategyMayHelp: boolean;
+  actionHistorySummary: string;
+  facts: SanitizedFacts;
+  githubRepo?: string;
+  gitRef?: string;
+  deployStrategy?: 'gitops' | 'direct';
+}
+
+export interface FailureAnalysisResult {
+  decision: FailureDecision;
+  reasoning: string;
+  /** Short message for Telegram/Slack progress */
+  operatorMessage: string;
+  confidence: number;
+  /**
+   * Optional proposal from LLM/deterministic analyst when the root cause is a
+   * missing resource that could be created after user approval.
+   */
+  missingResource?: {
+    kind: 'namespace' | 'configmap' | 'secret' | 'serviceaccount' | 'crd' | 'other';
+    name: string;
+    namespace?: string;
+    reason: string;
+    canAutoCreate: boolean;
+    createAction?: 'create_namespace';
+  };
+  suggestedAction?: RemediationAction;
+  suggestedGitRef?: string;
+  deployStrategy?: 'gitops' | 'direct';
+  rootCause?: string;
+}
+
+export interface PlanValidationIssue {
+  code: string;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH';
+  message: string;
+  path?: string;
+}
+
+export interface PlanValidationRequest {
+  incidentId: string;
+  namespace: string;
+  mode: IncidentMode;
+  resourceKind: ResourceKind;
+  resourceName: string;
+  facts?: Partial<DiagnosisContext>;
+  plan: RemediationPlan;
+}
+
+export interface PlanValidationResult {
+  allowed: boolean;
+  requiresHumanApproval: boolean;
+  issues: PlanValidationIssue[];
+  summary: string;
 }

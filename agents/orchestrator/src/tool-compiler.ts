@@ -46,17 +46,12 @@ function appendStandardPipeline(ctx: RuntimeToolContext, calls: ToolCall[]): Too
   if (calls.length === 0) return calls;
 
   const pipeline: ToolCall[] = [...calls];
+  // Health/readiness verification is handled centrally by graph verifyNode.
+  // Running verify inside the compiled action pipeline can cause false "act failed"
+  // loops when apply already succeeded but readiness is still converging.
 
-  pipeline.push({
-    name: 'investigator.verify_health',
-    input: {
-      incidentId: ctx.incidentId,
-      namespace: ctx.namespace,
-      resourceName: ctx.resourceName,
-    },
-  });
-
-  if (ctx.request.platform && ctx.request.channelId) {
+  // Pre-deploy: gitops sends step-by-step progress; skip noisy per-tool notify here.
+  if (ctx.request.platform && ctx.request.channelId && ctx.mode !== 'pre-deploy') {
     pipeline.push({
       name: 'commander.notify',
       input: {
@@ -96,6 +91,22 @@ export function compilePlanToToolCalls(ctx: RuntimeToolContext): ToolCall[] {
     });
   }
 
+  if (ctx.plan.action === 'escalate_human') {
+    if (ctx.request.platform && ctx.request.channelId) {
+      calls.push({
+        name: 'commander.notify',
+        input: {
+          incidentId: ctx.incidentId,
+          runId: ctx.runId,
+          platform: ctx.request.platform,
+          channelId: ctx.request.channelId,
+          message: `🙋 Human review needed: ${ctx.plan.reasoning}`,
+        },
+      });
+    }
+    return calls;
+  }
+
   calls.push(...coreActionCalls(ctx));
   return appendStandardPipeline(ctx, calls);
 }
@@ -129,7 +140,8 @@ function fallbackReason(ctx: RuntimeToolContext, calls: ToolCall[]): string | un
 }
 
 export function compileFromToolCalls(calls: ToolCall[], ctx: RuntimeToolContext): CompiledPlan {
-  const validation = validateToolCalls(calls);
+  const allowEmpty = ctx.plan.action === 'escalate_human' || ctx.plan.action === 'noop';
+  const validation = validateToolCalls(calls, { allowEmpty });
   const confidence = validation.ok ? estimateConfidence(ctx, calls) : 0.4;
   const riskLevel = aggregateToolRisk(calls);
 

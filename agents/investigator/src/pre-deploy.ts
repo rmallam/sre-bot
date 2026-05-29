@@ -12,7 +12,7 @@ import { mkdtemp, rm, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, extname } from 'node:path';
 import * as k8s from '@kubernetes/client-node';
-import simpleGit from 'simple-git';
+import { shallowCloneRepo } from './git-clone.js';
 import type { DeployRequest, DiagnosisContext } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
 
@@ -73,20 +73,28 @@ async function safeCall<T>(
 export async function gatherPreDeployFacts(
   req: DeployRequest
 ): Promise<Partial<DiagnosisContext>> {
-  const { incidentId, namespace, githubRepo, gitRef = 'main' } = req;
+  const { incidentId, namespace, githubRepo, gitRef = 'main', containerImage } = req;
 
   log('info', AGENT, 'Starting pre-deploy fact-gathering', {
     incidentId,
     namespace,
     githubRepo,
     gitRef,
+    containerImage,
   });
 
-  // Run K8s checks and repo clone concurrently
-  const [k8sFacts, repoFacts] = await Promise.all([
-    gatherNamespaceFacts(namespace, incidentId),
-    cloneAndLocateEntryPoint(githubRepo, gitRef, incidentId),
-  ]);
+  const k8sFacts = await gatherNamespaceFacts(namespace, incidentId);
+
+  const repoFacts = containerImage
+    ? {
+        needsHelmGeneration: true,
+        repoEntryPointKind: 'helm' as const,
+        gitManifestPath: undefined,
+        gitManifestContent: undefined,
+        cloneError: undefined,
+        resolvedGitRef: gitRef,
+      }
+    : await cloneAndLocateEntryPoint(githubRepo ?? '', gitRef, incidentId);
 
   const result: Partial<DiagnosisContext> = {
     incidentId: req.incidentId,
@@ -112,6 +120,8 @@ export async function gatherPreDeployFacts(
     needsHelmGeneration: repoFacts.needsHelmGeneration,
     repoEntryPointKind: repoFacts.repoEntryPointKind,
     repoSignals: repoFacts.repoSignals,
+    resolvedGitRef: repoFacts.resolvedGitRef,
+    cloneError: repoFacts.cloneError,
     githubRepo,
     gitRepoUrl: githubRepo,
   };
@@ -129,6 +139,17 @@ export async function gatherPreDeployFacts(
 }
 
 // ── Namespace facts ───────────────────────────────────────────────────────────
+
+/** Lightweight probe for commander preflight (namespace create prompt). */
+export async function checkNamespaceExists(
+  namespace: string,
+  incidentId: string
+): Promise<{ namespaceExists: boolean }> {
+  const ns = await safeCall(incidentId, `readNamespace/${namespace}`, () =>
+    coreV1Api.readNamespace(namespace)
+  );
+  return { namespaceExists: ns !== null };
+}
 
 async function gatherNamespaceFacts(
   namespace: string,
@@ -195,6 +216,8 @@ interface EntryPointResult {
   repoEntryPointKind?: EntryPointKind;
   repoSignals?: import('../../../shared/src/types.js').RepoSignals;
   needsHelmGeneration?: boolean;
+  resolvedGitRef?: string;
+  cloneError?: string;
 }
 
 function detectRepoSignals(repoDir: string): import('../../../shared/src/types.js').RepoSignals {
@@ -216,21 +239,18 @@ async function cloneAndLocateEntryPoint(
   gitRef: string,
   incidentId: string
 ): Promise<EntryPointResult> {
-  // Ensure the URL has a scheme for git clone
-  const cloneUrl = repoUrl.startsWith('http') ? repoUrl : `https://${repoUrl}`;
-
   let tmpDir: string | null = null;
   try {
     tmpDir = await mkdtemp(join(tmpdir(), 'sre-predeploy-'));
-    log('info', AGENT, 'Cloning deploy target repo', {
-      incidentId,
-      repoUrl: cloneUrl,
-      gitRef,
-      tmpDir,
-    });
 
-    const git = simpleGit();
-    await git.clone(cloneUrl, tmpDir, ['--depth', '1', '--branch', gitRef]);
+    const cloned = await shallowCloneRepo(repoUrl, gitRef, tmpDir, incidentId);
+    if (!cloned.ok) {
+      return {
+        cloneError: `Could not clone ${repoUrl} (tried refs: ${cloned.attemptedRefs.join(', ')}): ${cloned.error}`,
+        needsHelmGeneration: true,
+        repoEntryPointKind: 'unknown',
+      };
+    }
 
     const result = await detectEntryPoint(tmpDir, incidentId);
     const repoSignals = detectRepoSignals(tmpDir);
@@ -242,15 +262,20 @@ async function cloneAndLocateEntryPoint(
       repoSignals,
       repoEntryPointKind: result.repoEntryPointKind ?? 'unknown',
       needsHelmGeneration: !result.gitManifestPath,
+      resolvedGitRef: cloned.resolvedRef,
     };
   } catch (err) {
     log('error', AGENT, 'Failed to clone deploy target repo', {
       incidentId,
-      repoUrl: cloneUrl,
+      repoUrl,
       gitRef,
       error: String(err),
     });
-    return {};
+    return {
+      cloneError: String(err),
+      needsHelmGeneration: true,
+      repoEntryPointKind: 'unknown',
+    };
   } finally {
     // Always clean up the temp dir
     if (tmpDir && existsSync(tmpDir)) {

@@ -79,6 +79,24 @@ function getSlackApp(): App | null {
     }
   );
 
+  // ── Action: Suggest fix (instructions — text capture via Telegram or web UI) ─
+  slackApp.action<BlockAction<ButtonAction>>(
+    /^hil_suggest_/,
+    async ({ action, ack, respond }) => {
+      await ack();
+      const incidentId = action.action_id.replace('hil_suggest_', '');
+      await respond({
+        response_type: 'ephemeral',
+        replace_original: false,
+        text:
+          `✏️ Suggest a fix for \`${incidentId}\`:\n` +
+          `• Use the HIL web dashboard (Suggest fix form), or\n` +
+          `• Use Telegram and tap *Suggest fix*, then reply with your fix.\n\n` +
+          `Examples: \`restart\`, \`add imagePullSecrets ghcr-creds\`, \`set image to nginx:1.25\``,
+      });
+    }
+  );
+
   // ── Action: Reject ────────────────────────────────────────────────────────
   slackApp.action<BlockAction<ButtonAction>>(
     /^hil_reject_/,
@@ -251,6 +269,12 @@ export async function notifySlack(request: ApprovalRequest): Promise<void> {
               text: { type: 'plain_text', text: '❌ Reject', emoji: true },
               style: 'danger',
               action_id: `hil_reject_${incidentId}`,
+              value: incidentId,
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: '✏️ Suggest fix', emoji: true },
+              action_id: `hil_suggest_${incidentId}`,
               value: incidentId,
             },
           ],

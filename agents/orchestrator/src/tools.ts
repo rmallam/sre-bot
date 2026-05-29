@@ -5,16 +5,21 @@
 import type {
   ActionRecord,
   ApprovalRequest,
+  DeployRequest,
   DiagnosisContext,
+  FailureAnalysisRequest,
+  FailureAnalysisResult,
   RemediateCommand,
   RemediationPlan,
   ResourceKind,
   IncidentMode,
+  PlanValidationResult,
   SanitizedFacts,
+  StackDeployAnalysis,
   StartRunRequest,
 } from '../../../shared/src/types.js';
 import type { RuntimeToolContext } from '../../../shared/src/tool-contracts.js';
-import { log } from '../../../shared/src/http.js';
+import { formatFetchError, log } from '../../../shared/src/http.js';
 import { getToolDefinition } from '../../../shared/src/tool-registry.js';
 import { isProdNamespace } from '../../../shared/src/tool-policy.js';
 import type { PendingToolApproval } from '../../../shared/src/types.js';
@@ -31,12 +36,15 @@ import {
 
 const USE_CAPABILITY_PLANNER = (process.env['USE_CAPABILITY_PLANNER'] ?? 'false').toLowerCase() === 'true';
 const PER_TOOL_HIL = (process.env['PER_TOOL_HIL'] ?? 'false').toLowerCase() === 'true';
+export const FAILURE_ANALYSIS_ENABLED =
+  (process.env['FAILURE_ANALYSIS_ENABLED'] ?? 'true').toLowerCase() === 'true';
 
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 const SECURITY_URL = process.env['SECURITY_URL'] ?? 'http://security-agent:8080';
 const BRAIN_URL = process.env['BRAIN_URL'] ?? 'http://brain-agent:8080';
 const HIL_URL = process.env['HIL_URL'] ?? 'http://hil-agent:8080';
 const COMMANDER_URL = process.env['COMMANDER_URL'] ?? 'http://commander-agent:8080';
+const GITOPS_URL = process.env['GITOPS_URL'] ?? 'http://gitops-agent:8080';
 
 export interface OrchestratorRunContext {
   runId: string;
@@ -50,12 +58,17 @@ export interface OrchestratorRunContext {
 }
 
 async function postJson<T>(url: string, payload: unknown, incidentId: string): Promise<T> {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(120_000),
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (err) {
+    throw formatFetchError(err, url);
+  }
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`POST ${url} failed ${res.status}: ${body}`);
@@ -101,15 +114,48 @@ export async function gatherFacts(req: StartRunRequest): Promise<DiagnosisContex
     mode: req.mode,
   });
   if (req.githubRepo) params.set('githubRepo', req.githubRepo);
+  if (req.containerImage) params.set('containerImage', req.containerImage);
   if (req.gitRef) params.set('gitRef', req.gitRef);
+  if (req.investigateScope) params.set('investigateScope', req.investigateScope);
+  if (req.rawMessage) params.set('rawMessage', req.rawMessage);
 
-  const res = await fetch(`${INVESTIGATOR_URL}/facts?${params}`, {
-    signal: AbortSignal.timeout(60_000),
-  });
+  const url = `${INVESTIGATOR_URL}/facts?${params}`;
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+  } catch (err) {
+    throw formatFetchError(err, url);
+  }
   if (!res.ok) {
-    throw new Error(`Failed to gather facts: ${res.status}`);
+    const body = await res.text().catch(() => '');
+    throw new Error(`Failed to gather facts: HTTP ${res.status} ${body.slice(0, 300)}`);
   }
   return res.json() as Promise<DiagnosisContext>;
+}
+
+export async function gatherStackFacts(req: StartRunRequest): Promise<StackDeployAnalysis> {
+  const payload: DeployRequest = {
+    incidentId: req.incidentId,
+    triggeredBy: req.triggeredBy,
+    triggeredAt: req.triggeredAt,
+    namespace: req.namespace,
+    resourceKind: req.resourceKind,
+    resourceName: req.resourceName,
+    mode: req.mode,
+    githubRepo: req.githubRepo,
+    gitRef: req.gitRef,
+    deployStrategy: req.deployStrategy,
+    requestedBy: req.requestedBy ?? 'unknown',
+    platform: req.platform ?? 'web',
+    channelId: req.channelId ?? 'unknown',
+    rawMessage: req.rawMessage ?? '',
+    stackServices: req.stackServices,
+  };
+  return postJson<StackDeployAnalysis>(
+    `${INVESTIGATOR_URL}/stack-facts`,
+    payload,
+    req.incidentId
+  );
 }
 
 export async function sanitizeFacts(context: DiagnosisContext) {
@@ -157,6 +203,41 @@ export async function callCapabilityPlan(ctx: DiagnosisContext): Promise<Capabil
   return postJson<CapabilityPlanResponse>(`${BRAIN_URL}/plan-capability`, ctx, ctx.incidentId);
 }
 
+export async function sanitizeTextForLlm(text: string, incidentId: string): Promise<string> {
+  try {
+    const res = await fetch(`${SECURITY_URL}/sanitize-for-llm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, incidentId }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return text.slice(0, 4000);
+    const data = (await res.json()) as { sanitizedText?: string; blocked?: boolean };
+    if (data.blocked) return '[redacted error]';
+    return data.sanitizedText ?? text.slice(0, 4000);
+  } catch {
+    return text.slice(0, 4000);
+  }
+}
+
+export async function callAnalyzeFailure(
+  payload: FailureAnalysisRequest
+): Promise<FailureAnalysisResult> {
+  return postJson<FailureAnalysisResult>(`${BRAIN_URL}/analyze-failure`, payload, payload.incidentId);
+}
+
+export async function validatePlanBeforeExecution(input: {
+  incidentId: string;
+  namespace: string;
+  mode: IncidentMode;
+  resourceKind: ResourceKind;
+  resourceName: string;
+  plan: RemediationPlan;
+  facts?: Partial<DiagnosisContext>;
+}): Promise<PlanValidationResult> {
+  return postJson<PlanValidationResult>(`${BRAIN_URL}/validate-plan`, input, input.incidentId);
+}
+
 export function buildRuntimeContext(ctx: OrchestratorRunContext): RuntimeToolContext {
   return {
     incidentId: ctx.incidentId,
@@ -200,6 +281,10 @@ export async function executeAction(
     platform: ctx.request.platform,
     channelId: ctx.request.channelId,
   };
+  if (ctx.request.createNamespace) {
+    cmd.executionOptions = { ...cmd.executionOptions, createNamespace: true };
+  }
+
   const runtimeCtx = buildRuntimeContext(ctx);
   const stored = await getRun(ctx.runId);
   const compiled =
@@ -316,6 +401,16 @@ export async function requestHilApproval(
     pendingTool,
   });
   await postJson(`${HIL_URL}/request-approval`, approval, ctx.incidentId);
+}
+
+export async function runRemediationCommand(
+  cmd: RemediateCommand
+): Promise<import('../../../shared/src/types.js').RemediationResult> {
+  return postJson<import('../../../shared/src/types.js').RemediationResult>(
+    `${GITOPS_URL}/remediate`,
+    cmd,
+    cmd.incidentId
+  );
 }
 
 export { USE_CAPABILITY_PLANNER, compileFromToolCalls };

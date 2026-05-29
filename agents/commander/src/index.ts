@@ -44,47 +44,46 @@ async function start() {
     }
   });
 
-  // Start HTTP Server
-  const server = app.listen(PORT, () => {
-    log('info', AGENT, `HTTP Server listening on port ${PORT}`, { incidentId: 'N/A' });
+  // Start HTTP server first so healthcheck does not depend on bot long-polling.
+  app.listen(PORT, () => {
+    log('info', AGENT, `HTTP Server listening on port ${PORT}`, {
+      incidentId: 'N/A',
+      telegramConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+      slackConfigured: Boolean(process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN),
+    });
   });
 
   // ── Slack Bot Integration ──────────────────────────────────────────────────
-  let slackStarted = false;
   if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
-    try {
-      const slackApp = createSlackApp();
-      await slackApp.start();
-      log('info', AGENT, 'Slack Bolt app started in Socket Mode', { incidentId: 'N/A' });
-      slackStarted = true;
-    } catch (err) {
-      log('error', AGENT, 'Failed to start Slack integration', { incidentId: 'N/A', error: String(err) });
-    }
+    void (async () => {
+      try {
+        const slackApp = createSlackApp();
+        await slackApp.start();
+        log('info', AGENT, 'Slack Bolt app started in Socket Mode', { incidentId: 'N/A' });
+      } catch (err) {
+        log('error', AGENT, 'Failed to start Slack integration', { incidentId: 'N/A', error: String(err) });
+      }
+    })();
   } else {
     log('warn', AGENT, 'SLACK_BOT_TOKEN/SLACK_APP_TOKEN not provided — Slack integration disabled', { incidentId: 'N/A' });
   }
 
   // ── Telegram Bot Integration ────────────────────────────────────────────────
-  let telegramStarted = false;
   if (process.env.TELEGRAM_BOT_TOKEN) {
-    try {
-      const tgBot = createTelegramBot();
-      tgBot.launch();
-      log('info', AGENT, 'Telegram Bot launched', { incidentId: 'N/A' });
-      telegramStarted = true;
-
-      // Handle graceful shutdown
-      process.once('SIGINT', () => tgBot.stop('SIGINT'));
-      process.once('SIGTERM', () => tgBot.stop('SIGTERM'));
-    } catch (err) {
-      log('error', AGENT, 'Failed to start Telegram integration', { incidentId: 'N/A', error: String(err) });
-    }
+    void (async () => {
+      try {
+        const tgBot = createTelegramBot();
+        await tgBot.launch({ dropPendingUpdates: true }, () => {
+          log('info', AGENT, 'Telegram Bot launched (long-polling)', { incidentId: 'N/A' });
+        });
+        process.once('SIGINT', () => tgBot.stop('SIGINT'));
+        process.once('SIGTERM', () => tgBot.stop('SIGTERM'));
+      } catch (err) {
+        log('error', AGENT, 'Failed to start Telegram integration', { incidentId: 'N/A', error: String(err) });
+      }
+    })();
   } else {
     log('warn', AGENT, 'TELEGRAM_BOT_TOKEN not provided — Telegram integration disabled', { incidentId: 'N/A' });
-  }
-
-  if (!slackStarted && !telegramStarted) {
-    log('warn', AGENT, 'Neither Slack nor Telegram integration is enabled. Running HTTP server only.', { incidentId: 'N/A' });
   }
 }
 

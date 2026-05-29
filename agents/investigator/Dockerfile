@@ -6,6 +6,8 @@ RUN apk add --no-cache git openssh-client
 
 # Copy shared library
 COPY shared/ ./shared/
+COPY scripts/container-entrypoint.sh /app/scripts/container-entrypoint.sh
+RUN chmod +x /app/scripts/container-entrypoint.sh
 
 # Copy agent package files
 COPY agents/investigator/package*.json ./agents/investigator/
@@ -16,4 +18,5 @@ COPY agents/investigator/ ./agents/investigator/
 
 WORKDIR /app/agents/investigator
 EXPOSE 8080
+ENV TSX_TSCONFIG_PATH=/app/agents/investigator/tsconfig.json
 CMD ["npm", "start"]

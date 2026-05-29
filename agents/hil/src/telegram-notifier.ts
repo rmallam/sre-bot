@@ -14,12 +14,58 @@ import { Telegraf, Markup } from 'telegraf';
 import { approvalStore } from './store.js';
 import { onApproved, onRejected } from './dispatcher.js';
 import { log } from '../../../shared/src/http.js';
+import { resolveGitPatchTarget } from '../../../shared/src/patch-target.js';
 import type { ApprovalRequest } from '../../../shared/src/types.js';
 
 const AGENT = 'hil-agent';
 
 const TELEGRAM_BOT_TOKEN     = process.env['TELEGRAM_BOT_TOKEN'] ?? '';
 const TELEGRAM_ALERT_CHAT_ID = process.env['TELEGRAM_ALERT_CHAT_ID'] ?? '';
+const TELEGRAM_SEND_GAP_MS   = parseInt(process.env['TELEGRAM_SEND_GAP_MS'] ?? '350', 10);
+const TELEGRAM_SEND_RETRIES  = parseInt(process.env['TELEGRAM_SEND_RETRIES'] ?? '3', 10);
+
+/** Serialize outbound Telegram sends to avoid rate-limit / socket hang up bursts. */
+let sendChain: Promise<void> = Promise.resolve();
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientTelegramError(err: unknown): boolean {
+  const msg = String(err).toLowerCase();
+  return (
+    msg.includes('socket hang up') ||
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('429') ||
+    msg.includes('too many requests')
+  );
+}
+
+async function sendTelegramWithRetry(
+  send: () => Promise<unknown>,
+  incidentId: string
+): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= TELEGRAM_SEND_RETRIES; attempt++) {
+    try {
+      await send();
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientTelegramError(err) || attempt >= TELEGRAM_SEND_RETRIES) break;
+      const delay = 400 * attempt;
+      log('warn', AGENT, 'Telegram send failed — retrying', {
+        incidentId,
+        attempt,
+        delayMs: delay,
+        error: String(err),
+      });
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+}
 
 /** Lazily-initialised Telegram bot. */
 let bot: Telegraf | null = null;
@@ -125,7 +171,10 @@ export async function startTelegram(): Promise<void> {
 /**
  * Post an approval request message with inline keyboard to Telegram.
  */
-export async function notifyTelegram(request: ApprovalRequest): Promise<void> {
+export async function notifyTelegram(
+  request: ApprovalRequest,
+  opts?: { prefix?: string }
+): Promise<void> {
   const b = getBot();
   if (!b) {
     log('warn', AGENT, 'Telegram not configured — skipping notification', {
@@ -157,13 +206,31 @@ export async function notifyTelegram(request: ApprovalRequest): Promise<void> {
     ? '⚠️ *ESCALATED* — Circuit breaker fired\\. Human action required\\.\n\n'
     : '';
 
+  const applyTarget =
+    plan.action === 'git_patch'
+      ? resolveGitPatchTarget({
+          planTarget: plan.patchTarget,
+          diagnoseMode: request.mode === 'diagnose',
+        })
+      : null;
+  const applyLine =
+    applyTarget === 'cluster'
+      ? '*Apply:* live cluster patch \\(no GitOps repo\\)\n'
+      : applyTarget === 'gitops'
+        ? '*Apply:* GitOps mirror / Argo\n'
+        : applyTarget === 'auto'
+          ? '*Apply:* cluster first, GitOps if configured\n'
+          : '';
+
+  const titlePrefix = opts?.prefix ?? '';
   const text =
     `${escalationLine}` +
-    `🛡️ *Approval Required*\n` +
+    `${titlePrefix}🛡️ *Approval Required*\n` +
     `*Resource:* \`${resourceKind}/${resourceName}\`\n` +
     `*Namespace:* \`${namespace}\`\n` +
     `*Severity:* ${plan.severity}\n` +
     `*Attempt:* \\#${attemptNumber} / ${circuitBreakerLimit}\n\n` +
+    applyLine +
     `*Root Cause:*\n${plan.rootCause.replace(/[_*[\]()~`>#+=|{}.!-]/g, (c: string) => '\\' + c)}\n\n` +
     `*Reasoning:*\n${plan.reasoning.replace(/[_*[\]()~`>#+=|{}.!-]/g, (c: string) => '\\' + c)}\n\n` +
     `*Proposed Patch* \\(${plan.targetManifestPath.replace(/[_*[\]()~`>#+=|{}.!-]/g, (c: string) => '\\' + c)}\\):\n` +
@@ -173,19 +240,28 @@ export async function notifyTelegram(request: ApprovalRequest): Promise<void> {
     `🔑 \`${incidentId}\``;
 
   try {
-    await b.telegram.sendMessage(
-      chatId,
-      text,
-      {
-        parse_mode: 'MarkdownV2',
-        ...Markup.inlineKeyboard([
-          [
-            Markup.button.callback('✅ Approve', `hil_approve_${incidentId}`),
-            Markup.button.callback('❌ Reject', `hil_reject_${incidentId}`),
-          ],
-        ]),
-      }
-    );
+    await new Promise<void>((resolve, reject) => {
+      sendChain = sendChain
+        .then(async () => {
+          await sendTelegramWithRetry(
+            () =>
+              b!.telegram.sendMessage(chatId, text, {
+                parse_mode: 'MarkdownV2',
+                ...Markup.inlineKeyboard([
+                  [
+                    Markup.button.callback('✅ Approve', `hil_approve_${incidentId}`),
+                    Markup.button.callback('❌ Reject', `hil_reject_${incidentId}`),
+                  ],
+                  [Markup.button.callback('✏️ Suggest fix', `hil_suggest_${incidentId}`)],
+                ]),
+              }),
+            incidentId
+          );
+          await sleep(TELEGRAM_SEND_GAP_MS);
+        })
+        .then(resolve)
+        .catch(reject);
+    });
 
     log('info', AGENT, 'Telegram notification sent', {
       incidentId,

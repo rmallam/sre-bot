@@ -4,28 +4,26 @@
  * Calls the Gemini API or OpenRouter API with a strict JSON Schema response format
  * to eliminate hallucination risk and ensure the output always conforms to RemediationPlan.
  *
- * Supports switching between:
- *  1. Native Google GenAI API (if GEMINI_API_KEY is set)
- *  2. OpenRouter API (if OPENROUTER_API_KEY is set)
+ * Provider selection: shared/llm-config (OpenRouter-first by default).
+ * Native Gemini uses strict responseSchema; OpenRouter uses JSON mode + validation.
  */
 
 import { GoogleGenAI, Type } from '@google/genai';
 import type { DiagnosisContext, RemediationPlan } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
+import { resolveBrainLlm } from '../../../shared/src/llm-config.js';
+import { openRouterChat, stripJsonFences } from '../../../shared/src/openrouter.js';
 
 const AGENT = 'brain-agent';
 
 const GEMINI_API_KEY = process.env['GEMINI_API_KEY'];
-const OPENROUTER_API_KEY = process.env['OPENROUTER_API_KEY'];
-const GEMINI_MODEL = process.env['GEMINI_MODEL'] ?? 'google/gemini-2.5-pro';
-
-if (!GEMINI_API_KEY && !OPENROUTER_API_KEY) {
-  log('error', AGENT, 'Neither GEMINI_API_KEY nor OPENROUTER_API_KEY environment variable is set', {});
-}
-
-// ── Gemini client ─────────────────────────────────────────────────────────────
-
 const genai = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
+
+try {
+  resolveBrainLlm();
+} catch (err) {
+  log('error', AGENT, 'LLM not configured at startup', { error: String(err) });
+}
 
 // ── Response Schema ───────────────────────────────────────────────────────────
 // Mirrors the RemediationPlan interface exactly.
@@ -173,6 +171,7 @@ function buildUserPrompt(ctx: DiagnosisContext): string {
     namespaceExists: ctx.namespaceExists ?? null,
     namespaceQuotas: ctx.namespaceQuotas ?? null,
     existingDeployments: ctx.existingDeployments ?? null,
+    specialistDiagnostics: ctx.specialistDiagnostics ?? null,
   };
 
   return `Here are the structured cluster facts for incident ${ctx.incidentId}:
@@ -277,48 +276,6 @@ function validateRemediationPlan(obj: unknown): RemediationPlan {
   };
 }
 
-// ── OpenRouter Call ───────────────────────────────────────────────────────────
-
-async function callOpenRouter(userPrompt: string): Promise<string> {
-  const model = process.env['OPENROUTER_MODEL'] ?? GEMINI_MODEL;
-  log('info', AGENT, 'Querying OpenRouter', { model });
-
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-      'HTTP-Referer': 'https://github.com/frappe-operator/sre-bot',
-      'X-Title': 'Kube SRE Bot',
-    },
-    body: JSON.stringify({
-      model: model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.1,
-    }),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    throw new Error(`OpenRouter HTTP ${res.status} error: ${errBody}`);
-  }
-
-  const data = (await res.json()) as any;
-  const rawText = data?.choices?.[0]?.message?.content;
-  if (!rawText) {
-    throw new Error(`OpenRouter returned empty content: ${JSON.stringify(data)}`);
-  }
-  return rawText;
-}
-
-// Avoid referencing remediationPlanSchema before declaration
-function reremediationPlanSchema() {
-  return remediationPlanSchema;
-}
-
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -326,27 +283,35 @@ function reremediationPlanSchema() {
  * and returns a validated RemediationPlan.
  */
 export async function diagnose(ctx: DiagnosisContext): Promise<RemediationPlan> {
-  const model = OPENROUTER_API_KEY 
-    ? (process.env['OPENROUTER_MODEL'] ?? GEMINI_MODEL)
-    : GEMINI_MODEL;
+  const llm = resolveBrainLlm();
 
   log('info', AGENT, 'Calling LLM for diagnosis', {
     incidentId: ctx.incidentId,
-    model,
+    model: llm.model,
+    backend: llm.backend,
     namespace: ctx.namespace,
     resourceName: ctx.resourceName,
     mode: ctx.mode,
-    apiType: OPENROUTER_API_KEY ? 'openrouter' : 'google-native',
   });
 
   const userPrompt = buildUserPrompt(ctx);
   let rawText = '';
 
-  if (OPENROUTER_API_KEY) {
-    rawText = await callOpenRouter(userPrompt);
+  if (llm.backend === 'openrouter') {
+    rawText = await openRouterChat({
+      model: llm.model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userPrompt },
+      ],
+      jsonMode: true,
+      temperature: 0.1,
+      callerAgent: AGENT,
+      incidentId: ctx.incidentId,
+    });
   } else if (genai) {
     const response = await genai.models.generateContent({
-      model: GEMINI_MODEL,
+      model: llm.model,
       contents: [
         {
           role: 'user',
@@ -366,7 +331,9 @@ export async function diagnose(ctx: DiagnosisContext): Promise<RemediationPlan> 
 
     rawText = response.text ?? '';
   } else {
-    throw new Error('No LLM credentials configured. Set GEMINI_API_KEY or OPENROUTER_API_KEY.');
+    throw new Error(
+      'Gemini native selected but GEMINI_API_KEY is missing. Set GEMINI_API_KEY or use OpenRouter.'
+    );
   }
 
   if (!rawText || rawText.trim() === '') {
@@ -380,14 +347,7 @@ export async function diagnose(ctx: DiagnosisContext): Promise<RemediationPlan> 
     responseLength: rawText.length,
   });
 
-  let cleanedText = rawText.trim();
-  if (cleanedText.startsWith('```')) {
-    // Strip markdown code block wrapper if present
-    cleanedText = cleanedText
-      .replace(/^```(?:json)?\n?/, '')
-      .replace(/\n?```$/, '')
-      .trim();
-  }
+  const cleanedText = stripJsonFences(rawText);
 
   let parsed: unknown;
   try {

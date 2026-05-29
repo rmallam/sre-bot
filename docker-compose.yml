@@ -1,4 +1,21 @@
-version: "3.9"
+name: sre-bot
+
+# Podman: after failed/partial runs, always: `podman compose down --remove-orphans` before up.
+# Use ./scripts/compose-up.sh for a clean start.
+
+# HTTP health probe (Node 22 image — no curl required)
+x-agent-healthcheck: &agent-healthcheck
+  test:
+    [
+      "CMD",
+      "node",
+      "-e",
+      "fetch('http://127.0.0.1:8080/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+    ]
+  interval: 5s
+  timeout: 5s
+  retries: 12
+  start_period: 60s
 
 networks:
   sre-net:
@@ -34,18 +51,57 @@ services:
       timeout: 3s
       retries: 5
 
+  # Optional: in-compose kubectl proxy. Default stack uses host.containers.internal instead
+  # (Podman Desktop API e.g. https://127.0.0.1:50750 on the Mac).
+  # Enable with: podman compose --profile kube-proxy up
+  kube-proxy:
+    profiles: ["kube-proxy"]
+    container_name: sre-bot-kube-proxy
+    image: docker.io/bitnami/kubectl:1.31
+    networks: [sre-net]
+    restart: unless-stopped
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro
+    command:
+      - kubectl
+      - proxy
+      - --address=0.0.0.0
+      - --port=8001
+      - --accept-hosts=.*
+      - --accept-paths=.*
+    # Must hit the proxy process, not the API server directly.
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'kubectl',
+          '--server=http://127.0.0.1:8001',
+          'get',
+          '--raw',
+          '/healthz',
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 18
+      start_period: 15s
+
   watcher-agent:
     build:
       context: .
       dockerfile: agents/watcher/Dockerfile
     networks: [sre-net]
+    entrypoint: ["/app/scripts/container-entrypoint.sh"]
     environment:
+      - AGENT_DIR=watcher
+      - KUBE_API_HOST=host.containers.internal
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
       - PORT=8080
       - INVESTIGATOR_URL=http://investigator-agent:8080
       - ORCHESTRATOR_URL=http://orchestrator-agent:8080
       - USE_ORCHESTRATOR=true
       - COOLDOWN_MINUTES=2
-      - KUBECONFIG=/root/.kube/config
+      - WATCH_NAMESPACES=${WATCH_NAMESPACES:-}
+      - KUBECONFIG=/tmp/kube/config
     volumes:
       - ~/.kube:/root/.kube:ro
 
@@ -56,27 +112,42 @@ services:
     networks: [sre-net]
     ports:
       - "8081:8080"
+    depends_on:
+      - investigator-agent
+      - security-agent
+      - gitops-agent
+    healthcheck: *agent-healthcheck
     environment:
       - PORT=8080
       - ORCHESTRATOR_URL=http://orchestrator-agent:8080
       - INVESTIGATOR_URL=http://investigator-agent:8080
+      - GITOPS_URL=http://gitops-agent:8080
       - SECURITY_URL=http://security-agent:8080
       - USE_ORCHESTRATOR=true
       - ALLOWED_USERS=${ALLOWED_USERS}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
       - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openrouter}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_COMMANDER_MODEL=${OPENROUTER_COMMANDER_MODEL:-google/gemini-2.5-flash}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - HIL_URL=http://hil-agent:8080
 
   investigator-agent:
+    container_name: sre-bot-investigator
     build:
       context: .
       dockerfile: agents/investigator/Dockerfile
     networks: [sre-net]
+    healthcheck: *agent-healthcheck
+    entrypoint: ["/app/scripts/container-entrypoint.sh"]
     ports:
       - "8082:8080"
     environment:
+      - AGENT_DIR=investigator
+      - KUBE_API_HOST=host.containers.internal
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
       - PORT=8080
       - BRAIN_URL=http://brain-agent:8080
       - ORCHESTRATOR_URL=http://orchestrator-agent:8080
@@ -84,7 +155,7 @@ services:
       - GITOPS_REPO_URL=${GITOPS_REPO_URL}
       - INVESTIGATOR_SAFE_MODE=true
       - GIT_SYNC_INTERVAL_SECONDS=60
-      - KUBECONFIG=/root/.kube/config
+      - KUBECONFIG=/tmp/kube/config
     volumes:
       - ~/.kube:/root/.kube:ro
       - ~/.ssh:/root/.ssh:ro
@@ -94,16 +165,22 @@ services:
       context: .
       dockerfile: agents/brain/Dockerfile
     networks: [sre-net]
+    entrypoint: ["/app/scripts/container-entrypoint.sh"]
     ports:
       - "8083:8080"
     environment:
+      - AGENT_DIR=brain
+      - KUBE_API_HOST=host.containers.internal
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
       - PORT=8080
       - HIL_URL=http://hil-agent:8080
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openrouter}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - GEMINI_MODEL=gemini-2.5-pro
+      - OPENROUTER_BRAIN_MODEL=${OPENROUTER_BRAIN_MODEL:-anthropic/claude-sonnet-4}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_BRAIN_MODEL=${GEMINI_BRAIN_MODEL:-gemini-2.5-pro}
       - CIRCUIT_BREAKER_LIMIT=3
-      - KUBECONFIG=/root/.kube/config
+      - KUBECONFIG=/tmp/kube/config
     volumes:
       - ~/.kube:/root/.kube:ro
 
@@ -115,8 +192,10 @@ services:
     ports:
       - "8084:8080"
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
+      - investigator-agent
+      - security-agent
+    healthcheck: *agent-healthcheck
     environment:
       - PORT=8080
       - INVESTIGATOR_URL=http://investigator-agent:8080
@@ -128,11 +207,11 @@ services:
       - COMMANDER_URL=http://commander-agent:8080
       - AUTONOMY_MODE=low_risk_only
       - AUTONOMY_MAX_ITERATIONS=5
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - DATABASE_URL=postgresql://sre:sre@postgres:5432/sre_runs
       - RUN_STORE_BACKEND=postgres
       - USE_CAPABILITY_PLANNER=false
       - PER_TOOL_HIL=false
+      - FAILURE_ANALYSIS_ENABLED=${FAILURE_ANALYSIS_ENABLED:-true}
     volumes:
       - run-data:/data/runs
 
@@ -143,6 +222,7 @@ services:
     networks: [sre-net]
     ports:
       - "8088:8080"
+    healthcheck: *agent-healthcheck
     environment:
       - PORT=8080
       - SECURITY_BLOCK_ON_FINDINGS=true
@@ -153,11 +233,15 @@ services:
       context: .
       dockerfile: agents/executor/Dockerfile
     networks: [sre-net]
+    entrypoint: ["/app/scripts/container-entrypoint.sh"]
     ports:
       - "8087:8080"
     environment:
+      - AGENT_DIR=executor
+      - KUBE_API_HOST=host.containers.internal
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
       - PORT=8080
-      - KUBECONFIG=/root/.kube/config
+      - KUBECONFIG=/tmp/kube/config
     volumes:
       - ~/.kube:/root/.kube:ro
 
@@ -180,27 +264,36 @@ services:
       - SLACK_ALERT_CHANNEL=${SLACK_ALERT_CHANNEL}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_ALERT_CHAT_ID=${TELEGRAM_ALERT_CHAT_ID}
+      - ORCHESTRATOR_URL=http://orchestrator-agent:8080
 
   gitops-agent:
     build:
       context: .
       dockerfile: agents/gitops/Dockerfile
     networks: [sre-net]
+    entrypoint: ["/app/scripts/container-entrypoint.sh"]
     ports:
       - "8086:8080"
     environment:
+      - AGENT_DIR=gitops
+      - KUBE_API_HOST=host.containers.internal
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
       - PORT=8080
       - COMMANDER_URL=http://commander-agent:8080
       - HIL_URL=http://hil-agent:8080
+      # Progress messages during deploy → Telegram
       - GITOPS_REPO_URL=${GITOPS_REPO_URL}
       - GITOPS_REPO_PATH=/data/gitops-mirror
       - DEPLOY_PUSH_APP_REPO=true
       - DEPLOY_PUSH_GITOPS=true
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GITOPS_USE_PR=false
+      # cluster = live kubectl patch only; gitops = mirror repo only; auto = cluster then mirror if GITOPS_REPO_URL set
+      - GITOPS_PATCH_MODE=${GITOPS_PATCH_MODE:-cluster}
       - ARGOCD_URL=${ARGOCD_URL}
       - ARGOCD_TOKEN=${ARGOCD_TOKEN}
-      - KUBECONFIG=/root/.kube/config
+      - KUBECONFIG=/tmp/kube/config
+      - DIRECT_DEPLOY_DRY_RUN=${DIRECT_DEPLOY_DRY_RUN:-false}
     volumes:
       - gitops-mirror:/data/gitops-mirror
       - ~/.kube:/root/.kube:ro

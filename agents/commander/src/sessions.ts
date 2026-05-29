@@ -7,6 +7,8 @@ export interface ChatSession {
   activeRunId?: string;
   pendingQuestion?: string;
   lastIncidentId?: string;
+  /** Last deploy intent for branch/strategy follow-ups. */
+  lastDeployDraft?: import('./parser.js').DeployCmd;
   updatedAt: string;
 }
 
