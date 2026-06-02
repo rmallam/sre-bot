@@ -126,6 +126,13 @@ export class PostgresRunStore implements RunStore {
     });
   }
 
+  async mergeRunMetadata(runId: string, patch: Record<string, unknown>): Promise<void> {
+    await this.pool.query(
+      `UPDATE sre_runs SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb, updated_at = NOW() WHERE run_id = $2`,
+      [JSON.stringify(patch), runId]
+    );
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }

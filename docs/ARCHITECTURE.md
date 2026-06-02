@@ -438,6 +438,12 @@ Internal URLs use service names, e.g. `http://orchestrator-agent:8080`.
 ## 14. Related documents
 
 - [README](../README.md) — Quick start and env vars  
+- [PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md) — Consolidated engineering backlog  
+- [HOLMES-COMPARISON-AND-ADOPTION.md](./HOLMES-COMPARISON-AND-ADOPTION.md) — HolmesGPT vs sre-bot  
+- [CONVERSATIONAL-UX-ROADMAP.md](./CONVERSATIONAL-UX-ROADMAP.md) — Chat UX  
+- [CI-CODE-REMEDIATION-ROADMAP.md](./CI-CODE-REMEDIATION-ROADMAP.md) — CI/code fix phases  
+- [DEEP-RCA.md](./DEEP-RCA.md) — Multi-source investigation stack  
+- [OPERATIONS-CONSOLE.md](./OPERATIONS-CONSOLE.md) — Web UI  
 - [secrets.example.yaml](../secrets.example.yaml) — Configuration template  
 - [OWASP LLM control matrix](./security/OWASP-LLM-control-matrix.md) — Security controls  
 - [policy/authorize.rego](../policy/authorize.rego) — OPA policies (v2)  

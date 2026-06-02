@@ -2,36 +2,45 @@
 // Shared payload types for the Kube SRE Microservice Agent Framework
 // ─────────────────────────────────────────────────────────────────────────────
 
+import type { RcaPointer } from './rca-pointers.js';
+export type { RcaPointer, RcaPointerSource } from './rca-pointers.js';
+
 export type Platform = 'slack' | 'telegram' | 'teams' | 'web';
 export type ResourceKind = 'Deployment' | 'StatefulSet' | 'Pod' | 'Job' | 'DaemonSet';
-export type IncidentMode = 'diagnose' | 'pre-deploy' | 'rollback';
+export type IncidentMode = 'diagnose' | 'pre-deploy' | 'rollback' | 'ci-failure';
 export type InvestigateScope = 'workload' | 'namespace' | 'cluster';
 export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type ApprovalStatus =
   | 'PENDING'
   | 'APPROVED'
   | 'REJECTED'
+  | 'IGNORED'
   | 'EXPIRED'
   | 'EXECUTING'
   | 'DONE'
   | 'FAILED';
-
-export type RemediationAction =
-  | 'restart'
-  | 'git_patch'
-  | 'helm_deploy'
-  | 'repo_apply'
-  | 'escalate_human'
-  | 'noop';
-
-export type AutonomyMode = 'full' | 'low_risk_only' | 'hil_all';
 
 export type RunStatus =
   | 'running'
   | 'awaiting_human'
   | 'succeeded'
   | 'failed'
-  | 'escalated';
+  | 'escalated'
+  | 'cancelled';
+
+export type RemediationAction =
+  | 'restart'
+  | 'git_patch'
+  | 'helm_deploy'
+  | 'repo_apply'
+  | 'cicd_rerun'
+  | 'cicd_open_pr'
+  | 'cicd_code_pr'
+  | 'coding_agent_handoff'
+  | 'escalate_human'
+  | 'noop';
+
+export type AutonomyMode = 'full' | 'low_risk_only' | 'hil_all';
 
 export type VerifyStatus = 'healthy' | 'degraded' | 'unknown';
 
@@ -115,6 +124,10 @@ export interface RepoSignals {
   hasGoMod?: boolean;
   primaryLanguage?: string;
   suggestedImage?: string;
+  /** Runtime detected for S2I / buildpacks (DEPLOY-2). */
+  detectedRuntime?: string;
+  needsImageBuild?: boolean;
+  buildStrategy?: 'existing-dockerfile' | 'buildpacks' | 's2i' | 'skip';
 }
 
 export interface DiagnosisContext extends IncidentEnvelope {
@@ -148,6 +161,12 @@ export interface DiagnosisContext extends IncidentEnvelope {
   stackDeploy?: StackDeployAnalysis;
   /** Parallel specialist summaries (workload/network/database). */
   specialistDiagnostics?: SpecialistDiagnostic[];
+  /** Multi-source RCA evidence (K8s, Loki, Prometheus, …). */
+  rcaPointers?: RcaPointer[];
+  /** One-paragraph merge of top RCA pointers for planners. */
+  observabilitySummary?: string;
+  /** Populated in ci-failure mode from cicd-agent. */
+  ciRun?: CiRunFacts;
 }
 
 export interface SpecialistDiagnostic {
@@ -188,7 +207,25 @@ export interface HelmChartPayload {
 }
 
 import type { PatchTarget } from './patch-target.js';
+import type { CiRunFacts } from './ci-types.js';
+import type { CiFixCategory } from './ci-types.js';
 export type { PatchTarget };
+
+export interface CiCodePatch {
+  path: string;
+  content: string;
+}
+
+export interface RemediationPlanCicdMeta {
+  workflowRunId: number;
+  workflowName: string;
+  fixCategory?: CiFixCategory;
+  workflowFilePath?: string;
+  prTitle?: string;
+  prBody?: string;
+  logExcerpt?: string;
+  codePatches?: CiCodePatch[];
+}
 
 export interface RemediationPlan {
   action: RemediationAction;
@@ -205,6 +242,7 @@ export interface RemediationPlan {
   targetRepo?: 'app' | 'gitops' | 'both';
   githubRepo?: string;
   gitRef?: string;
+  cicd?: RemediationPlanCicdMeta;
 }
 
 export interface ToolTranscriptEntry {
@@ -353,6 +391,11 @@ export interface StartRunRequest extends IncidentEnvelope {
   createNamespace?: boolean;
   /** Multi-service deploy request with one incident lifecycle. */
   stackServices?: StackServiceRef[];
+  /** CI/CD: specific workflow run (GitHub Actions). */
+  workflowRunId?: number;
+  workflowName?: string;
+  prNumber?: number;
+  ciBranch?: string;
 }
 
 export interface StartRunResponse {

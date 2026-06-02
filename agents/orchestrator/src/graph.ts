@@ -34,6 +34,7 @@ import {
 } from '../../../shared/src/failure-plan-merge.js';
 import {
   gatherFacts,
+  gatherCiFacts,
   sanitizeFacts,
   authorizePlan,
   callPlanLlm,
@@ -48,6 +49,10 @@ import {
   gatherStackFacts,
   validatePlanBeforeExecution,
   notifyUser,
+  notifyUserUpdate,
+  notifyProgress,
+  enhanceCiRunFacts,
+  isRunRequestIgnored,
   requestHilApproval,
   runRemediationCommand,
   USE_CAPABILITY_PLANNER,
@@ -60,15 +65,20 @@ import {
   getRun,
   setRunCompiled,
   setCapabilityPlan,
+  mergeRunMetadata,
 } from './run-store.js';
+import { persistRunOutcome, persistSuggestedPlan } from './persist-outcome.js';
+import type { HumanDecision } from '../../../shared/src/remediation-outcome.js';
 import { buildDeployPlan } from './deploy-plan.js';
 import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
+import { modeOutcomeLabel, runStatusOutcomeLabel } from '../../../shared/src/user-outcomes.js';
 import { deployHeader, sendDeployProgress } from '../../../shared/src/deploy-notify.js';
 import {
   deployReadySuccessMessage,
   watchDeployReadinessAndNotify,
 } from '../../../shared/src/deploy-readiness-watch.js';
 import { decidePostDeployRecovery } from '../../../shared/src/post-deploy-recovery.js';
+import { buildFullCiFailurePlan } from './ci-failure-plan.js';
 
 const AGENT = 'orchestrator-agent';
 const MAX_ITERATIONS = parseInt(process.env['AUTONOMY_MAX_ITERATIONS'] ?? '5', 10);
@@ -109,6 +119,28 @@ const RunAnnotation = Annotation.Root({
 
 type GraphState = typeof RunAnnotation.State;
 
+async function snapshotRunOutcome(
+  runId: string,
+  state: GraphState,
+  humanDecision?: HumanDecision
+): Promise<void> {
+  const plan = state.lastFailedPlan ?? state.pendingPlan;
+  const decision =
+    humanDecision ??
+    (state.status === 'awaiting_human'
+      ? 'pending'
+      : state.request.triggeredBy === 'commander'
+        ? 'auto'
+        : undefined);
+  await persistRunOutcome(runId, {
+    status: state.status as RunStatus,
+    lastError: state.lastError,
+    actionHistory: state.actionHistory ?? [],
+    plan,
+    humanDecision: decision,
+  }).catch(() => undefined);
+}
+
 interface StackServiceExecutionPlan {
   serviceName: string;
   plan: RemediationPlan;
@@ -129,6 +161,7 @@ function runCtx(state: GraphState): OrchestratorRunContext {
     resourceKind: state.resourceKind,
     mode: state.mode,
     pendingPlan: state.pendingPlan,
+    ciRun: state.factsRaw?.ciRun ?? state.factsSanitized?.ciRun,
   };
 }
 
@@ -177,6 +210,56 @@ async function deriveSpecialistDiagnostics(
 }
 
 async function observeNode(state: GraphState): Promise<Partial<GraphState>> {
+  if (state.mode === 'ci-failure') {
+    try {
+      if (state.request.platform && state.request.channelId) {
+        await notifyProgress(runCtx(state), 'Fetching CI logs from GitHub…');
+      }
+      let ciRun = await gatherCiFacts(state.request);
+      ciRun = await enhanceCiRunFacts(ciRun, state.incidentId);
+      const facts: DiagnosisContext = {
+        incidentId: state.incidentId,
+        mode: state.mode,
+        namespace: state.namespace,
+        resourceKind: state.resourceKind,
+        resourceName: state.resourceName,
+        recentEvents: [],
+        currentLogs: ciRun.logExcerpt ?? '',
+        previousLogs: '',
+        ciRun,
+        githubRepo: ciRun.githubRepo,
+      };
+      return { factsRaw: facts, iteration: state.iteration + 1 };
+    } catch (err) {
+      const errMsg = String(err);
+      if (state.request.platform && state.request.channelId) {
+        await notifyUser(
+          runCtx(state),
+          `❌ Could not fetch CI run:\n${humanizeOperatorError(errMsg)}`
+        );
+      }
+      return { status: 'failed', lastError: errMsg, iteration: state.iteration + 1 };
+    }
+  }
+
+  if (
+    state.mode === 'pre-deploy' &&
+    state.request.platform &&
+    state.request.channelId &&
+    state.iteration === 0
+  ) {
+    await notifyProgress(runCtx(state), 'Gathering cluster and repository information…');
+  }
+
+  if (
+    state.mode === 'diagnose' &&
+    state.request.platform &&
+    state.request.channelId &&
+    state.iteration === 0
+  ) {
+    await notifyProgress(runCtx(state), 'Gathering logs, metrics, and cluster evidence…');
+  }
+
   const baseFacts = await gatherFacts(state.request);
   const specialistDiagnostics =
     baseFacts.specialistDiagnostics && baseFacts.specialistDiagnostics.length > 0
@@ -377,6 +460,40 @@ async function planNode(state: GraphState): Promise<Partial<GraphState>> {
     return { pendingPlan: cap.remediationPlan };
   }
 
+  if (state.mode === 'ci-failure') {
+    const ciRun = state.factsRaw?.ciRun ?? state.factsSanitized?.ciRun;
+    if (!ciRun) {
+      return { status: 'failed', lastError: 'No CI run facts available' };
+    }
+    const plan = await buildFullCiFailurePlan(ciRun, state.incidentId);
+    await mergeRunMetadata(state.runId, { ciRun, remediationPlan: plan });
+    if (state.request.platform && state.request.channelId) {
+      await notifyUserUpdate(runCtx(state), {
+        kind: 'ci_diagnosis',
+        incidentId: state.incidentId,
+        runId: state.runId,
+        ciRun,
+        repo: ciRun.githubRepo,
+        detailAvailable: true,
+      });
+      if (plan.action === 'coding_agent_handoff') {
+        await notifyUserUpdate(runCtx(state), {
+          kind: 'coding_agent_handoff',
+          incidentId: state.incidentId,
+          runId: state.runId,
+          codingAgentMaxAttempts: parseInt(
+            process.env['CODING_AGENT_MAX_ITERATIONS'] ??
+              process.env['CODING_AGENT_MAX_ATTEMPTS'] ??
+              '5',
+            10
+          ),
+          technicalMessage: ciRun.diagnosis?.summary,
+        });
+      }
+    }
+    return { pendingPlan: plan };
+  }
+
   const plan =
     state.mode === 'pre-deploy'
       ? await buildDeployPlan(ctx, state.request)
@@ -509,7 +626,15 @@ async function policyNode(state: GraphState): Promise<Partial<GraphState>> {
   }
 
   if (state.pendingPlan.action === 'noop') {
-    await notifyUser(runCtx(state), `ℹ️ No automated action recommended for this incident.`);
+    if (state.mode !== 'ci-failure') {
+      const root = state.pendingPlan.rootCause?.trim();
+      const reasoning = state.pendingPlan.reasoning?.trim();
+      const msg =
+        root && root.length > 10
+          ? `ℹ️ Investigation summary:\n${root}${reasoning ? `\n\n${reasoning.slice(0, 600)}` : ''}`
+          : `ℹ️ No automated action recommended for this incident.`;
+      await notifyUser(runCtx(state), msg);
+    }
     return { status: 'succeeded' };
   }
 
@@ -531,11 +656,72 @@ async function policyNode(state: GraphState): Promise<Partial<GraphState>> {
   const gate = evaluateCombinedPolicy(planGate, toolGate);
 
   if (!gate.autoExecute) {
+    if (
+      state.mode === 'ci-failure' &&
+      state.pendingPlan.action === 'cicd_open_pr' &&
+      state.request.platform &&
+      state.request.channelId
+    ) {
+      await notifyUserUpdate(runCtx(state), {
+        kind: 'ci_approval_workflow_pr',
+        incidentId: state.incidentId,
+        pendingAction: 'cicd_open_pr',
+        workflowFilePath:
+          state.pendingPlan.cicd?.workflowFilePath ?? state.pendingPlan.targetManifestPath,
+        repo: state.pendingPlan.githubRepo,
+      });
+    } else if (
+      state.mode === 'ci-failure' &&
+      state.pendingPlan.action === 'cicd_code_pr' &&
+      state.request.platform &&
+      state.request.channelId
+    ) {
+      await notifyUserUpdate(runCtx(state), {
+        kind: 'ci_approval_code_pr',
+        incidentId: state.incidentId,
+        pendingAction: 'cicd_code_pr',
+        codeFilePaths: state.pendingPlan.cicd?.codePatches?.map((p) => p.path),
+        repo: state.pendingPlan.githubRepo,
+      });
+    } else if (
+      state.mode === 'ci-failure' &&
+      state.pendingPlan.action === 'coding_agent_handoff' &&
+      state.request.platform &&
+      state.request.channelId
+    ) {
+      await notifyUserUpdate(runCtx(state), {
+        kind: 'ci_approval_coding_agent',
+        incidentId: state.incidentId,
+        runId: state.runId,
+        pendingAction: 'coding_agent_handoff',
+        repo: state.pendingPlan.githubRepo,
+        codingAgentMaxAttempts: parseInt(
+          process.env['CODING_AGENT_MAX_ITERATIONS'] ??
+            process.env['CODING_AGENT_MAX_ATTEMPTS'] ??
+            '5',
+          10
+        ),
+      });
+    } else if (
+      state.mode === 'ci-failure' &&
+      state.pendingPlan.action === 'cicd_rerun' &&
+      state.request.platform &&
+      state.request.channelId
+    ) {
+      await notifyUserUpdate(runCtx(state), {
+        kind: 'ci_approval_rerun',
+        incidentId: state.incidentId,
+        pendingAction: 'cicd_rerun',
+        repo: state.pendingPlan.githubRepo,
+      });
+    }
     const run = await getRun(state.runId);
     if (run?.status !== 'awaiting_human') {
       await requestHilApproval(runCtx(state), state.pendingPlan, state.iteration, state.maxIterations);
       await setRunStatus(state.runId, 'awaiting_human');
+      await persistSuggestedPlan(state.runId, state.pendingPlan);
     }
+    await snapshotRunOutcome(state.runId, { ...state, status: 'awaiting_human' } as GraphState, 'pending');
     return { status: 'awaiting_human', awaitingHuman: true };
   }
   return { awaitingHuman: false };
@@ -854,6 +1040,22 @@ async function analyzeFailureNode(state: GraphState): Promise<Partial<GraphState
 }
 
 async function verifyNode(state: GraphState): Promise<Partial<GraphState>> {
+  if (state.mode === 'ci-failure') {
+    const history = [...state.actionHistory];
+    const lastAction = history[history.length - 1];
+    if (lastAction?.success) {
+      await notifyUser(
+        runCtx(state),
+        `✅ CI step completed: ${lastAction.summary ?? state.pendingPlan?.action ?? 'done'}`
+      );
+      return { status: 'succeeded', actionHistory: history };
+    }
+    if (lastAction && !lastAction.success) {
+      return { status: 'failed', actionHistory: history, lastError: lastAction.summary };
+    }
+    return { status: 'succeeded', actionHistory: history };
+  }
+
   const stored = await getRun(state.runId);
   const fromTranscript = stored?.transcript
     .filter((t) => t.tool === 'investigator.verify_health')
@@ -982,6 +1184,9 @@ function routeAfterVerify(state: GraphState): string {
   if (state.status === 'succeeded' || state.status === 'escalated' || state.status === 'failed') {
     return END;
   }
+  if (state.mode === 'ci-failure') {
+    return END;
+  }
   if (state.mode === 'pre-deploy') {
     if (state.pendingPlan) return 'authorize';
     return END;
@@ -1064,11 +1269,24 @@ export async function startRun(
 
   log('info', AGENT, 'Starting run', { runId, incidentId: request.incidentId });
   await initRun(runId, request.incidentId, { mode: request.mode, request });
+
+  if (await isRunRequestIgnored(request)) {
+    await setRunStatus(runId, 'cancelled');
+    log('info', AGENT, 'Run skipped — resource on ignore list', {
+      runId,
+      incidentId: request.incidentId,
+      namespace: request.namespace,
+      resourceName: request.resourceName,
+    });
+    return { runId, status: 'cancelled', lastError: 'Resource is ignored' };
+  }
+
   const compiled = buildGraph();
   const final = await compiled.invoke(initial, { configurable: { thread_id: runId } });
   const status = final.status as RunStatus;
   const lastError = final.lastError as string | undefined;
   await setRunStatus(runId, status);
+  await snapshotRunOutcome(runId, final as GraphState);
 
   await notifyRunOutcome({ ...initial, runId, status, lastError }, final.actionHistory ?? []);
 
@@ -1082,59 +1300,61 @@ async function notifyRunOutcome(
   if (!state.request.platform || !state.request.channelId) return;
 
   const ctx = runCtx(state);
-  const shortId = state.runId.slice(0, 8);
-  const modeLabel = state.mode === 'pre-deploy' ? 'Deploy' : state.mode === 'diagnose' ? 'Investigation' : 'Run';
+  const modeLabel = modeOutcomeLabel(state.mode);
 
   if (state.status === 'failed') {
     const detail = state.lastError ?? 'Unknown error';
     if (/Could not clone|Could not read the deploy repo/i.test(detail)) {
       return;
     }
-    await notifyUser(
-      ctx,
-      `❌ ${modeLabel} failed (${shortId})\n${humanizeOperatorError(detail)}`
-    );
+    await notifyUserUpdate(ctx, {
+      kind: 'run_failed',
+      incidentId: state.incidentId,
+      runId: state.runId,
+      mode: state.mode,
+      detailAvailable: true,
+      technicalMessage: humanizeOperatorError(detail),
+    });
     return;
   }
 
   if (state.status === 'awaiting_human') {
-    await notifyUser(
-      ctx,
-      `⏸ ${modeLabel} paused — waiting for approval (\`${shortId}\`).\n` +
-        `Check your HIL dashboard or approve/reject when prompted.`
-    );
+    await notifyUserUpdate(ctx, {
+      kind: 'hil_required',
+      incidentId: state.incidentId,
+      runId: state.runId,
+      mode: state.mode,
+      pendingAction: state.pendingPlan?.action,
+      technicalMessage: `Your ${modeLabel} is waiting for approval.`,
+    });
     return;
   }
 
   if (state.status === 'succeeded' && state.mode !== 'pre-deploy') {
     const lastSuccessful = [...actionHistory].reverse().find((a) => a.success);
-    const actionLine = lastSuccessful ? `Applied fix: ${lastSuccessful.action}` : undefined;
-    const detailLine = lastSuccessful?.summary ? `Detail: ${lastSuccessful.summary}` : undefined;
-    const verifyLine =
-      lastSuccessful?.verifyStatus === 'healthy' ? 'Verification: workload is healthy ✅' : undefined;
-    const commitLine =
-      lastSuccessful?.commitUrls && lastSuccessful.commitUrls.length > 0
-        ? `Reference: ${lastSuccessful.commitUrls[0]}`
-        : undefined;
-
-    const lines = [
-      `✅ Issue fixed — ${modeLabel.toLowerCase()} completed (${shortId})`,
-      `Resource: ${state.resourceKind}/${state.resourceName} in ${state.namespace}`,
-      actionLine,
-      verifyLine,
-      detailLine,
-      commitLine,
-    ].filter(Boolean) as string[];
-
-    await notifyUser(ctx, lines.join('\n'));
+    const prMatch = lastSuccessful?.summary?.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
+    await notifyUserUpdate(ctx, {
+      kind: 'run_succeeded',
+      incidentId: state.incidentId,
+      runId: state.runId,
+      mode: state.mode,
+      detailAvailable: true,
+      codingAgentPrUrl: prMatch?.[0],
+      technicalMessage:
+        `${modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1)} ${runStatusOutcomeLabel('succeeded')}.` +
+        (lastSuccessful?.summary ? `\n${lastSuccessful.summary.slice(0, 300)}` : ''),
+    });
     return;
   }
 
   if (state.status === 'escalated' && state.mode !== 'pre-deploy') {
-    await notifyUser(
-      ctx,
-      `⚠️ ${modeLabel} escalated (${shortId})\n${humanizeOperatorError(state.lastError ?? 'Needs follow-up')}`
-    );
+    await notifyUserUpdate(ctx, {
+      kind: 'run_escalated',
+      incidentId: state.incidentId,
+      runId: state.runId,
+      mode: state.mode,
+      technicalMessage: humanizeOperatorError(state.lastError ?? 'Needs follow-up'),
+    });
   }
 
   // Pre-deploy success/failure summaries are sent from verify/confirm; avoid duplicate here.
@@ -1248,11 +1468,13 @@ export async function resumeRunAfterApproval(cmd: RemediateCommand): Promise<Run
   }
   if (merged.status === 'awaiting_human') {
     await setRunStatus(runId, 'awaiting_human');
+    await snapshotRunOutcome(runId, merged, 'approved');
     await notifyRunOutcome({ ...merged, runId, status: 'awaiting_human' }, merged.actionHistory ?? []);
     return 'awaiting_human';
   }
   if (merged.status === 'succeeded') {
     await setRunStatus(runId, 'succeeded');
+    await snapshotRunOutcome(runId, merged, 'approved');
     await notifyRunOutcome({ ...merged, runId, status: 'succeeded' }, merged.actionHistory ?? []);
     return 'succeeded';
   }
@@ -1278,6 +1500,7 @@ export async function resumeRunAfterApproval(cmd: RemediateCommand): Promise<Run
   }
 
   await setRunStatus(runId, status);
+  await snapshotRunOutcome(runId, finalState, 'approved');
   await notifyRunOutcome({ ...finalState, runId, status }, finalState.actionHistory ?? []);
   return status;
 }

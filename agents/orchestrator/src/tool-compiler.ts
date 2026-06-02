@@ -39,6 +39,75 @@ function coreActionCalls(ctx: RuntimeToolContext): ToolCall[] {
     ];
   }
 
+  if (action === 'cicd_rerun' && ctx.plan.cicd) {
+    return [
+      {
+        name: 'cicd.rerun_workflow',
+        input: {
+          incidentId: ctx.incidentId,
+          githubRepo: ctx.plan.githubRepo ?? ctx.request.githubRepo ?? '',
+          workflowRunId: ctx.plan.cicd.workflowRunId,
+        },
+      },
+    ];
+  }
+
+  if (action === 'cicd_open_pr' && ctx.plan.cicd) {
+    return [
+      {
+        name: 'cicd.open_pr',
+        input: {
+          incidentId: ctx.incidentId,
+          githubRepo: ctx.plan.githubRepo ?? ctx.request.githubRepo ?? '',
+          branch: ctx.plan.gitRef ?? 'main',
+          title: ctx.plan.cicd.prTitle ?? ctx.plan.commitMessage,
+          body: ctx.plan.cicd.prBody ?? ctx.plan.reasoning,
+          workflowFilePath: ctx.plan.cicd.workflowFilePath ?? ctx.plan.targetManifestPath,
+          workflowName: ctx.plan.cicd.workflowName,
+          logExcerpt: ctx.plan.cicd.logExcerpt,
+        },
+      },
+    ];
+  }
+
+  if (action === 'cicd_code_pr' && ctx.plan.cicd?.codePatches?.length) {
+    return [
+      {
+        name: 'cicd.open_code_pr',
+        input: {
+          incidentId: ctx.incidentId,
+          githubRepo: ctx.plan.githubRepo ?? ctx.request.githubRepo ?? '',
+          branch: ctx.plan.gitRef ?? 'main',
+          title: ctx.plan.cicd.prTitle ?? ctx.plan.commitMessage,
+          body: ctx.plan.cicd.prBody ?? ctx.plan.reasoning,
+          patches: ctx.plan.cicd.codePatches,
+        },
+      },
+    ];
+  }
+
+  if (action === 'coding_agent_handoff') {
+    if (!ctx.ciRun) return [];
+    return [
+      {
+        name: 'coding_agent.run_fix',
+        input: {
+          incidentId: ctx.incidentId,
+          runId: ctx.runId,
+          ciRun: ctx.ciRun,
+          platform: ctx.request.platform,
+          channelId: ctx.request.channelId,
+          maxAttempts: parseInt(
+            process.env['CODING_AGENT_MAX_ITERATIONS'] ??
+              process.env['CODING_AGENT_MAX_ATTEMPTS'] ??
+              '5',
+            10
+          ),
+        },
+      },
+    ];
+  }
+
   return [];
 }
 
@@ -51,7 +120,7 @@ function appendStandardPipeline(ctx: RuntimeToolContext, calls: ToolCall[]): Too
   // loops when apply already succeeded but readiness is still converging.
 
   // Pre-deploy: gitops sends step-by-step progress; skip noisy per-tool notify here.
-  if (ctx.request.platform && ctx.request.channelId && ctx.mode !== 'pre-deploy') {
+  if (ctx.request.platform && ctx.request.channelId && ctx.mode !== 'pre-deploy' && ctx.mode !== 'ci-failure') {
     pipeline.push({
       name: 'commander.notify',
       input: {

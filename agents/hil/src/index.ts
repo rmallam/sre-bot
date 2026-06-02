@@ -25,7 +25,8 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { approvalStore } from './store.js';
 import { renderDashboard } from './dashboard.js';
-import { dispatch, onApproved, onRejected } from './dispatcher.js';
+import { dispatch, onApproved, onRejected, onIgnored } from './dispatcher.js';
+import { ignoreStore } from './ignore-store.js';
 import { applyOperatorSuggestion } from './suggest-fix.js';
 import { startSlack } from './slack-notifier.js';
 import { startTelegram } from './telegram-notifier.js';
@@ -55,12 +56,48 @@ app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', agent: AGENT, pendingApprovals: pending });
 });
 
-// ── Web Dashboard ─────────────────────────────────────────────────────────────
-app.get('/', (_req: Request, res: Response) => {
+// ── Web Dashboard (legacy HTML) ───────────────────────────────────────────────
+app.get('/legacy', (_req: Request, res: Response) => {
   const all = approvalStore.getAll();
-  const html = renderDashboard(all);
+  const ignored = ignoreStore.list();
+  const html = renderDashboard(all, ignored);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
+});
+
+/** JSON API for Operations Console. */
+app.get('/api/approvals', (_req: Request, res: Response) => {
+  const approvals = approvalStore.getAll().map((entry) => ({
+    incidentId: entry.request.incidentId,
+    runId: entry.request.runId,
+    status: entry.status,
+    expiresAt: entry.expiresAt,
+    lockedBy: entry.lockedBy,
+    lockedVia: entry.lockedVia,
+    lockedAt: entry.lockedAt,
+    rejectionReason: entry.rejectionReason,
+    namespace: entry.request.namespace,
+    resourceName: entry.request.resourceName,
+    resourceKind: entry.request.resourceKind,
+    mode: entry.request.mode,
+    escalated: entry.request.escalated,
+    attemptNumber: entry.request.attemptNumber,
+    circuitBreakerLimit: entry.request.circuitBreakerLimit,
+    plan: entry.request.plan,
+    humanSuggestion: entry.request.humanSuggestion,
+    planSource: entry.request.planSource,
+    triggeredAt: entry.request.triggeredAt,
+    triggeredBy: entry.request.triggeredBy,
+  }));
+  res.json({
+    pending: approvals.filter((a) => a.status === 'PENDING').length,
+    approvals,
+  });
+});
+
+// Legacy root — redirect hint; keep HTML at /legacy
+app.get('/', (_req: Request, res: Response) => {
+  res.redirect(302, '/legacy');
 });
 
 // ── Receive Approval Request from Brain ───────────────────────────────────────
@@ -72,6 +109,20 @@ app.post('/request-approval', async (req: Request, res: Response) => {
       body: req.body,
     });
     res.status(400).json({ error: 'incidentId and plan are required' });
+    return;
+  }
+
+  if (ignoreStore.isRequestIgnored(request)) {
+    log('info', AGENT, 'Approval request dropped — resource ignored', {
+      incidentId: request.incidentId,
+      namespace: request.namespace,
+      resourceName: request.resourceName,
+    });
+    res.status(202).json({
+      status: 'ignored',
+      incidentId: request.incidentId,
+      message: 'Resource is on the ignore list — notification skipped',
+    });
     return;
   }
 
@@ -302,6 +353,132 @@ app.post('/api/reject/:incidentId', async (req: Request, res: Response) => {
     res.status(202).json({ status: 'accepted', incidentId });
     onRejected(entry, actor, via, reason ?? 'Rejected via API').catch((err) =>
       log('error', AGENT, 'onRejected failed after API rejection', {
+        incidentId,
+        error: String(err),
+      })
+    );
+  } else if (result === 'already_handled') {
+    const entry = approvalStore.get(incidentId);
+    res.status(200).json({ status: 'already_handled', currentStatus: entry?.status });
+  } else {
+    res.status(400).json({ error: result });
+  }
+});
+
+// ── Web UI: Ignore ────────────────────────────────────────────────────────────
+app.post('/ignore/:incidentId', async (req: Request, res: Response) => {
+  const { incidentId } = req.params;
+  if (!incidentId) {
+    res.status(400).send('Missing incidentId');
+    return;
+  }
+
+  const userId = 'web-operator';
+  const reason =
+    (req.body as { reason?: string }).reason ?? 'Ignored via web dashboard';
+
+  log('info', AGENT, 'Web UI ignore action', { incidentId, reason });
+
+  const result = approvalStore.tryIgnore(incidentId, userId, 'web', reason);
+
+  if (result === 'ok') {
+    const entry = approvalStore.get(incidentId)!;
+    onIgnored(entry, userId, 'web', reason).catch((err) =>
+      log('error', AGENT, 'onIgnored failed after web ignore', {
+        incidentId,
+        error: String(err),
+      })
+    );
+    res.redirect(303, '/?ignored=' + encodeURIComponent(incidentId));
+  } else if (result === 'already_handled') {
+    const entry = approvalStore.get(incidentId);
+    res.redirect(
+      303,
+      '/?info=' +
+        encodeURIComponent(
+          `Incident ${incidentId} already handled (${entry?.status ?? 'unknown'})`
+        )
+    );
+  } else {
+    res.redirect(
+      303,
+      '/?error=' + encodeURIComponent(`Unknown incident ${incidentId}`)
+    );
+  }
+});
+
+// ── API: Ignored resources ────────────────────────────────────────────────────
+app.get('/api/ignored', (_req: Request, res: Response) => {
+  const resources = ignoreStore.list();
+  res.json({ resources, keys: ignoreStore.keys() });
+});
+
+app.get('/api/ignored/check', (req: Request, res: Response) => {
+  const namespace = String(req.query.namespace ?? '');
+  const resourceName = String(req.query.resourceName ?? '');
+  const githubRepo = req.query.githubRepo ? String(req.query.githubRepo) : undefined;
+
+  if (!namespace || !resourceName) {
+    res.status(400).json({ error: 'namespace and resourceName required' });
+    return;
+  }
+
+  const keys = ignoreKeysForRun({ namespace, resourceName, githubRepo });
+  const ignored = keys.some((k) => ignoreStore.isKeyIgnored(k));
+
+  res.json({ ignored, namespace, resourceName, keys });
+});
+
+app.delete('/api/ignored/:key', (req: Request, res: Response) => {
+  const key = decodeURIComponent(req.params.key ?? '');
+  if (!key) {
+    res.status(400).json({ error: 'key required' });
+    return;
+  }
+  const removed = ignoreStore.remove(key);
+  if (!removed) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  log('info', AGENT, 'Removed ignore entry', { key });
+  res.json({ ok: true, key });
+});
+
+app.post('/unignore/:key', (req: Request, res: Response) => {
+  const key = decodeURIComponent(req.params.key ?? '');
+  if (!key) {
+    res.status(400).send('key required');
+    return;
+  }
+  ignoreStore.remove(key);
+  res.redirect(303, '/');
+});
+
+app.post('/api/ignore/:incidentId', async (req: Request, res: Response) => {
+  const { incidentId } = req.params;
+  if (!incidentId) {
+    res.status(400).json({ error: 'Missing incidentId' });
+    return;
+  }
+  const { userId, platform, reason } = req.body as {
+    userId?: string;
+    platform?: string;
+    reason?: string;
+  };
+  const via =
+    platform === 'slack' || platform === 'telegram' || platform === 'web' ? platform : 'web';
+  const actor = typeof userId === 'string' && userId.trim() ? userId : 'api-operator';
+  const ignoreReason = reason ?? 'Ignored via API';
+
+  log('info', AGENT, 'API ignore action received', { incidentId, userId: actor, platform: via });
+
+  const result = approvalStore.tryIgnore(incidentId, actor, via, ignoreReason);
+
+  if (result === 'ok') {
+    const entry = approvalStore.get(incidentId)!;
+    res.status(202).json({ status: 'accepted', incidentId });
+    onIgnored(entry, actor, via, ignoreReason).catch((err) =>
+      log('error', AGENT, 'onIgnored failed after API ignore', {
         incidentId,
         error: String(err),
       })

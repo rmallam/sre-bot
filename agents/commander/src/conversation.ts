@@ -2,21 +2,54 @@
  * Conversational follow-ups — e.g. user says "try master" after a failed deploy.
  */
 
-import type { DeployCmd } from './parser.js';
+import type { ResourceKind } from '../../../shared/src/types.js';
+import type { DeployCmd, ParsedCommand } from './parser.js';
 import { getSession, setSession } from './sessions.js';
+import { syncActiveTopicFromCommand } from './active-topic.js';
 import { tryResolveNamespaceCreateChoice } from './namespace-prompt.js';
+import { fetchLatestRunSummaryByIncident } from './run-details.js';
+import { modeOutcomeLabel } from '../../../shared/src/user-outcomes.js';
 
-export function rememberDeployDraft(
+export async function rememberDeployDraft(
   platform: string,
   channelId: string,
   userId: string,
   deploy: DeployCmd
-): void {
-  setSession(platform, channelId, userId, { lastDeployDraft: deploy });
+): Promise<void> {
+  await setSession(platform, channelId, userId, { lastDeployDraft: deploy });
 }
 
-export function clearDeployDraft(platform: string, channelId: string, userId: string): void {
-  setSession(platform, channelId, userId, { lastDeployDraft: undefined });
+export async function clearDeployDraft(
+  platform: string,
+  channelId: string,
+  userId: string
+): Promise<void> {
+  await setSession(platform, channelId, userId, { lastDeployDraft: undefined });
+}
+
+export async function rememberWorkloadStatusQuery(
+  platform: string,
+  channelId: string,
+  userId: string,
+  cmd: { resourceName: string; resourceKind?: ResourceKind; namespace: string }
+): Promise<void> {
+  await setSession(platform, channelId, userId, {
+    lastStatusSubject: {
+      resourceName: cmd.resourceName,
+      resourceKind: cmd.resourceKind ?? 'Deployment',
+      namespace: cmd.namespace,
+    },
+  });
+  await syncActiveTopicFromCommand(platform, channelId, userId, {
+    type: 'workload-status',
+    resourceName: cmd.resourceName,
+    resourceKind: cmd.resourceKind ?? 'Deployment',
+    namespace: cmd.namespace,
+    label:
+      cmd.namespace === '_all'
+        ? `${cmd.resourceName} (all namespaces)`
+        : `${cmd.resourceName} in ${cmd.namespace}`,
+  });
 }
 
 function extractBranchHint(text: string): string | null {
@@ -33,13 +66,12 @@ function extractBranchHint(text: string): string | null {
   return null;
 }
 
-/** User approved namespace creation after a prompt. */
-export function tryNamespaceCreateFollowUp(
+export async function tryNamespaceCreateFollowUp(
   platform: string,
   channelId: string,
   userId: string,
   text: string
-): DeployCmd | null {
+): Promise<DeployCmd | null> {
   const decision = tryResolveNamespaceCreateChoice(
     platform as 'telegram' | 'slack',
     channelId,
@@ -49,7 +81,7 @@ export function tryNamespaceCreateFollowUp(
   if (decision.status === 'approved' && decision.deploy) {
     return decision.deploy;
   }
-  const session = getSession(platform, channelId, userId);
+  const session = await getSession(platform, channelId, userId);
   const draft = session?.lastDeployDraft;
   if (
     draft &&
@@ -61,14 +93,13 @@ export function tryNamespaceCreateFollowUp(
   return null;
 }
 
-/** If user is answering a branch question, return an updated deploy command. */
-export function tryDeployBranchFollowUp(
+export async function tryDeployBranchFollowUp(
   platform: string,
   channelId: string,
   userId: string,
   text: string
-): DeployCmd | null {
-  const session = getSession(platform, channelId, userId);
+): Promise<DeployCmd | null> {
+  const session = await getSession(platform, channelId, userId);
   const draft = session?.lastDeployDraft;
   if (!draft) return null;
 
@@ -82,21 +113,26 @@ export function tryDeployBranchFollowUp(
   };
 }
 
-export function tryStatusFollowUp(
+export async function tryStatusFollowUp(
   platform: string,
   channelId: string,
   userId: string,
   text: string
-): string | null {
+): Promise<string | null> {
   if (!/\b(status|update|progress|how(?:'?s| is) it going|what happened)\b/i.test(text)) {
     return null;
   }
-  const session = getSession(platform, channelId, userId);
+  const session = await getSession(platform, channelId, userId);
   if (!session?.lastIncidentId) {
     return "I don't have a recent run for you yet. Start a deploy or investigation and I'll track it.";
   }
+  const summary = await fetchLatestRunSummaryByIncident(session.lastIncidentId);
+  if (summary) {
+    return summary;
+  }
+  const label = session.lastMode ? modeOutcomeLabel(session.lastMode) : 'run';
   return (
-    `Your last tracked incident is \`${session.lastIncidentId}\`.\n` +
-    `Ask me to investigate or deploy something new, or check the orchestrator/HIL dashboard for live status.`
+    `Your last ${label} is still starting (incident \`${session.lastIncidentId.slice(0, 8)}\`).\n` +
+    `Try again in a few seconds, or say "show logs".`
   );
 }

@@ -17,10 +17,13 @@
 import { Telegraf, type Context } from 'telegraf';
 import { message } from 'telegraf/filters';
 import { Markup } from 'telegraf';
+import { v4 as uuidv4 } from 'uuid';
 import { log } from '../../../shared/src/http.js';
 import { isAuthorized } from './auth.js';
-import { parseCommand } from './parser.js';
-import { handleCommand } from './router.js';
+import { parseCommand, isWorkloadStatusQuery } from './parser.js';
+import { handleCommand, fetchWorkloadStatusReply } from './router.js';
+import { rememberWorkloadStatusQuery } from './conversation.js';
+import { recordChatUserTurn, recordChatReply } from './chat-handler.js';
 import { routeMessage } from './llm-router.js';
 import { registerTelegramBot } from './confirm.js';
 import { registerTelegramBotForNotify } from './notify.js';
@@ -42,11 +45,14 @@ import {
   storeInvestigateChoice,
   tryResolvePendingInvestigateChoice,
 } from './investigate-choice.js';
+import { tryResolvePendingDeleteChoice } from './delete-choice.js';
 import {
   buildSuggestFixPrompt,
   storeHilSuggestPrompt,
   tryConsumeSuggestReply,
 } from './hil-suggest-pending.js';
+import { fetchRunDetailsText } from './run-details.js';
+import { getChannelPref } from './channel-prefs.js';
 
 const AGENT = 'commander-agent';
 const PLATFORM = 'telegram' as const;
@@ -120,13 +126,16 @@ function ackMessage(incidentId: string, type: string, parsed?: import('./parser.
       `I'll dig through pods, events, and logs and report back.`
     );
   }
-  return `Got it! Autonomous run started — tracking: ${incidentId}\nI'll message you when done.`;
+  return `Got it! I'm on it — I'll message you when done.`;
 }
 
 /** Send a safe reply — Telegraf context may or may not have a message to reply to. */
 async function safeReply(ctx: Context, text: string): Promise<void> {
   try {
     await ctx.reply(text);
+    const uid = userId(ctx);
+    const cid = channelId(ctx);
+    void recordChatReply(PLATFORM, cid, uid, text);
   } catch (err) {
     log('warn', AGENT, 'Failed to send Telegram reply', {
       incidentId: 'N/A',
@@ -277,6 +286,8 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
     return;
   }
 
+  void recordChatUserTurn(PLATFORM, cid, uid, rawText);
+
   const suggestReply = tryConsumeSuggestReply(PLATFORM, cid, uid, rawText);
   if (suggestReply.status === 'ready') {
     await submitOperatorSuggestion(ctx, suggestReply.incidentId, suggestReply.suggestion, uid);
@@ -303,12 +314,50 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
     return;
   }
 
+  const delDecision = tryResolvePendingDeleteChoice(PLATFORM, cid, uid, rawText);
+  if (delDecision.status === 'cancelled') {
+    await safeReply(ctx, 'Delete cancelled.');
+    return;
+  }
+  if (delDecision.status === 'selected' && delDecision.command) {
+    try {
+      const result = await handleCommand(delDecision.command, uid, PLATFORM, cid, rawText);
+      await safeReply(
+        ctx,
+        result.immediateReply ?? ackMessage(result.incidentId, delDecision.command.type, delDecision.command)
+      );
+    } catch (err) {
+      await safeReply(ctx, `⚠️ ${String(err)}`);
+    }
+    return;
+  }
+
   const invDecision = tryResolvePendingInvestigateChoice(PLATFORM, cid, uid, rawText);
   if (invDecision.status === 'cancelled') {
     await safeReply(ctx, 'Investigation cancelled.');
     return;
   }
   if (invDecision.status === 'selected' && invDecision.command) {
+    if (invDecision.statusQuery) {
+      try {
+        const text = await fetchWorkloadStatusReply({
+          incidentId: uuidv4(),
+          namespace: invDecision.command.namespace,
+          resourceName: invDecision.command.resourceName,
+          resourceKind: invDecision.command.resourceKind,
+          podName: invDecision.command.podName,
+        });
+        void rememberWorkloadStatusQuery(PLATFORM, cid, uid, {
+          resourceName: invDecision.command.resourceName,
+          resourceKind: invDecision.command.resourceKind,
+          namespace: invDecision.command.namespace,
+        });
+        await safeReply(ctx, text);
+      } catch (err) {
+        await safeReply(ctx, `⚠️ Could not check status: ${String(err)}`);
+      }
+      return;
+    }
     const result = await handleCommand(invDecision.command, uid, PLATFORM, cid, rawText);
     await safeReply(
       ctx,
@@ -350,7 +399,11 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
       return;
     }
     if (parsed.type === 'investigate') {
-      const flow = await resolveInvestigateFlow(parsed, rawText);
+      const flow = await resolveInvestigateFlow(parsed, rawText, {
+        platform: PLATFORM,
+        verbose: getChannelPref(PLATFORM, cid).verbose,
+        incidentId: uuidv4(),
+      });
       if (flow.kind === 'reply') {
         await safeReply(ctx, flow.text);
         return;
@@ -370,6 +423,22 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
       }
       if (flow.kind === 'ready') {
         parsed = flow.command;
+        if (isWorkloadStatusQuery(rawText)) {
+          const text = await fetchWorkloadStatusReply({
+            incidentId: uuidv4(),
+            namespace: parsed.namespace,
+            resourceName: parsed.resourceName,
+            resourceKind: parsed.resourceKind,
+            podName: parsed.podName,
+          });
+          void rememberWorkloadStatusQuery(PLATFORM, cid, uid, {
+            resourceName: parsed.resourceName,
+            resourceKind: parsed.resourceKind,
+            namespace: parsed.namespace,
+          });
+          await safeReply(ctx, text);
+          return;
+        }
       }
     }
     if (parsed.type === 'deploy') {
@@ -493,8 +562,24 @@ export function createTelegramBot(): Telegraf {
         await ctx.answerCbQuery('No selection');
         return;
       }
-      await ctx.answerCbQuery('Starting investigation…');
+      await ctx.answerCbQuery(resolved.statusQuery ? 'Checking status…' : 'Starting investigation…');
       try {
+        if (resolved.statusQuery) {
+          const text = await fetchWorkloadStatusReply({
+            incidentId: uuidv4(),
+            namespace: resolved.command.namespace,
+            resourceName: resolved.command.resourceName,
+            resourceKind: resolved.command.resourceKind,
+            podName: resolved.command.podName,
+          });
+          void rememberWorkloadStatusQuery(PLATFORM, cid, uid, {
+            resourceName: resolved.command.resourceName,
+            resourceKind: resolved.command.resourceKind,
+            namespace: resolved.command.namespace,
+          });
+          await ctx.editMessageText(text).catch(() => safeReply(ctx, text));
+          return;
+        }
         const result = await handleCommand(
           resolved.command,
           uid,
@@ -610,6 +695,19 @@ export function createTelegramBot(): Telegraf {
       return;
     }
 
+    if (data.startsWith('show_details_')) {
+      const runId = data.slice('show_details_'.length);
+      await ctx.answerCbQuery('Loading logs…');
+      try {
+        const text = await fetchRunDetailsText(runId, { verbose: true });
+        await safeReply(ctx, text);
+      } catch (err) {
+        log('error', AGENT, 'show_details failed', { incidentId: runId, error: String(err) });
+        await safeReply(ctx, 'Could not load run details. Try again later.');
+      }
+      return;
+    }
+
     if (data.startsWith('hil_suggest_')) {
       const incidentId = data.slice('hil_suggest_'.length);
       const uid = String(ctx.callbackQuery.from.id);
@@ -626,6 +724,10 @@ export function createTelegramBot(): Telegraf {
     }
 
     const [, action, ...parts] = data.split('_');
+    if (!action) {
+      await ctx.answerCbQuery('Unknown action');
+      return;
+    }
     const incidentId = parts.join('_');
     const userId = ctx.callbackQuery.from.username ?? String(ctx.callbackQuery.from.id);
 
@@ -633,7 +735,13 @@ export function createTelegramBot(): Telegraf {
 
     // Telegram requires answerCbQuery within a few seconds — do not await HIL first.
     const ackLabel =
-      action === 'approve' ? '✅ Approved — applying…' : action === 'reject' ? '❌ Rejected' : 'Processing…';
+      action === 'approve'
+        ? '✅ Approved — applying…'
+        : action === 'reject'
+          ? '❌ Rejected'
+          : action === 'ignore'
+            ? '🔕 Ignored'
+            : 'Processing…';
     try {
       await ctx.answerCbQuery(ackLabel);
     } catch (ackErr) {
@@ -654,6 +762,12 @@ export function createTelegramBot(): Telegraf {
       );
     } else if (action === 'reject') {
       await editHilApprovalCard(ctx, `❌ Rejected by ${actorLabel} via Telegram.`, incidentId);
+    } else if (action === 'ignore') {
+      await editHilApprovalCard(
+        ctx,
+        `🔕 Ignored by ${actorLabel} — I won't remediate ${incidentId} again for this resource.`,
+        incidentId
+      );
     }
 
     forwardHilAction(ctx, action, incidentId, userId);

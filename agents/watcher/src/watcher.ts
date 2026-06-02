@@ -27,6 +27,7 @@ const INVESTIGATOR_URL =
   process.env.INVESTIGATOR_URL ?? 'http://investigator-agent:8080';
 const ORCHESTRATOR_URL =
   process.env.ORCHESTRATOR_URL ?? 'http://orchestrator-agent:8080';
+const HIL_URL = process.env.HIL_URL ?? 'http://hil-agent:8080';
 const USE_ORCHESTRATOR =
   (process.env.USE_ORCHESTRATOR ?? 'true').toLowerCase() === 'true';
 
@@ -80,6 +81,38 @@ function cooldownKey(namespace: string, resourceName: string): string {
   return `${namespace}/${resourceName}`;
 }
 
+function normalizeWorkloadNameFromPodName(podName: string): string {
+  const statefulSet = podName.match(/^(.*)-(\d+)$/);
+  if (statefulSet?.[1]) {
+    return statefulSet[1];
+  }
+
+  const deploymentPod = podName.match(/^(.*)-[a-f0-9]{8,10}-[a-z0-9]{5}$/i);
+  if (deploymentPod?.[1]) {
+    return deploymentPod[1];
+  }
+
+  const hashedSuffix = podName.match(/^(.*)-[a-f0-9]{8,10}$/i);
+  if (hashedSuffix?.[1]) {
+    return hashedSuffix[1];
+  }
+
+  return podName;
+}
+
+function workloadNameFromPod(pod: k8s.V1Pod): string {
+  const podName = pod.metadata?.name ?? 'unknown';
+  const owner = pod.metadata?.ownerReferences?.[0];
+  if (!owner?.name) return normalizeWorkloadNameFromPodName(podName);
+  if (owner.kind === 'StatefulSet' || owner.kind === 'DaemonSet' || owner.kind === 'Job') {
+    return owner.name;
+  }
+  if (owner.kind === 'ReplicaSet') {
+    return normalizeWorkloadNameFromPodName(owner.name);
+  }
+  return normalizeWorkloadNameFromPodName(podName);
+}
+
 /**
  * Returns true if the resource is within the cooldown window and should be
  * skipped. Updates the last-fired timestamp on success (i.e. not throttled).
@@ -97,16 +130,43 @@ function shouldThrottle(namespace: string, resourceName: string): boolean {
   return false;
 }
 
-function clearCooldown(namespace: string, podName: string): void {
-  const key = cooldownKey(namespace, podName);
+function clearCooldown(namespace: string, workloadName: string): void {
+  const key = cooldownKey(namespace, workloadName);
   if (cooldownMap.has(key)) {
     cooldownMap.delete(key);
     log('info', AGENT_NAME, 'Cooldown cleared — Pod recovered', {
       namespace,
-      podName,
+      workloadName,
       key,
     });
   }
+}
+
+/** Cached ignore list from HIL (refreshed periodically). */
+let ignoreKeyCache: { keys: Set<string>; loadedAt: number } | null = null;
+const IGNORE_CACHE_MS = 30_000;
+
+async function refreshIgnoreCache(): Promise<Set<string>> {
+  if (ignoreKeyCache && Date.now() - ignoreKeyCache.loadedAt < IGNORE_CACHE_MS) {
+    return ignoreKeyCache.keys;
+  }
+  try {
+    const res = await fetch(`${HIL_URL}/api/ignored`, { signal: AbortSignal.timeout(5_000) });
+    if (res.ok) {
+      const data = (await res.json()) as { keys?: string[] };
+      const keys = new Set(data.keys ?? []);
+      ignoreKeyCache = { keys, loadedAt: Date.now() };
+      return keys;
+    }
+  } catch {
+    // HIL unavailable — don't block watcher
+  }
+  return ignoreKeyCache?.keys ?? new Set();
+}
+
+async function isIgnoredResource(namespace: string, resourceName: string): Promise<boolean> {
+  const keys = await refreshIgnoreCache();
+  return keys.has(`${namespace}/${resourceName}`);
 }
 
 // ── Kubernetes client setup ────────────────────────────────────────────────────
@@ -230,37 +290,54 @@ function handleKubeEvent(event: k8s.CoreV1Event): void {
     event.involvedObject?.kind === 'Pod'
       ? resourceName
       : (event.involvedObject?.name ?? 'unknown');
+  const cooldownResource =
+    event.involvedObject?.kind === 'Pod'
+      ? normalizeWorkloadNameFromPodName(resourceName)
+      : resourceName;
 
-  if (shouldThrottle(namespace, resourceName)) {
+  if (shouldThrottle(namespace, cooldownResource)) {
     log('debug', AGENT_NAME, 'Cooldown active — skipping event', {
       namespace,
       resourceName,
+      cooldownResource,
       reason,
     });
     return;
   }
 
-  const incidentId = uuidv4();
-  const payload: AnomalyDetected = {
-    incidentId,
-    triggeredBy: 'watcher',
-    triggeredAt: new Date().toISOString(),
-    namespace,
-    resourceKind,
-    resourceName,
-    mode: 'diagnose',
-    podName,
-    eventReason: reason,
-    eventMessage: event.message ?? '',
-    containerName: undefined,
-  };
+  void (async () => {
+    if (await isIgnoredResource(namespace, cooldownResource)) {
+      log('debug', AGENT_NAME, 'Resource ignored — skipping event', {
+        namespace,
+        resourceName,
+        cooldownResource,
+        reason,
+      });
+      return;
+    }
 
-  fireAnomaly(payload).catch((err: unknown) => {
-    log('error', AGENT_NAME, 'Failed to fire anomaly from K8s event', {
+    const incidentId = uuidv4();
+    const payload: AnomalyDetected = {
       incidentId,
-      error: String(err),
+      triggeredBy: 'watcher',
+      triggeredAt: new Date().toISOString(),
+      namespace,
+      resourceKind,
+      resourceName,
+      mode: 'diagnose',
+      podName,
+      eventReason: reason,
+      eventMessage: event.message ?? '',
+      containerName: undefined,
+    };
+
+    fireAnomaly(payload).catch((err: unknown) => {
+      log('error', AGENT_NAME, 'Failed to fire anomaly from K8s event', {
+        incidentId,
+        error: String(err),
+      });
     });
-  });
+  })();
 }
 
 // ── Pod Poll ───────────────────────────────────────────────────────────────────
@@ -299,13 +376,14 @@ function processPodList(pods: k8s.V1Pod[]): void {
   for (const pod of pods) {
     const namespace = pod.metadata?.namespace ?? 'default';
     const podName = pod.metadata?.name ?? 'unknown';
+    const workloadName = workloadNameFromPod(pod);
 
     // Check if Pod itself is Evicted (phase=Failed, reason=Evicted)
     const podPhase = pod.status?.phase;
     const podReason = pod.status?.reason;
 
     if (podPhase === 'Failed' && podReason === 'Evicted') {
-      if (!shouldThrottle(namespace, podName)) {
+      if (!shouldThrottle(namespace, workloadName)) {
         const incidentId = uuidv4();
         const payload: AnomalyDetected = {
           incidentId,
@@ -350,33 +428,38 @@ function processPodList(pods: k8s.V1Pod[]): void {
       if (anomalyReason) {
         podIsHealthy = false;
 
-        if (!shouldThrottle(namespace, podName)) {
-          const incidentId = uuidv4();
-          const message =
-            cs.state?.waiting?.message ??
-            cs.state?.terminated?.message ??
-            `Container ${cs.name} is in state ${anomalyReason}`;
+        if (!shouldThrottle(namespace, workloadName)) {
+          void (async () => {
+            if (await isIgnoredResource(namespace, workloadName)) {
+              return;
+            }
+            const incidentId = uuidv4();
+            const message =
+              cs.state?.waiting?.message ??
+              cs.state?.terminated?.message ??
+              `Container ${cs.name} is in state ${anomalyReason}`;
 
-          const payload: AnomalyDetected = {
-            incidentId,
-            triggeredBy: 'watcher',
-            triggeredAt: new Date().toISOString(),
-            namespace,
-            resourceKind: 'Pod',
-            resourceName: podName,
-            mode: 'diagnose',
-            podName,
-            eventReason: anomalyReason,
-            eventMessage: message,
-            containerName: cs.name,
-          };
-
-          fireAnomaly(payload).catch((err: unknown) => {
-            log('error', AGENT_NAME, 'Failed to fire pod-poll anomaly', {
+            const payload: AnomalyDetected = {
               incidentId,
-              error: String(err),
+              triggeredBy: 'watcher',
+              triggeredAt: new Date().toISOString(),
+              namespace,
+              resourceKind: 'Pod',
+              resourceName: podName,
+              mode: 'diagnose',
+              podName,
+              eventReason: anomalyReason,
+              eventMessage: message,
+              containerName: cs.name,
+            };
+
+            fireAnomaly(payload).catch((err: unknown) => {
+              log('error', AGENT_NAME, 'Failed to fire pod-poll anomaly', {
+                incidentId,
+                error: String(err),
+              });
             });
-          });
+          })();
         }
       }
     }
@@ -385,7 +468,7 @@ function processPodList(pods: k8s.V1Pod[]): void {
     if (podIsHealthy && podPhase === 'Running') {
       const allReady = allStatuses.length > 0 && allStatuses.every((cs) => cs.ready === true);
       if (allReady) {
-        clearCooldown(namespace, podName);
+        clearCooldown(namespace, workloadName);
       }
     }
   }

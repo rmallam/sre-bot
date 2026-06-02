@@ -1,5 +1,6 @@
 import type { DiagnosisContext, RemediationPlan, StartRunRequest } from '../../../shared/src/types.js';
 import { buildHelmDeployPlan, defaultChartPath } from '../../../shared/src/helm-generator.js';
+import { buildDeployPlanWithSourceBuild } from '../../../shared/src/deploy/build-plan.js';
 import { callPlanLlm } from './tools.js';
 
 function isHelmChartPath(manifestPath?: string): boolean {
@@ -48,6 +49,17 @@ export async function buildDeployPlan(
   const mustGenerate = ctx.needsHelmGeneration === true;
 
   if (mustGenerate && githubRepo) {
+    if (ctx.repoSignals?.needsImageBuild) {
+      const { plan } = await buildDeployPlanWithSourceBuild({
+        ctx,
+        appName,
+        namespace,
+        githubRepo,
+        gitRef,
+        deployStrategy,
+      });
+      return plan;
+    }
     const generatedPlan = buildHelmDeployPlan({
       appName,
       namespace,

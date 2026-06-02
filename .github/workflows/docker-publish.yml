@@ -44,6 +44,7 @@ jobs:
           - gitops
           - executor
           - security
+          - cicd
 
     steps:
       - name: Checkout
@@ -92,7 +93,7 @@ jobs:
         run: |
           OWNER="${{ github.repository_owner }}"
           REF="${{ github.ref_name }}"
-          for agent in watcher commander investigator brain orchestrator hil gitops executor security; do
+          for agent in watcher commander investigator brain orchestrator hil gitops executor security cicd; do
             echo "ghcr.io/${OWNER}/sre-bot-${agent}:${REF}"
             echo "ghcr.io/${OWNER}/sre-bot-${agent}:latest (main only)"
           done

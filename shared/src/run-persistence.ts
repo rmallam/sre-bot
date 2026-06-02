@@ -36,5 +36,6 @@ export interface RunStore {
   setRunStatus(runId: string, status: RunStatus): Promise<void>;
   setResumeFromToolIndex(runId: string, index: number | null): Promise<void>;
   setPendingToolApproval(runId: string, pending: PendingToolApproval | undefined): Promise<void>;
+  mergeRunMetadata(runId: string, patch: Record<string, unknown>): Promise<void>;
   close(): Promise<void>;
 }

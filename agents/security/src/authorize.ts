@@ -15,7 +15,7 @@ const PROD_NS = (process.env['SECURITY_PROD_NAMESPACES'] ?? 'production,prod')
   .split(',')
   .map((s) => s.trim().toLowerCase());
 
-const ALLOWED_ACTIONS = (process.env['SECURITY_ALLOWED_ACTIONS'] ?? 'restart,git_patch,helm_deploy,repo_apply,noop,escalate_human')
+const ALLOWED_ACTIONS = (process.env['SECURITY_ALLOWED_ACTIONS'] ?? 'restart,git_patch,helm_deploy,repo_apply,cicd_rerun,cicd_open_pr,cicd_code_pr,coding_agent_handoff,noop,escalate_human')
   .split(',')
   .map((s) => s.trim());
 

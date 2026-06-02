@@ -58,3 +58,10 @@ export async function setPendingToolApproval(
 ): Promise<void> {
   await (await getRunStore()).setPendingToolApproval(runId, pending);
 }
+
+export async function mergeRunMetadata(
+  runId: string,
+  patch: Record<string, unknown>
+): Promise<void> {
+  await (await getRunStore()).mergeRunMetadata(runId, patch);
+}

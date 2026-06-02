@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, extname } from 'node:path';
 import * as k8s from '@kubernetes/client-node';
 import { shallowCloneRepo } from './git-clone.js';
+import { enrichRepoSignals } from '../../../shared/src/deploy/runtime-detect.js';
 import type { DeployRequest, DiagnosisContext } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
 
@@ -221,17 +222,7 @@ interface EntryPointResult {
 }
 
 function detectRepoSignals(repoDir: string): import('../../../shared/src/types.js').RepoSignals {
-  return {
-    hasDockerfile: existsSync(join(repoDir, 'Dockerfile')),
-    hasPackageJson: existsSync(join(repoDir, 'package.json')),
-    hasGoMod: existsSync(join(repoDir, 'go.mod')),
-    primaryLanguage: existsSync(join(repoDir, 'package.json'))
-      ? 'nodejs'
-      : existsSync(join(repoDir, 'go.mod'))
-        ? 'go'
-        : 'unknown',
-    suggestedImage: undefined,
-  };
+  return enrichRepoSignals(repoDir);
 }
 
 async function cloneAndLocateEntryPoint(

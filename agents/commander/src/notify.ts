@@ -1,6 +1,8 @@
 import type { WebClient } from '@slack/web-api';
 import type { Telegraf } from 'telegraf';
+import { Markup } from 'telegraf';
 import type { Platform } from '../../../shared/src/types.js';
+import type { RunUpdateQuickAction } from '../../../shared/src/run-update.js';
 import { log } from '../../../shared/src/http.js';
 
 const AGENT = 'commander-agent';
@@ -16,11 +18,18 @@ export function registerTelegramBotForNotify(bot: Telegraf): void {
   telegramBot = bot;
 }
 
+function telegramKeyboard(actions?: RunUpdateQuickAction[]) {
+  if (!actions?.length) return undefined;
+  const row = actions.map((a) => Markup.button.callback(a.label, a.id));
+  return Markup.inlineKeyboard([row]);
+}
+
 export async function postNotify(
   platform: Platform,
   channelId: string,
   message: string,
-  incidentId: string
+  incidentId: string,
+  quickActions?: RunUpdateQuickAction[]
 ): Promise<void> {
   const plain = message.replace(/[*`<>]/g, '');
 
@@ -43,7 +52,12 @@ export async function postNotify(
         log('error', AGENT, 'Invalid Telegram channelId', { incidentId, channelId });
         return;
       }
-      await telegramBot.telegram.sendMessage(chatId, plain);
+      const keyboard = telegramKeyboard(quickActions);
+      if (keyboard) {
+        await telegramBot.telegram.sendMessage(chatId, plain, keyboard);
+      } else {
+        await telegramBot.telegram.sendMessage(chatId, plain);
+      }
       break;
     }
     default:

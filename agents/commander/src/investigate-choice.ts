@@ -1,6 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
+import type { ComposeOptions } from '../../../shared/src/command-outcome.js';
 import type { ResourceKind } from '../../../shared/src/types.js';
 import type { InvestigateCmd } from './parser.js';
+import { isWorkloadStatusQuery } from './parser.js';
+import { composeUserReply } from './compose-outcome.js';
 
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 const CHOICE_TTL_MS = parseInt(process.env['INVESTIGATE_CHOICE_TTL_MS'] ?? '180000', 10);
@@ -24,6 +27,8 @@ interface PendingInvestigate {
   base: InvestigateCmd;
   candidates: WorkloadCandidate[];
   expiresAt: number;
+  /** Answer with running status instead of starting diagnose run. */
+  statusQuery?: boolean;
 }
 
 const pending = new Map<string, PendingInvestigate>();
@@ -91,7 +96,7 @@ export type InvestigatePrepResult =
   | { status: 'prompt'; prompt: string; candidates: WorkloadCandidate[] }
   | { status: 'not_found'; message: string };
 
-async function fetchWorkloadResolution(
+export async function fetchWorkloadResolution(
   hint: string,
   namespace: string | undefined
 ): Promise<{
@@ -103,7 +108,7 @@ async function fetchWorkloadResolution(
     hint,
     incidentId: `resolve-${uuidv4()}`,
   });
-  if (namespace && namespace !== '_all' && namespace !== 'default') {
+  if (namespace && namespace !== '_all') {
     params.set('namespace', namespace);
   }
 
@@ -164,6 +169,30 @@ export async function prepareInvestigateCommand(
     return { status: 'proceed', command: cmd };
   }
 
+  if (isWorkloadStatusQuery(rawMessage)) {
+    const nsFilter =
+      parsed.namespace && parsed.namespace !== '_all' && parsed.namespace !== 'default'
+        ? parsed.namespace
+        : ns;
+    const inNs = candidates.filter(
+      (c) =>
+        (c.resourceKind === 'Deployment' || c.resourceKind === 'StatefulSet') &&
+        (!nsFilter || c.namespace === nsFilter)
+    );
+    if (inNs.length === 1) {
+      return { status: 'proceed', command: candidateToCommand(parsed, inNs[0]!) };
+    }
+    const exact = candidates.find(
+      (c) =>
+        c.resourceKind === 'Deployment' &&
+        c.score >= 80 &&
+        (!nsFilter || c.namespace === nsFilter)
+    );
+    if (exact) {
+      return { status: 'proceed', command: candidateToCommand(parsed, exact) };
+    }
+  }
+
   if (!needsConfirmation && candidates.length === 1) {
     return { status: 'proceed', command: candidateToCommand(parsed, candidates[0]!) };
   }
@@ -211,6 +240,7 @@ export function storeInvestigateChoice(
     base,
     candidates,
     expiresAt: Date.now() + CHOICE_TTL_MS,
+    statusQuery: isWorkloadStatusQuery(rawMessage),
   });
 }
 
@@ -219,7 +249,7 @@ export function tryResolvePendingInvestigateChoice(
   channelId: string,
   userId: string,
   text: string
-): { status: 'none' | 'cancelled' | 'selected'; command?: InvestigateCmd } {
+): { status: 'none' | 'cancelled' | 'selected'; command?: InvestigateCmd; statusQuery?: boolean } {
   const normalized = text.trim().toLowerCase();
   if (['cancel', 'stop', 'abort', 'no'].includes(normalized)) {
     return resolveInvestigateChoiceSelection(platform, channelId, userId, 'cancel');
@@ -236,7 +266,7 @@ export function resolveInvestigateChoiceSelection(
   channelId: string,
   userId: string,
   selection: 'cancel' | number
-): { status: 'none' | 'cancelled' | 'selected'; command?: InvestigateCmd } {
+): { status: 'none' | 'cancelled' | 'selected'; command?: InvestigateCmd; statusQuery?: boolean } {
   const k = key(platform, channelId, userId);
   const entry = pending.get(k);
   if (!entry) return { status: 'none' };
@@ -255,6 +285,7 @@ export function resolveInvestigateChoiceSelection(
   return {
     status: 'selected',
     command: candidateToCommand(entry.base, candidate),
+    statusQuery: entry.statusQuery,
   };
 }
 
@@ -276,18 +307,40 @@ export type InvestigateFlowOutcome =
 /** Resolve workload hint before starting an orchestrator run. */
 export async function resolveInvestigateFlow(
   parsed: InvestigateCmd,
-  rawMessage: string
+  rawMessage: string,
+  composeOpts: ComposeOptions = {}
 ): Promise<InvestigateFlowOutcome> {
   if (parsed.scope !== 'workload') {
     return { kind: 'ready', command: parsed };
   }
 
   const prep = await prepareInvestigateCommand(parsed, rawMessage);
+  const hint = workloadHint(parsed, rawMessage) || parsed.resourceName;
+
   if (prep.status === 'not_found') {
-    return { kind: 'reply', text: prep.message };
+    const text = await composeUserReply(
+      {
+        kind: 'not_found',
+        subject: hint,
+        namespace: parsed.namespace !== '_all' ? parsed.namespace : undefined,
+        context: 'Try naming the deployment or namespace more specifically.',
+      },
+      composeOpts
+    );
+    return { kind: 'reply', text };
   }
   if (prep.status === 'prompt') {
-    return { kind: 'confirm', prompt: prep.prompt, candidates: prep.candidates };
+    const prompt = await composeUserReply(
+      {
+        kind: 'choice_prompt',
+        data: {
+          subject: hint,
+          options: prep.candidates.map((c) => ({ label: c.label, score: c.score })),
+        },
+      },
+      composeOpts
+    );
+    return { kind: 'confirm', prompt, candidates: prep.candidates };
   }
   return { kind: 'ready', command: prep.command };
 }

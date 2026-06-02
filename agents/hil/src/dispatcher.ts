@@ -14,6 +14,7 @@
 
 import { approvalStore } from './store.js';
 import type { PendingApproval } from './store.js';
+import { ignoreStore } from './ignore-store.js';
 import { notifySlack } from './slack-notifier.js';
 import { notifyTelegram } from './telegram-notifier.js';
 import { postWithRetry, log } from '../../../shared/src/http.js';
@@ -29,6 +30,7 @@ const GITOPS_URL = process.env['GITOPS_URL'] ?? 'http://gitops-agent:8080';
 const EXECUTOR_URL = process.env['EXECUTOR_URL'] ?? 'http://executor-agent:8080';
 const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
 const BRAIN_URL  = process.env['BRAIN_URL']  ?? 'http://brain-agent:8080';
+const COMMANDER_URL = process.env['COMMANDER_URL'] ?? 'http://commander-agent:8080';
 
 // ── Public interface ──────────────────────────────────────────────────────────
 
@@ -36,6 +38,15 @@ const BRAIN_URL  = process.env['BRAIN_URL']  ?? 'http://brain-agent:8080';
  * Ingest a new ApprovalRequest, persist it, and fan out notifications.
  */
 export async function dispatch(request: ApprovalRequest): Promise<void> {
+  if (ignoreStore.isRequestIgnored(request)) {
+    log('info', AGENT, 'Skipping HIL dispatch — resource is ignored', {
+      incidentId: request.incidentId,
+      namespace: request.namespace,
+      resourceName: request.resourceName,
+    });
+    return;
+  }
+
   const merge = approvalStore.mergeOrCreate(request);
   const incidentId = merge.action === 'created' ? request.incidentId : merge.incidentId;
 
@@ -241,4 +252,65 @@ export async function onRejected(
     incidentId,
     brainUrl: `${BRAIN_URL}/rejection`,
   });
+}
+
+/**
+ * Operator ignored the incident — suppress future remediation for this resource.
+ * Does not notify Brain (no circuit-breaker escalation).
+ */
+export async function onIgnored(
+  entry: PendingApproval,
+  ignoredBy: string,
+  ignoredVia: Platform,
+  reason: string
+): Promise<void> {
+  const { request } = entry;
+  const { incidentId } = request;
+
+  ignoreStore.addFromRequest(request, ignoredBy, ignoredVia, incidentId, reason);
+
+  log('info', AGENT, 'Incident ignored by operator', {
+    incidentId,
+    ignoredBy,
+    ignoredVia,
+    namespace: request.namespace,
+    resourceName: request.resourceName,
+  });
+
+  if (request.runId) {
+    try {
+      await fetch(`${ORCHESTRATOR_URL}/runs/${encodeURIComponent(request.runId)}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ incidentId, reason: 'ignored' }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (err) {
+      log('warn', AGENT, 'Failed to cancel orchestrator run after ignore', {
+        incidentId,
+        runId: request.runId,
+        error: String(err),
+      });
+    }
+  }
+
+  if (request.platform && request.channelId) {
+    try {
+      await fetch(`${COMMANDER_URL}/notify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform: request.platform,
+          channelId: request.channelId,
+          incidentId,
+          message:
+            `Ignored ${request.resourceKind}/${request.resourceName} in ${request.namespace}. ` +
+            `I won't ask to remediate this again unless you unignore it on the HIL dashboard.`,
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      // non-fatal
+    }
+  }
 }

@@ -1,9 +1,17 @@
 import { v4 as uuidv4 } from 'uuid';
 import { formatFetchError, postWithRetry, log } from '../../../shared/src/http.js';
-import type { DeployRequest, Platform, StartRunRequest } from '../../../shared/src/types.js';
+import type { DeployRequest, DiagnosisContext, Platform, StartRunRequest } from '../../../shared/src/types.js';
+import type { HealthOutcome, UndeployOutcomePayload } from '../../../shared/src/command-outcome.js';
 import type { ParsedCommand } from './parser.js';
-import { setSession } from './sessions.js';
-import { rememberDeployDraft } from './conversation.js';
+import { prepareDeleteCommand, storeDeleteChoice } from './delete-choice.js';
+import type { ResourceKind } from '../../../shared/src/types.js';
+import type { WorkloadStatusFacts } from '../../../shared/src/workload-status.js';
+import { setSession, linkRunToSession } from './sessions.js';
+import { rememberDeployDraft, rememberWorkloadStatusQuery } from './conversation.js';
+import { syncActiveTopicFromCommand } from './active-topic.js';
+import { getChannelPref } from './channel-prefs.js';
+import { composeUserReply } from './compose-outcome.js';
+import { formatRcaPointersForPlan } from '../../../shared/src/rca-pointers.js';
 
 const AGENT = 'commander-agent';
 const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
@@ -48,7 +56,7 @@ async function fetchUndeploy(
   namespace: string,
   releaseName: string,
   incidentId: string
-): Promise<string> {
+): Promise<{ ok: boolean; outcome: UndeployOutcomePayload }> {
   const url = `${GITOPS_URL}/undeploy`;
   let res: Response;
   try {
@@ -61,18 +69,31 @@ async function fetchUndeploy(
   } catch (err) {
     throw formatFetchError(err, url);
   }
-  const data = (await res.json()) as { ok?: boolean; message?: string; error?: string };
+  const data = (await res.json()) as {
+    ok?: boolean;
+    outcome?: UndeployOutcomePayload;
+    error?: string;
+  };
   if (!res.ok) {
     throw new Error(data.error ?? `POST /undeploy failed ${res.status}`);
   }
-  return data.message ?? 'Workload removed.';
+  if (!data.outcome) {
+    throw new Error('Undeploy returned no outcome payload');
+  }
+  return { ok: data.ok !== false, outcome: data.outcome };
 }
 
 async function fetchClusterGet(
   resource: string,
   namespace: string | undefined,
   incidentId: string
-): Promise<string> {
+): Promise<{
+  text: string;
+  resource: string;
+  namespace?: string;
+  total: number;
+  shown: number;
+}> {
   const params = new URLSearchParams({ resource, incidentId });
   if (namespace) params.set('namespace', namespace);
   const url = `${INVESTIGATOR_URL}/get?${params}`;
@@ -92,8 +113,103 @@ async function fetchClusterGet(
     const body = await res.text().catch(() => '');
     throw new Error(`GET /get failed ${res.status}: ${body.slice(0, 300)}`);
   }
-  const data = (await res.json()) as { text?: string };
-  return data.text ?? 'No results.';
+  const data = (await res.json()) as {
+    text?: string;
+    resource?: string;
+    namespace?: string;
+    total?: number;
+    shown?: number;
+  };
+  return {
+    text: data.text ?? 'No results.',
+    resource,
+    namespace,
+    total: data.total ?? 0,
+    shown: data.shown ?? 0,
+  };
+}
+
+/** Synchronous cluster/namespace health — report-only, no orchestrator run. */
+function healthLabel(parsed: Extract<ParsedCommand, { type: 'investigate' }>): string {
+  if (parsed.scope === 'cluster') return 'the cluster';
+  if (parsed.scope === 'namespace') return `namespace ${parsed.namespace}`;
+  return parsed.label;
+}
+
+async function fetchHealthInvestigation(
+  parsed: Extract<ParsedCommand, { type: 'investigate' }>,
+  incidentId: string
+): Promise<HealthOutcome> {
+  const params = new URLSearchParams({
+    incidentId,
+    namespace: parsed.namespace,
+    resourceName: parsed.resourceName,
+    resourceKind: parsed.resourceKind ?? 'Deployment',
+    mode: 'diagnose',
+    investigateScope: parsed.scope,
+  });
+  const url = `${INVESTIGATOR_URL}/facts?${params}`;
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(90_000) });
+  } catch (err) {
+    throw formatFetchError(err, url);
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`GET /facts failed ${res.status}: ${body.slice(0, 300)}`);
+  }
+  const facts = (await res.json()) as DiagnosisContext;
+  const warnings = (facts.recentEvents ?? [])
+    .filter((e) => e.type === 'Warning')
+    .slice(0, 6)
+    .map((e) => ({ reason: e.reason, message: e.message }));
+
+  return {
+    label: healthLabel(parsed),
+    summary: facts.currentLogs?.trim() || facts.observabilitySummary?.trim(),
+    warnings,
+    deployments: facts.existingDeployments ?? [],
+    evidence:
+      facts.observabilitySummary?.trim() ||
+      formatRcaPointersForPlan(facts.rcaPointers ?? []).slice(0, 1200) ||
+      undefined,
+  };
+}
+
+/** Synchronous "is X running?" — no orchestrator run. */
+export async function fetchWorkloadStatusReply(opts: {
+  incidentId: string;
+  namespace: string;
+  resourceName: string;
+  resourceKind?: ResourceKind;
+  podName?: string;
+  compose?: import('../../../shared/src/command-outcome.js').ComposeOptions;
+}): Promise<string> {
+  const params = new URLSearchParams({
+    incidentId: opts.incidentId,
+    namespace: opts.namespace,
+    resourceName: opts.resourceName,
+    resourceKind: opts.resourceKind ?? 'Deployment',
+  });
+  if (opts.podName) params.set('podName', opts.podName);
+  const url = `${INVESTIGATOR_URL}/workload-status?${params}`;
+  let res: Response;
+  try {
+    const timeoutMs = opts.namespace === '_all' ? 120_000 : 60_000;
+    res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    throw formatFetchError(err, url);
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`GET /workload-status failed ${res.status}: ${body.slice(0, 300)}`);
+  }
+  const facts = (await res.json()) as WorkloadStatusFacts;
+  return composeUserReply(
+    { kind: 'workload_status', facts },
+    opts.compose ?? { incidentId: opts.incidentId }
+  );
 }
 
 export async function handleCommand(
@@ -108,13 +224,92 @@ export async function handleCommand(
 
   log('info', AGENT, `Routing command type=${parsed.type}`, { incidentId, platform, userId });
 
+  const composeOpts = {
+    verbose: getChannelPref(platform, channelId).verbose,
+    incidentId,
+    platform,
+  };
+
   switch (parsed.type) {
     case 'get': {
-      const text = await fetchClusterGet(parsed.resource, parsed.namespace, incidentId);
+      const data = await fetchClusterGet(parsed.resource, parsed.namespace, incidentId);
+      const text = await composeUserReply(
+        {
+          kind: 'cluster_get',
+          data: {
+            resource: data.resource,
+            namespace: data.namespace,
+            text: data.text,
+            total: data.total,
+            shown: data.shown,
+          },
+        },
+        composeOpts
+      );
+      return { incidentId, immediateReply: text };
+    }
+    case 'workload-status': {
+      const text = await fetchWorkloadStatusReply({
+        incidentId,
+        namespace: parsed.namespace,
+        resourceName: parsed.resourceName,
+        resourceKind: parsed.resourceKind,
+        podName: parsed.podName,
+        compose: composeOpts,
+      });
+      await rememberWorkloadStatusQuery(platform, channelId, userId, {
+        resourceName: parsed.resourceName,
+        resourceKind: parsed.resourceKind,
+        namespace: parsed.namespace,
+      });
       return { incidentId, immediateReply: text };
     }
     case 'delete': {
-      const text = await fetchUndeploy(parsed.namespace, parsed.resourceName, incidentId);
+      const prep = await prepareDeleteCommand(parsed);
+      if (prep.status === 'not_found') {
+        const text = await composeUserReply(
+          {
+            kind: 'not_found',
+            subject: parsed.resourceName,
+            namespace: parsed.namespace !== '_all' ? parsed.namespace : undefined,
+            context: 'Try `get deployments in <namespace>` to see what is running.',
+          },
+          composeOpts
+        );
+        return { incidentId, immediateReply: text };
+      }
+      if (prep.status === 'prompt') {
+        storeDeleteChoice(platform, channelId, userId, parsed, parsed.resourceName, prep.candidates);
+        const text = await composeUserReply(
+          {
+            kind: 'choice_prompt',
+            data: {
+              subject: parsed.resourceName,
+              options: prep.candidates.map((c) => ({
+                label: c.label,
+                score: c.score,
+              })),
+            },
+          },
+          composeOpts
+        );
+        return { incidentId, immediateReply: text };
+      }
+      const resolved = prep.command;
+      const { ok, outcome } = await fetchUndeploy(
+        resolved.namespace,
+        resolved.resourceName,
+        incidentId
+      );
+      const text = await composeUserReply(
+        {
+          kind: 'undeploy',
+          ok,
+          userHint: resolved.userHint,
+          payload: outcome,
+        },
+        composeOpts
+      );
       return { incidentId, immediateReply: text };
     }
     case 'deploy': {
@@ -142,8 +337,12 @@ export async function handleCommand(
         rawMessage,
       };
       await dispatchRun(payload, incidentId);
-      setSession(platform, channelId, userId, { lastIncidentId: incidentId });
-      rememberDeployDraft(platform, channelId, userId, parsed);
+      await setSession(platform, channelId, userId, {
+        lastIncidentId: incidentId,
+        lastMode: 'pre-deploy',
+      });
+      void linkRunToSession(platform, channelId, userId, incidentId);
+      await rememberDeployDraft(platform, channelId, userId, parsed);
       break;
     }
     case 'rollback': {
@@ -161,10 +360,19 @@ export async function handleCommand(
         rawMessage,
       };
       await dispatchRun(payload, incidentId);
-      setSession(platform, channelId, userId, { lastIncidentId: incidentId });
+      await setSession(platform, channelId, userId, {
+        lastIncidentId: incidentId,
+        lastMode: 'rollback',
+      });
+      void linkRunToSession(platform, channelId, userId, incidentId);
       break;
     }
     case 'investigate': {
+      if (parsed.scope === 'cluster' || parsed.scope === 'namespace') {
+        const health = await fetchHealthInvestigation(parsed, incidentId);
+        const text = await composeUserReply({ kind: 'health', data: health }, composeOpts);
+        return { incidentId, immediateReply: text };
+      }
       const payload: StartRunRequest = {
         incidentId,
         triggeredBy: 'commander',
@@ -184,12 +392,50 @@ export async function handleCommand(
         investigationLabel: parsed.label,
       };
       await dispatchRun(payload, incidentId);
-      setSession(platform, channelId, userId, { lastIncidentId: incidentId });
+      await setSession(platform, channelId, userId, {
+        lastIncidentId: incidentId,
+        lastMode: 'diagnose',
+      });
+      void linkRunToSession(platform, channelId, userId, incidentId);
+      break;
+    }
+    case 'ci-failure': {
+      const repoSlug = parsed.githubRepo.replace(/^github\.com\//i, '');
+      const appName = repoSlug.split('/').pop() ?? 'ci';
+      const payload: StartRunRequest = {
+        incidentId,
+        triggeredBy: 'commander',
+        triggeredAt,
+        namespace: 'ci',
+        resourceKind: 'Job',
+        resourceName: appName,
+        mode: 'ci-failure',
+        githubRepo: parsed.githubRepo,
+        workflowRunId: parsed.workflowRunId,
+        workflowName: parsed.workflowName,
+        ciBranch: parsed.gitRef,
+        requestedBy: userId,
+        platform,
+        channelId,
+        rawMessage,
+      };
+      await dispatchRun(payload, incidentId);
+      await setSession(platform, channelId, userId, {
+        lastIncidentId: incidentId,
+        lastMode: 'ci-failure',
+        lastRepo: parsed.githubRepo,
+        lastWorkflowRunId: parsed.workflowRunId,
+      });
+      void linkRunToSession(platform, channelId, userId, incidentId);
       break;
     }
     case 'unknown':
       log('warn', AGENT, 'Unknown command', { incidentId, rawMessage });
       break;
+  }
+
+  if (parsed.type !== 'unknown') {
+    syncActiveTopicFromCommand(platform, channelId, userId, parsed);
   }
 
   return { incidentId };

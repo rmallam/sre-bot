@@ -252,7 +252,10 @@ export async function notifyTelegram(
                     Markup.button.callback('✅ Approve', `hil_approve_${incidentId}`),
                     Markup.button.callback('❌ Reject', `hil_reject_${incidentId}`),
                   ],
-                  [Markup.button.callback('✏️ Suggest fix', `hil_suggest_${incidentId}`)],
+                  [
+                    Markup.button.callback('🔕 Ignore', `hil_ignore_${incidentId}`),
+                    Markup.button.callback('✏️ Suggest fix', `hil_suggest_${incidentId}`),
+                  ],
                 ]),
               }),
             incidentId

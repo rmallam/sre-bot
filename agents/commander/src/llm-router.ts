@@ -1,45 +1,44 @@
 /**
- * LLM intent router — conversational PA: LLM-first when configured, regex fallback.
+ * UX-3 — LLM-first routing with regex fast path and regex fallback on LLM outage.
+ * UX-12–17 — help, transcript context, clarification, workload-status intent.
  */
 
+import type { CommandIntent, CommandIntentName } from '../../../shared/src/command-intent.js';
+import { parseCommandIntentJson } from '../../../shared/src/command-intent.js';
 import type { Platform } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
 import { resolveCommanderLlm } from '../../../shared/src/llm-config.js';
 import { openRouterChat, stripJsonFences } from '../../../shared/src/openrouter.js';
 import {
   parseCommand,
-  parseSimpleDeploy,
   deployParseHint,
-  extractGithubRepo,
   investigateNeedsLlmResolution,
+  parseRegexFastPath,
   type ParsedCommand,
-  type InvestigateCmd,
-  type InvestigateScope,
-  type DeployCmd,
-  parseDelete,
 } from './parser.js';
+import { commandIntentToParsed, helpIntentReply } from './intent-mapper.js';
 import { tryDeployBranchFollowUp, tryNamespaceCreateFollowUp, tryStatusFollowUp } from './conversation.js';
+import { tryPrefFollowUp } from './channel-prefs.js';
+import { trySessionFollowUp } from './session-followups.js';
+import { isHelpQuery, HELP_MESSAGE } from './help.js';
+import { getChatTranscriptForLlm } from './chat-transcript.js';
+import { getSession } from './sessions.js';
+import { setPendingClarification } from './clarification.js';
 
 const SECURITY_URL = process.env['SECURITY_URL'] ?? 'http://security-agent:8080';
 const GEMINI_API_KEY = process.env['GEMINI_API_KEY'];
 const AGENT = 'commander-llm-router';
 
+const CHAT_FALLBACK =
+  "I'm your SRE assistant — ask me to deploy, investigate, list pods, or triage CI failures.";
+const OFFLINE_HELP = HELP_MESSAGE;
+
 export interface LlmRouteResult {
   parsed: ParsedCommand;
   conversationalReply?: string;
+  userReply?: string;
   confidence: number;
-}
-
-interface LlmStructuredIntent {
-  intent: 'investigate' | 'deploy' | 'rollback' | 'delete' | 'get' | 'chat';
-  investigateScope?: InvestigateScope;
-  workloadHint?: string;
-  namespace?: string;
-  label?: string;
-  getResource?: string;
-  githubRepo?: string;
-  gitRef?: string;
-  deployStrategy?: 'gitops' | 'direct';
+  intent?: CommandIntentName;
 }
 
 function commanderLlmAvailable(): boolean {
@@ -48,6 +47,100 @@ function commanderLlmAvailable(): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function withReply(
+  parsed: ParsedCommand,
+  confidence: number,
+  opts?: { userReply?: string; intent?: CommandIntentName }
+): LlmRouteResult {
+  const reply = opts?.userReply?.trim();
+  return {
+    parsed,
+    confidence,
+    intent: opts?.intent,
+    conversationalReply: reply || undefined,
+    userReply: reply || undefined,
+  };
+}
+
+const HYBRID_GATE_MODE = (process.env['COMMANDER_HYBRID_GATE_MODE'] ?? 'balanced').toLowerCase();
+
+function shouldBypassFastPath(text: string, parsed: ParsedCommand, llmAvailable: boolean): boolean {
+  if (!llmAvailable) return false;
+  if (HYBRID_GATE_MODE === 'off') return false;
+  if (/^\s*\//.test(text) || /\bkubectl\b/i.test(text)) return false;
+
+  const hasScopeAmbiguity = /\b(any|all|every|across|either|whichever)\b/i.test(text);
+  const hasReferenceAmbiguity = /\b(this|that|it|those|these|same\s+one)\b/i.test(text);
+  const asksSelection = /\bwhich\s+one\b/i.test(text);
+  const statusWords = /\b(running|up|healthy|ready|status|health)\b/i.test(text);
+  const investigateWords = /\b(investigate|diagnose|debug|check|look\s+at|inspect|wrong)\b/i.test(text);
+  const scopeWords = /\b(namespace|namespaces|cluster)\b/i.test(text);
+
+  if (HYBRID_GATE_MODE === 'strict') {
+    if (parsed.type === 'workload-status') return true;
+    if (parsed.type === 'investigate') return true;
+  }
+
+  if (parsed.type === 'workload-status') {
+    return (
+      (hasScopeAmbiguity && (scopeWords || statusWords)) ||
+      (hasReferenceAmbiguity && statusWords) ||
+      asksSelection
+    );
+  }
+
+  if (parsed.type === 'investigate') {
+    return (
+      hasScopeAmbiguity ||
+      hasReferenceAmbiguity ||
+      asksSelection ||
+      (scopeWords && investigateWords)
+    );
+  }
+
+  if (parsed.type === 'get') {
+    return (
+      (hasScopeAmbiguity && scopeWords) ||
+      (hasReferenceAmbiguity && /\b(get|list|show|display)\b/i.test(text))
+    );
+  }
+
+  return false;
+}
+
+async function maybeSetClarification(
+  platform: Platform,
+  channelId: string,
+  userId: string,
+  parsed: ParsedCommand,
+  userReply: string
+): Promise<void> {
+  if (parsed.type === 'investigate' && investigateNeedsLlmResolution(parsed)) {
+    await setPendingClarification(platform, channelId, userId, {
+      kind: 'investigate',
+      awaiting: 'workload',
+      namespace: parsed.namespace !== '_all' ? parsed.namespace : undefined,
+      prompt: userReply,
+      askedAt: new Date().toISOString(),
+    });
+    return;
+  }
+  if (
+    parsed.type === 'workload-status' &&
+    parsed.resourceName &&
+    !parsed.namespace
+  ) {
+    await setPendingClarification(platform, channelId, userId, {
+      kind: 'workload-status',
+      awaiting: 'namespace',
+      resourceName: parsed.resourceName,
+      resourceKind: parsed.resourceKind,
+      prompt: userReply,
+      askedAt: new Date().toISOString(),
+    });
   }
 }
 
@@ -66,273 +159,259 @@ export async function routeMessage(
     if (res.ok) {
       const data = (await res.json()) as { sanitizedText?: string; blocked?: boolean };
       if (data.blocked) {
-        return {
-          parsed: { type: 'unknown' },
-          conversationalReply: 'I cannot process that message due to security policy.',
-          confidence: 1,
-        };
+        return withReply(
+          { type: 'unknown' },
+          1,
+          { userReply: 'I cannot process that message due to security policy.' }
+        );
       }
       if (data.sanitizedText) text = data.sanitizedText;
     }
   } catch (err) {
-    log('warn', AGENT, 'Sanitize failed, using regex only', { error: String(err) });
+    log('warn', AGENT, 'Sanitize failed, continuing routing', { error: String(err) });
+  }
+
+  if (isHelpQuery(text)) {
+    return withReply({ type: 'unknown' }, 1, { intent: 'help', userReply: HELP_MESSAGE });
   }
 
   if (channelId) {
-    const nsDeploy = tryNamespaceCreateFollowUp(platform, channelId, userId, text);
+    const prefReply = tryPrefFollowUp(platform, channelId, text);
+    if (prefReply) {
+      return withReply({ type: 'unknown' }, 1, { userReply: prefReply });
+    }
+
+    const sessionFollow = await trySessionFollowUp(text, platform, channelId, userId);
+    if (sessionFollow?.type === 'reply') {
+      return withReply({ type: 'unknown' }, 0.95, { userReply: sessionFollow.text });
+    }
+    if (sessionFollow?.type === 'parsed') {
+      return withReply(sessionFollow.parsed, 0.92, { userReply: sessionFollow.reply });
+    }
+
+    const nsDeploy = await tryNamespaceCreateFollowUp(platform, channelId, userId, text);
     if (nsDeploy) {
-      return {
-        parsed: nsDeploy,
-        conversationalReply: `Got it — I'll create namespace \`${nsDeploy.namespace}\` and continue the deploy.`,
-        confidence: 0.95,
-      };
+      return withReply(nsDeploy, 0.95, {
+        userReply: `Got it — I'll create namespace \`${nsDeploy.namespace}\` and continue the deploy.`,
+      });
     }
-    const branchDeploy = tryDeployBranchFollowUp(platform, channelId, userId, text);
+    const branchDeploy = await tryDeployBranchFollowUp(platform, channelId, userId, text);
     if (branchDeploy) {
-      return {
-        parsed: branchDeploy,
-        conversationalReply: `Got it — retrying deploy on branch \`${branchDeploy.gitRef}\`.`,
-        confidence: 0.95,
-      };
+      return withReply(branchDeploy, 0.95, {
+        userReply: `Got it — retrying deploy on branch \`${branchDeploy.gitRef}\`.`,
+      });
     }
-    const statusReply = tryStatusFollowUp(platform, channelId, userId, text);
+    const statusReply = await tryStatusFollowUp(platform, channelId, userId, text);
     if (statusReply) {
-      return { parsed: { type: 'unknown' }, conversationalReply: statusReply, confidence: 0.9 };
+      return withReply({ type: 'unknown' }, 0.9, { userReply: statusReply });
     }
   }
 
-  if (commanderLlmAvailable()) {
-    const structured = await classifyIntentStructured(text, userId);
-    if (structured) {
-      if (structured.intent === 'chat') {
-        // Guardrail: if regex parser can extract an operational command,
-        // prefer action over generic chat fallback.
-        const regexFallback = parseCommand(text);
-        if (regexFallback.type !== 'unknown') {
-          return { parsed: regexFallback, confidence: 0.82 };
-        }
-        const reply = await classifyWithLlm(text, userId);
-        return {
-          parsed: { type: 'unknown' },
-          conversationalReply:
-            reply.slice(0, 800) ||
-            "I'm your SRE assistant — ask me to deploy, investigate, or check cluster resources.",
-          confidence: 0.75,
-        };
+  const llmAvailable = commanderLlmAvailable();
+  const fast = parseRegexFastPath(text);
+  if (fast && !shouldBypassFastPath(text, fast, llmAvailable)) {
+    return withReply(fast, 0.95);
+  }
+
+  const session = channelId ? await getSession(platform, channelId, userId) : undefined;
+  const transcript = channelId ? await getChatTranscriptForLlm(platform, channelId, userId) : [];
+
+  if (llmAvailable) {
+    const intent = await classifyIntentUnified(text, userId, {
+      transcript,
+      activeTopic: session?.activeTopic,
+    });
+    if (intent) {
+      if (intent.intent === 'help') {
+        return withReply({ type: 'unknown' }, intent.confidence, {
+          intent: 'help',
+          userReply: intent.userReply || helpIntentReply(),
+        });
       }
 
-      const fromStructured = structuredToCommand(structured, text);
-      if (fromStructured) {
-        return { parsed: fromStructured, confidence: 0.88 };
+      if (intent.intent === 'chat') {
+        return withReply(
+          { type: 'unknown' },
+          intent.confidence,
+          {
+            intent: 'chat',
+            userReply: intent.userReply || CHAT_FALLBACK,
+          }
+        );
       }
-      if (structured.intent === 'deploy') {
-        const catalogDeploy = parseSimpleDeploy(text);
-        if (catalogDeploy) {
-          return { parsed: catalogDeploy, confidence: 0.86 };
-        }
+
+      const parsed = commandIntentToParsed(intent, text);
+      if (parsed) {
+        const ack =
+          intent.userReply ||
+          (parsed.type === 'deploy'
+            ? `Starting deploy for ${parsed.githubRepo || parsed.appName || 'your app'}.`
+            : parsed.type === 'investigate'
+              ? `Investigating ${parsed.label}…`
+              : parsed.type === 'workload-status'
+                ? `Checking ${parsed.label}…`
+                : parsed.type === 'ci-failure'
+                  ? `Triaging CI for ${parsed.githubRepo.replace(/^github\.com\//, '')}…`
+                  : undefined);
+        return withReply(parsed, intent.confidence, { intent: intent.intent, userReply: ack });
       }
+
+      if (intent.intent === 'deploy') {
+        const hint = deployParseHint(text);
+        return withReply(
+          { type: 'unknown' },
+          intent.confidence,
+          {
+            intent: 'deploy',
+            userReply: intent.userReply || hint || CHAT_FALLBACK,
+          }
+        );
+      }
+
+      const clarifyReply =
+        intent.userReply ||
+        "I understood the request but need a bit more detail (repo URL, namespace, or app name).";
+      if (channelId && intent.intent === 'workload-status' && intent.workloadHint) {
+        await setPendingClarification(platform, channelId, userId, {
+          kind: 'workload-status',
+          awaiting: 'namespace',
+          resourceName: intent.workloadHint,
+          prompt: clarifyReply,
+          askedAt: new Date().toISOString(),
+        });
+      }
+
+      return withReply(
+        { type: 'unknown' },
+        intent.confidence,
+        { intent: intent.intent, userReply: clarifyReply }
+      );
     }
+    log('warn', AGENT, 'Unified LLM intent failed — regex fallback', { userId });
   }
 
   const regexParsed = parseCommand(text);
-
-  if (regexParsed.type === 'investigate' && investigateNeedsLlmResolution(regexParsed)) {
-    const resolved = await resolveInvestigateWithLlm(text, userId);
-    if (resolved) {
-      return { parsed: resolved, confidence: 0.85 };
-    }
-  }
-
   if (regexParsed.type !== 'unknown') {
-    return { parsed: regexParsed, confidence: 0.9 };
+    if (regexParsed.type === 'investigate' && investigateNeedsLlmResolution(regexParsed)) {
+      const userReply =
+        'Which deployment or namespace should I investigate? For example: investigate the nginx deployment in staging.';
+      if (channelId) {
+        await maybeSetClarification(platform, channelId, userId, regexParsed, userReply);
+      }
+      return withReply(regexParsed, 0.55, { userReply });
+    }
+    return withReply(regexParsed, llmAvailable ? 0.75 : 0.9);
   }
 
-  if (!commanderLlmAvailable()) {
-    return {
-      parsed: regexParsed,
-      conversationalReply:
-        "I'm your SRE assistant. Try:\n• investigate my cluster health\n• investigate the frappe deployment\n• deploy github.com/org/repo to staging namespace",
-      confidence: 0.3,
-    };
-  }
-
-  const deployHint = deployParseHint(text);
-  if (deployHint) {
-    return { parsed: regexParsed, conversationalReply: deployHint, confidence: 0.55 };
-  }
-
-  const llmText = await classifyWithLlm(text, userId);
-  return {
-    parsed: regexParsed,
-    conversationalReply:
-      llmText.slice(0, 800) ||
-      "Tell me what to deploy, investigate, or rollback — plain language is fine.",
-    confidence: 0.5,
-  };
-}
-
-function structuredToCommand(s: LlmStructuredIntent, text: string): ParsedCommand | null {
-  if (s.intent === 'get') {
-    const getParsed = parseCommand(text);
-    if (getParsed.type === 'get') return getParsed;
-    const rebuilt = parseCommand(
-      `get ${s.getResource ?? 'pods'}${s.namespace ? ` in ${s.namespace}` : ''}`
+  if (!llmAvailable) {
+    const hint = deployParseHint(text);
+    return withReply(
+      { type: 'unknown' },
+      0.3,
+      { userReply: hint || OFFLINE_HELP }
     );
-    if (rebuilt.type === 'get') return rebuilt;
-    return null;
   }
-  if (s.intent === 'investigate') {
-    return structuredToInvestigate(s);
-  }
-  if (s.intent === 'deploy') {
-    return structuredToDeploy(s, text);
-  }
-  if (s.intent === 'rollback') {
-    const rb = parseCommand(text.includes('rollback') ? text : `rollback ${text}`);
-    if (rb.type === 'rollback') return rb;
-  }
-  if (s.intent === 'delete') {
-    const del = parseDelete(text);
-    if (del) return del;
-    if (s.workloadHint) {
-      const rebuilt = parseDelete(
-        text.toLowerCase().includes('delete') || text.toLowerCase().includes('remove')
-          ? text
-          : `delete ${s.workloadHint} from ${s.namespace ?? 'default'} namespace`
-      );
-      if (rebuilt) return rebuilt;
+
+  const hint = deployParseHint(text);
+  return withReply(
+    { type: 'unknown' },
+    0.45,
+    {
+      userReply:
+        hint ||
+        "Tell me what to deploy, investigate, or check — plain language is fine.",
     }
-  }
-  return null;
+  );
 }
 
-function structuredToDeploy(s: LlmStructuredIntent, text: string): DeployCmd | null {
-  const catalogDeploy = parseSimpleDeploy(text);
-  if (catalogDeploy) return catalogDeploy;
-
-  const githubRepo = s.githubRepo ?? extractGithubRepo(text);
-  if (!githubRepo) {
-    if (s.workloadHint) {
-      const hintDeploy = parseSimpleDeploy(
-        text.toLowerCase().includes('deploy') ? text : `deploy ${s.workloadHint} in ${s.namespace ?? 'default'} namespace`
-      );
-      if (hintDeploy) return hintDeploy;
-    }
-    return null;
-  }
-
-  const regexDeploy = parseCommand(text.includes('deploy') ? text : `deploy ${text}`);
-  const namespace =
-    s.namespace ?? (regexDeploy.type === 'deploy' ? regexDeploy.namespace : 'default');
-  const gitRef = s.gitRef ?? (regexDeploy.type === 'deploy' ? regexDeploy.gitRef : 'main');
-  const directExplicit =
-    s.deployStrategy === 'direct' ||
-    (regexDeploy.type === 'deploy' && regexDeploy.deployStrategy === 'direct');
-
-  return {
-    type: 'deploy',
-    githubRepo,
-    gitRef,
-    namespace,
-    deployStrategy: directExplicit ? 'direct' : 'gitops',
-    deployStrategyExplicit:
-      !!s.deployStrategy ||
-      (regexDeploy.type === 'deploy' && regexDeploy.deployStrategyExplicit),
-  };
-}
-
-function structuredToInvestigate(s: LlmStructuredIntent): InvestigateCmd | null {
-  const scope = s.investigateScope ?? (s.workloadHint ? 'workload' : 'cluster');
-  if (scope === 'cluster') {
-    return {
-      type: 'investigate',
-      scope: 'cluster',
-      namespace: '_all',
-      resourceName: '_cluster',
-      label: s.label ?? 'cluster health',
-    };
-  }
-  if (scope === 'namespace' && s.namespace) {
-    return {
-      type: 'investigate',
-      scope: 'namespace',
-      namespace: s.namespace,
-      resourceName: '_namespace',
-      label: s.label ?? `${s.namespace} namespace`,
-    };
-  }
-  if (s.workloadHint) {
-    return {
-      type: 'investigate',
-      scope: 'workload',
-      namespace: s.namespace ?? 'default',
-      resourceName: s.workloadHint,
-      workloadHint: s.workloadHint,
-      label: s.label ?? `${s.workloadHint} deployment`,
-    };
-  }
-  return null;
-}
-
-async function resolveInvestigateWithLlm(text: string, userId: string): Promise<InvestigateCmd | null> {
-  const structured = await classifyIntentStructured(text, userId);
-  if (structured?.intent === 'investigate') {
-    return structuredToInvestigate(structured);
-  }
-  return null;
-}
-
-async function classifyIntentStructured(text: string, userId: string): Promise<LlmStructuredIntent | null> {
-  const system = `You classify SRE operator chat into structured intents. Reply with ONLY valid JSON:
+const UNIFIED_INTENT_SYSTEM = `You are the intent router for an SRE chatbot. Reply with ONLY valid JSON matching this schema:
 {
-  "intent": "investigate" | "deploy" | "rollback" | "delete" | "get" | "chat",
+  "intent": "investigate" | "deploy" | "rollback" | "delete" | "get" | "ci-failure" | "workload-status" | "help" | "chat",
+  "confidence": 0.0 to 1.0,
+  "userReply": "1-3 short sentences for the user (greeting, ack, or what you still need)",
   "investigateScope": "cluster" | "namespace" | "workload",
-  "workloadHint": "deployment/app name hint or empty",
+  "workloadHint": "deployment/app name or empty",
   "namespace": "kubernetes namespace or empty",
   "label": "short human phrase",
   "getResource": "namespaces|pods|deployments|nodes|services|events",
-  "githubRepo": "github.com/org/repo if deploy/rollback",
-  "gitRef": "branch/tag if user specified, else empty",
+  "githubRepo": "github.com/org/repo if deploy/ci/rollback",
+  "gitRef": "branch/tag if specified else empty",
   "deployStrategy": "gitops" | "direct"
 }
 Rules:
-- Plain language is normal: "can you deploy X to staging", "what's wrong with nginx", "list all pods"
-- deploy: extract githubRepo when user gives github.com/org/repo; otherwise workloadHint can be a catalog app (httpd, nginx, redis) with namespace
-- "deploy httpd in simple namespace" → intent deploy, workloadHint httpd, namespace simple (no githubRepo)
-- "delete httpd from default namespace" / "remove nginx in staging" → intent delete, workloadHint = app name, namespace set
-- delete/remove/uninstall is never intent get (do not list pods when user wants to delete an app)
-- Requests like "fix deployment X by changing image/tag" are investigate intent (workload), not deploy.
+- Prior conversation turns and activeTopic (if provided) are context — resolve it/that/also/the same from them
+- Plain language: "can you deploy X to staging", "what's wrong with nginx", "list all pods"
+- deploy: githubRepo when user gives github.com/org/repo; else workloadHint for catalog apps (httpd, nginx, redis) + namespace
+- delete/remove/uninstall → intent delete (never get)
+- ci-failure when user asks about failed CI/workflows/builds; set githubRepo when known
+- fix/change image on a deployment → investigate workload, not deploy
 - investigate cluster health → investigateScope cluster
-- workload hints must never be stop words (the, my, a, deployment)
-- intent chat: greetings, thanks, general questions not about K8s ops
-- direct deploy if user says no git push / apply directly → deployStrategy direct`;
+- "is app running" / "is X up in namespace Y" → intent workload-status (NOT investigate); set workloadHint + namespace
+- "is app running in any/all namespaces" → workload-status; never use "any" as namespace name — leave namespace empty or use scope words
+- intent help when user asks what you can do, capabilities, or how to use the bot
+- intent chat only for greetings/thanks/off-topic; set userReply helpfully
+- direct deploy if no git push → deployStrategy direct
+- confidence: high when fields are explicit, lower when guessing`;
 
+interface ClassifyContext {
+  transcript: Array<{ role: 'user' | 'assistant'; content: string }>;
+  activeTopic?: import('./sessions.js').ActiveTopic;
+}
+
+async function classifyIntentUnified(
+  text: string,
+  userId: string,
+  ctx: ClassifyContext
+): Promise<CommandIntent | null> {
   try {
     const llm = resolveCommanderLlm();
+    const contextBlock =
+      ctx.activeTopic || ctx.transcript.length > 0
+        ? `\n\nContext:\nactiveTopic: ${JSON.stringify(ctx.activeTopic ?? null)}\nrecentTurns: ${JSON.stringify(ctx.transcript.slice(-6))}`
+        : '';
+
+    let raw = '';
+
     if (llm.backend === 'openrouter') {
-      const raw = await openRouterChat({
+      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: UNIFIED_INTENT_SYSTEM },
+      ];
+      for (const turn of ctx.transcript.slice(-8)) {
+        messages.push({
+          role: turn.role === 'user' ? 'user' : 'assistant',
+          content: turn.content,
+        });
+      }
+      messages.push({ role: 'user', content: text + contextBlock });
+
+      raw = await openRouterChat({
         model: llm.model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: text },
-        ],
+        messages,
         jsonMode: true,
         temperature: 0.1,
         callerAgent: AGENT,
         incidentId: `chat-${userId}`,
       });
-      return parseIntentJson(stripJsonFences(raw));
-    }
+    } else if (llm.backend === 'gemini' && GEMINI_API_KEY) {
+      const parts: string[] = [UNIFIED_INTENT_SYSTEM];
+      if (ctx.transcript.length > 0) {
+        parts.push('\nRecent conversation:');
+        for (const turn of ctx.transcript.slice(-8)) {
+          parts.push(`${turn.role === 'user' ? 'User' : 'Assistant'}: ${turn.content}`);
+        }
+      }
+      if (ctx.activeTopic) {
+        parts.push(`\nActive topic: ${JSON.stringify(ctx.activeTopic)}`);
+      }
+      parts.push(`\nUser: ${text}`);
 
-    if (llm.backend === 'gemini' && GEMINI_API_KEY) {
-      const model = llm.model;
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${llm.model}:generateContent?key=${GEMINI_API_KEY}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: `${system}\n\nUser: ${text}` }] }],
+            contents: [{ parts: [{ text: parts.join('\n') }] }],
             generationConfig: { temperature: 0.1, responseMimeType: 'application/json' },
           }),
         }
@@ -340,67 +419,14 @@ Rules:
       const data = (await res.json()) as {
         candidates?: { content?: { parts?: { text?: string }[] } }[];
       };
-      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-      return parseIntentJson(stripJsonFences(raw));
+      raw = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    } else {
+      return null;
     }
-  } catch (err) {
-    log('warn', AGENT, 'Structured intent classification failed', {
-      error: String(err),
-    });
-  }
-  return null;
-}
 
-function parseIntentJson(raw: string): LlmStructuredIntent | null {
-  try {
-    const parsed = JSON.parse(raw.trim()) as LlmStructuredIntent;
-    if (!parsed.intent) return null;
-    return parsed;
-  } catch {
+    return parseCommandIntentJson(stripJsonFences(raw));
+  } catch (err) {
+    log('warn', AGENT, 'Unified intent classification failed', { error: String(err) });
     return null;
   }
-}
-
-async function classifyWithLlm(text: string, userId: string): Promise<string> {
-  try {
-    const llm = resolveCommanderLlm();
-    const system =
-      'You are a friendly SRE assistant in Telegram/Slack. Reply in 1-3 short sentences. ' +
-      'You can deploy from GitHub repos, delete/remove apps from a namespace, investigate issues, list K8s resources, and roll back. ' +
-      'If the user wants an action, tell them what you understood and what you need (repo URL, namespace, branch). ' +
-      'Do not make up cluster state.';
-
-    if (llm.backend === 'openrouter') {
-      return await openRouterChat({
-        model: llm.model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: text },
-        ],
-        temperature: 0.3,
-        callerAgent: AGENT,
-        incidentId: `chat-${userId}`,
-      });
-    }
-    if (llm.backend === 'gemini' && GEMINI_API_KEY) {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${llm.model}:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: `${system}\n\nUser: ${text}` }] }],
-            generationConfig: { temperature: 0.3 },
-          }),
-        }
-      );
-      const data = (await res.json()) as {
-        candidates?: { content?: { parts?: { text?: string }[] } }[];
-      };
-      return data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-    }
-  } catch (err) {
-    log('warn', AGENT, 'classifyWithLlm failed', { error: String(err) });
-  }
-  return '';
 }

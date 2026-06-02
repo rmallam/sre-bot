@@ -1,5 +1,8 @@
 # LLM configuration and MCP (Holmes comparison)
 
+Holmes vs sre-bot decision guide: **[HOLMES-COMPARISON-AND-ADOPTION.md](./HOLMES-COMPARISON-AND-ADOPTION.md)**  
+Consolidated backlog: **[PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md)**
+
 ## OpenRouter multi-model (default)
 
 sre-bot uses **two models** via one OpenRouter API key (Holmes-style `modelList`, but fixed roles):
@@ -69,9 +72,13 @@ sre-bot deliberately does **not** give the LLM cluster tools:
 
 ### What to adopt from Holmes instead
 
-- **More fact sources** — Prometheus, Loki, Datadog as investigator plugins (same pattern as `cluster-facts.ts`), not LLM-driven MCP.
-- **Skills / runbooks** — ConfigMap `SKILL.md` injected into brain system prompt.
-- **Operator-style checks** — CRD or cron → `POST /runs` (like Holmes operator → Holmes API).
+See full adoption map: [HOLMES-COMPARISON-AND-ADOPTION.md](./HOLMES-COMPARISON-AND-ADOPTION.md)
+
+- **More fact sources** — Prometheus, Loki, Datadog as investigator plugins (**PLAT-4**, **PLAT-10**) — same pattern as `cluster-facts.ts`, not LLM-driven MCP
+- **Skills / runbooks** — `skills/` + console export + auto-sync (**PLAT-8**)
+- **Operator-style checks** — CRD or cron → `POST /runs` (**PLAT-6**)
+- **Alert ingress** — AlertManager webhook → commander (**PLAT-7**)
+- **Large payload handling** — server-side filtering in investigator/cicd (**PLAT-9**)
 
 ### When K8s MCP might make sense
 

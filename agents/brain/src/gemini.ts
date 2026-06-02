@@ -13,6 +13,7 @@ import type { DiagnosisContext, RemediationPlan } from '../../../shared/src/type
 import { log } from '../../../shared/src/http.js';
 import { resolveBrainLlm } from '../../../shared/src/llm-config.js';
 import { openRouterChat, stripJsonFences } from '../../../shared/src/openrouter.js';
+import { skillsSystemAppendix } from '../../../shared/src/skills-loader.js';
 
 const AGENT = 'brain-agent';
 
@@ -146,6 +147,10 @@ STRICT RULES:
 8. Output JSON must include: action, rootCause, reasoning, severity, proposedPatch, targetManifestPath, commitMessage, rollbackSafe, and optionally helmChart, targetRepo.
 Do not add conversational text outside the JSON object.`;
 
+function systemPrompt(): string {
+  return SYSTEM_PROMPT + skillsSystemAppendix();
+}
+
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
 function buildUserPrompt(ctx: DiagnosisContext): string {
@@ -172,6 +177,8 @@ function buildUserPrompt(ctx: DiagnosisContext): string {
     namespaceQuotas: ctx.namespaceQuotas ?? null,
     existingDeployments: ctx.existingDeployments ?? null,
     specialistDiagnostics: ctx.specialistDiagnostics ?? null,
+    rcaPointers: ctx.rcaPointers ?? null,
+    observabilitySummary: ctx.observabilitySummary ?? null,
   };
 
   return `Here are the structured cluster facts for incident ${ctx.incidentId}:
@@ -180,7 +187,7 @@ function buildUserPrompt(ctx: DiagnosisContext): string {
 ${JSON.stringify(facts, null, 2)}
 \`\`\`
 
-Analyze these facts and produce a remediation plan. Remember: only use information from the facts above.`;
+${ctx.observabilitySummary ? `Multi-source RCA summary:\n${ctx.observabilitySummary}\n\n` : ''}Analyze these facts and all RCA pointers. Cross-reference events, logs, and metrics before choosing root cause. Remember: only use information from the facts above.`;
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -208,7 +215,7 @@ function validateRemediationPlan(obj: unknown): RemediationPlan {
     throw new Error('proposedPatch must be an array');
   }
 
-  const validActions = ['restart', 'git_patch', 'helm_deploy', 'repo_apply', 'escalate_human', 'noop'];
+  const validActions = ['restart', 'git_patch', 'helm_deploy', 'repo_apply', 'cicd_rerun', 'cicd_open_pr', 'cicd_code_pr', 'coding_agent_handoff', 'escalate_human', 'noop'];
   let action = (plan['action'] as string) ?? 'git_patch';
   if (!validActions.includes(action)) {
     action = 'git_patch';
@@ -301,7 +308,7 @@ export async function diagnose(ctx: DiagnosisContext): Promise<RemediationPlan> 
     rawText = await openRouterChat({
       model: llm.model,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt() },
         { role: 'user', content: userPrompt },
       ],
       jsonMode: true,
@@ -319,7 +326,7 @@ export async function diagnose(ctx: DiagnosisContext): Promise<RemediationPlan> 
         },
       ],
       config: {
-        systemInstruction: SYSTEM_PROMPT,
+        systemInstruction: systemPrompt(),
         responseMimeType: 'application/json',
         responseSchema: remediationPlanSchema,
         temperature: 0.1,

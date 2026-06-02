@@ -17,6 +17,7 @@ import {
   resolveDeploymentByHint,
 } from './cluster-facts.js';
 import { resolvePodForWorkload } from './workload-resolve.js';
+import { enrichWithDeepRca } from './rca-enrich.js';
 
 const GITOPS_REPO_URL = process.env['GITOPS_REPO_URL'] ?? '';
 
@@ -183,6 +184,15 @@ export async function gatherFactsSync(opts: {
     .filter((r): r is PromiseFulfilledResult<SpecialistDiagnostic> => r.status === 'fulfilled')
     .map((r) => r.value);
 
+  const deepRca = await enrichWithDeepRca({
+    incidentId: opts.incidentId,
+    namespace,
+    resourceName,
+    podName,
+    k8sFacts,
+    specialistDiagnostics,
+  });
+
   return {
     incidentId: opts.incidentId,
     triggeredBy: 'commander',
@@ -196,12 +206,14 @@ export async function gatherFactsSync(opts: {
     resourceLimits: k8sFacts.resourceLimits ?? {},
     nodeInfo: k8sFacts.nodeInfo,
     recentEvents: k8sFacts.recentEvents ?? [],
-    currentLogs: k8sFacts.currentLogs ?? '',
-    previousLogs: k8sFacts.previousLogs ?? '',
+    currentLogs: deepRca.enrichedCurrentLogs,
+    previousLogs: deepRca.enrichedPreviousLogs,
     gitRepoUrl: GITOPS_REPO_URL || undefined,
     gitManifestPath: manifestResult?.path,
     gitManifestContent: manifestResult?.content,
     specialistDiagnostics,
+    rcaPointers: deepRca.rcaPointers,
+    observabilitySummary: deepRca.observabilitySummary,
     safeMode: true,
   };
 }

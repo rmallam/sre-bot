@@ -16,6 +16,10 @@ OpenRouter multi-model + MCP guidance:
 
 **[docs/LLM-AND-MCP.md](docs/LLM-AND-MCP.md)**
 
+**Product roadmap (all tracks):** **[docs/PRODUCT-ROADMAP.md](docs/PRODUCT-ROADMAP.md)**
+
+**HolmesGPT comparison & adoption:** **[docs/HOLMES-COMPARISON-AND-ADOPTION.md](docs/HOLMES-COMPARISON-AND-ADOPTION.md)**
+
 ```
 Slack/Telegram → commander → orchestrator (LangGraph)
 Watcher ──────────────────────┘
@@ -36,6 +40,22 @@ Tools: investigator | security | brain | executor | gitops | hil
 | gitops | 8086 | Git patch + Helm dual push + direct repo apply |
 | executor | 8087 | Rollout restart |
 | security | 8088 | Sanitize + authorize |
+| cicd | 8089 | GitHub Actions triage, rerun, open issue |
+| **console** | **8091** | **Operations Console — approvals, runs, ignore list** |
+
+DevOps / CI/CD phases: **[docs/DEVOPS-AGENT-PHASES.md](docs/DEVOPS-AGENT-PHASES.md)**
+
+Conversational UX (natural chat): **[docs/CONVERSATIONAL-UX-ROADMAP.md](docs/CONVERSATIONAL-UX-ROADMAP.md)**
+
+Operations Console (web UI): **[docs/OPERATIONS-CONSOLE.md](docs/OPERATIONS-CONSOLE.md)**
+
+Deep RCA (multi-source investigation): **[docs/DEEP-RCA.md](docs/DEEP-RCA.md)**
+
+RCA handoff schema (PLAT-12, Holmes bridge): **[docs/RCA-HANDOFF-SCHEMA.md](docs/RCA-HANDOFF-SCHEMA.md)**
+
+Platform layers (reusable packages, PLAT-14): **[docs/PLATFORM-LAYERS.md](docs/PLATFORM-LAYERS.md)**
+
+Source-to-image deploy (DEPLOY-2): **[docs/SOURCE-TO-IMAGE-DEPLOY.md](docs/SOURCE-TO-IMAGE-DEPLOY.md)**
 
 ## Quick Start
 
@@ -55,14 +75,18 @@ export $(grep -v '^#' .env.local | xargs)
 # podman compose down --remove-orphans && podman compose up --build
 ```
 
-HIL dashboard: http://localhost:8085
+HIL dashboard (legacy): http://localhost:8085/legacy
+
+**Operations Console:** http://localhost:8091 — manage approvals, runs, and ignored resources alongside Telegram/Slack.
+
+**Ignore incidents:** On any approval card (Telegram, Slack, or Operations Console), tap **Ignore** to suppress future remediation for that workload. Ignored resources are stored in HIL and skipped by the watcher, orchestrator, and new approval requests. Manage the list under **Ignored** in the console.
 
 ## Suggest your own fix (HIL)
 
 For every pending incident you can override the bot plan:
 
 - **Telegram**: tap **Suggest fix** on the approval message, then reply (e.g. `restart`, `add imagePullSecrets ghcr-creds`, `set image to ghcr.io/org/app:v2`). You get a parsed plan preview, then **Apply my fix** or **Approve**.
-- **Web**: open the HIL dashboard — each card has a **Suggest your own fix** form (update plan or apply immediately).
+- **Web**: open the [Operations Console](http://localhost:8091) — each card has a **Suggest your own fix** form (update plan or apply immediately).
 
 Suggestions are parsed with fast rules when possible, otherwise **brain** `POST /suggest-plan` (LLM). The stored approval plan is replaced before execution.
 
@@ -98,6 +122,24 @@ After apply succeeds, unhealthy pods are classified by a reusable artifact (`sha
 - `none` to escalate with a clear reason
 
 This prevents post-deploy runtime issues from being misclassified as apply failures.
+
+## CI/CD triage (GitHub Actions)
+
+Ask in Telegram/Slack:
+
+- `why did CI fail on github.com/org/repo`
+- `ci failure rmallam/sre-bot on branch main`
+- `ci failure github.com/org/repo run #12345`
+
+The bot fetches the failed workflow run, classifies the log (tests, lint, auth, runner, etc.), sends a diagnosis, and may suggest **re-run** or **open a tracking issue** (HIL approval required under default autonomy).
+
+**Webhook (optional):** point GitHub `workflow_run` events to `POST http://<commander>:8081/webhooks/github` with `GITHUB_WEBHOOK_SECRET` set. Failed runs auto-start a `ci-failure` orchestrator run and notify `TELEGRAM_ALERT_CHAT_ID`.
+
+Set `GITHUB_TOKEN` (repo + Actions read, contents write, issues write) and mount team runbooks under `./skills/*.md` for brain prompt context.
+
+**Dependency / missing-package failures (Phase 1):** the bot can propose a **code/deps PR** via brain + HIL — see [docs/CI-CODE-REMEDIATION-ROADMAP.md](docs/CI-CODE-REMEDIATION-ROADMAP.md).
+
+**Coding agent (Phase 2, planned):** multi-file logic fixes with build/test loop — see roadmap.
 
 ## Autonomy
 

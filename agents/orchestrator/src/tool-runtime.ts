@@ -9,6 +9,7 @@ import type { CompiledPlan } from '../../../shared/src/tool-registry.js';
 import { getToolDefinition } from '../../../shared/src/tool-registry.js';
 import { log } from '../../../shared/src/http.js';
 import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
+import { mergeRunMetadata } from './run-store.js';
 
 const AGENT = 'orchestrator-tool-runtime';
 
@@ -16,6 +17,8 @@ const EXECUTOR_URL = process.env['EXECUTOR_URL'] ?? 'http://executor-agent:8080'
 const GITOPS_URL = process.env['GITOPS_URL'] ?? 'http://gitops-agent:8080';
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 const COMMANDER_URL = process.env['COMMANDER_URL'] ?? 'http://commander-agent:8080';
+const CICD_URL = process.env['CICD_URL'] ?? 'http://cicd-agent:8080';
+const CODING_AGENT_URL = process.env['CODING_AGENT_URL'] ?? 'http://coding-agent:8080';
 const REGISTRY_DRY_RUN = (process.env['REGISTRY_DRY_RUN'] ?? 'true').toLowerCase() === 'true';
 
 export interface ToolExecuteResult {
@@ -234,24 +237,268 @@ async function executeToolCallOnce(
     return { success: true, summary: 'notify' };
   }
 
-  return { success: false, error: `No runtime handler for ${call.name}` };
-}
+  if (call.name === 'cicd.rerun_workflow') {
+    const input = call.input as {
+      repo?: string;
+      githubRepo?: string;
+      runId?: number;
+      workflowRunId?: number;
+    };
+    const repo = input.githubRepo ?? input.repo ?? '';
+    const runId = input.workflowRunId ?? input.runId;
+    if (!repo || runId == null) {
+      return { success: false, error: 'repo and runId required for cicd rerun' };
+    }
+    try {
+      const res = await fetch(`${CICD_URL}/rerun`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo, runId, incidentId: cmd.incidentId }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        return { success: false, error: `cicd rerun HTTP ${res.status}: ${body.slice(0, 400)}` };
+      }
+      const result = (await res.json()) as { ok?: boolean; message?: string };
+      return { success: result.ok !== false, summary: result.message ?? 'workflow rerun requested' };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  }
 
-export async function executeToolCall(
-  call: ToolCall,
-  cmd: RemediateCommand,
-  ctx: RuntimeToolContext,
-  priorSuccess = true,
-  priorDetail = ''
-): Promise<ToolExecuteResult> {
-  const def = getToolDefinition(call.name);
-  log('info', AGENT, `Executing tool ${call.name}`, {
-    incidentId: cmd.incidentId,
-    risk: def.risk,
-    dryRunCapable: def.supportsDryRun,
-    idempotent: def.idempotent,
-  });
-  return executeToolCallOnce(call, cmd, ctx, priorSuccess, priorDetail);
+  if (call.name === 'cicd.open_pr') {
+    const input = call.input as {
+      repo?: string;
+      githubRepo?: string;
+      branch?: string;
+      title?: string;
+      body?: string;
+      workflowFilePath?: string;
+      workflowName?: string;
+      logExcerpt?: string;
+    };
+    const repo = input.githubRepo ?? input.repo ?? '';
+    if (!repo || !input.title) {
+      return { success: false, error: 'repo and title required for cicd open-pr' };
+    }
+    try {
+      const res = await fetch(`${CICD_URL}/open-pr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo,
+          branch: input.branch ?? 'main',
+          title: input.title,
+          body: input.body ?? '',
+          incidentId: cmd.incidentId,
+          workflowFilePath: input.workflowFilePath,
+          workflowName: input.workflowName,
+          logExcerpt: input.logExcerpt,
+        }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        return { success: false, error: `cicd open-pr HTTP ${res.status}: ${body.slice(0, 400)}` };
+      }
+      const result = (await res.json()) as { ok?: boolean; message?: string; prUrl?: string };
+      const urls = result.prUrl ? [result.prUrl] : undefined;
+      return {
+        success: result.ok !== false,
+        summary: result.message ?? 'CI fix issue opened',
+        commitUrls: urls,
+      };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  }
+
+  if (call.name === 'cicd.open_code_pr') {
+    const input = call.input as {
+      repo?: string;
+      githubRepo?: string;
+      branch?: string;
+      title?: string;
+      body?: string;
+      patches?: Array<{ path: string; content: string }>;
+    };
+    const repo = input.githubRepo ?? input.repo ?? '';
+    if (!repo || !input.title || !input.patches?.length) {
+      return { success: false, error: 'repo, title, and patches required for cicd open-code-pr' };
+    }
+    try {
+      const res = await fetch(`${CICD_URL}/open-code-pr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo,
+          branch: input.branch ?? 'main',
+          title: input.title,
+          body: input.body ?? '',
+          incidentId: cmd.incidentId,
+          patches: input.patches,
+        }),
+        signal: AbortSignal.timeout(180_000),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        return { success: false, error: `cicd open-code-pr HTTP ${res.status}: ${body.slice(0, 400)}` };
+      }
+      const result = (await res.json()) as { ok?: boolean; message?: string; prUrl?: string };
+      const urls = result.prUrl ? [result.prUrl] : undefined;
+      return {
+        success: result.ok !== false,
+        summary: result.message ?? 'CI code fix PR opened',
+        commitUrls: urls,
+      };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  }
+
+  if (call.name === 'coding_agent.run_fix') {
+    const input = call.input as {
+      incidentId?: string;
+      runId?: string;
+      ciRun?: import('../../../shared/src/ci-types.js').CiRunFacts;
+      platform?: string;
+      channelId?: string;
+      maxAttempts?: number;
+    };
+    if (!input.incidentId || !input.runId || !input.ciRun) {
+      return { success: false, error: 'incidentId, runId, and ciRun required for coding_agent.run_fix' };
+    }
+    try {
+      const startRes = await fetch(`${CODING_AGENT_URL}/run-fix`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          incidentId: input.incidentId,
+          runId: input.runId,
+          ciRun: input.ciRun,
+          platform: input.platform,
+          channelId: input.channelId,
+          maxAttempts: input.maxAttempts,
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!startRes.ok) {
+        const body = await startRes.text();
+        return {
+          success: false,
+          error: `coding-agent run-fix HTTP ${startRes.status}: ${body.slice(0, 400)}`,
+        };
+      }
+      const started = (await startRes.json()) as { jobId?: string };
+      const jobId = started.jobId;
+      if (!jobId) {
+        return { success: false, error: 'coding-agent did not return jobId' };
+      }
+      await mergeRunMetadata(input.runId, { codingAgentJobId: jobId, ciRun: input.ciRun });
+
+      const pollMs = parseInt(process.env['CODING_AGENT_POLL_MS'] ?? '4000', 10);
+      const timeoutMs = parseInt(process.env['CODING_AGENT_POLL_TIMEOUT_MS'] ?? '900000', 10);
+      const deadline = Date.now() + timeoutMs;
+
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, pollMs));
+        const jobRes = await fetch(`${CODING_AGENT_URL}/jobs/${encodeURIComponent(jobId)}`, {
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!jobRes.ok) continue;
+        const job = (await jobRes.json()) as {
+          status?: string;
+          prUrl?: string;
+          summary?: string;
+          error?: string;
+        };
+        if (job.status === 'succeeded') {
+          const urls = job.prUrl ? [job.prUrl] : undefined;
+          return {
+            success: true,
+            summary: job.summary ?? 'Coding agent opened fix PR',
+            commitUrls: urls,
+          };
+        }
+        if (job.status === 'failed' || job.status === 'cancelled') {
+          return {
+            success: false,
+            error: job.error ?? job.summary ?? `Coding agent job ${job.status}`,
+          };
+        }
+      }
+      return { success: false, error: 'Coding agent job timed out while polling' };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  }
+
+  if (call.name === 'cicd.fetch_run') {
+    const input = call.input as {
+      repo?: string;
+      githubRepo?: string;
+      runId?: number;
+      branch?: string;
+      workflowName?: string;
+    };
+    const params = new URLSearchParams();
+    const repo = input.repo ?? input.githubRepo;
+    if (repo) params.set('repo', repo);
+    if (input.runId != null) params.set('runId', String(input.runId));
+    if (input.branch) params.set('branch', input.branch);
+    if (input.workflowName) params.set('workflowName', input.workflowName);
+    try {
+      const res = await fetch(`${CICD_URL}/fetch-run?${params}`, { signal: AbortSignal.timeout(60_000) });
+      if (!res.ok) {
+        const body = await res.text();
+        return { success: false, error: `cicd fetch-run HTTP ${res.status}: ${body.slice(0, 400)}` };
+      }
+      return { success: true, summary: 'ci run fetched' };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  }
+
+  if (call.name === 'investigator.logs_query') {
+    const input = call.input as Record<string, unknown>;
+    try {
+      const res = await fetch(`${INVESTIGATOR_URL}/observability/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok) {
+        return { success: false, error: `logs query HTTP ${res.status}` };
+      }
+      const body = (await res.json()) as { lines?: string[] };
+      return { success: true, summary: `${body.lines?.length ?? 0} log lines` };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  }
+
+  if (call.name === 'investigator.metrics_query') {
+    const input = call.input as Record<string, unknown>;
+    try {
+      const res = await fetch(`${INVESTIGATOR_URL}/observability/metrics`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) {
+        return { success: false, error: `metrics query HTTP ${res.status}` };
+      }
+      const body = (await res.json()) as { summary?: string };
+      return { success: true, summary: body.summary ?? 'metrics queried' };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  }
+
+  return { success: false, error: `No runtime handler for ${call.name}` };
 }
 
 export async function executeCompiledPlan(

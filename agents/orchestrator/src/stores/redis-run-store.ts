@@ -106,6 +106,13 @@ export class RedisRunStore implements RunStore {
     await this.write(run);
   }
 
+  async mergeRunMetadata(runId: string, patch: Record<string, unknown>): Promise<void> {
+    const run = await this.read(runId);
+    if (!run) return;
+    run.metadata = { ...(run.metadata ?? {}), ...patch };
+    await this.write(run);
+  }
+
   async close(): Promise<void> {
     await this.redis.quit();
   }

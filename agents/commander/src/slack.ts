@@ -31,6 +31,8 @@ import {
   storeInvestigateChoice,
   tryResolvePendingInvestigateChoice,
 } from './investigate-choice.js';
+import { tryResolvePendingDeleteChoice } from './delete-choice.js';
+import { getChannelPref } from './channel-prefs.js';
 
 const AGENT = 'commander-agent';
 const PLATFORM = 'slack' as const;
@@ -155,6 +157,26 @@ export function createSlackApp(): App {
       return;
     }
 
+    const delPending = tryResolvePendingDeleteChoice(PLATFORM, channelId, userId, rawText);
+    if (delPending.status === 'cancelled') {
+      await say({ text: 'Delete cancelled.', thread_ts: event.ts });
+      return;
+    }
+    if (delPending.status === 'selected' && delPending.command) {
+      try {
+        const result = await handleCommand(delPending.command, userId, PLATFORM, channelId, rawText);
+        await say({
+          text:
+            result.immediateReply ??
+            ackMessage(result.incidentId, delPending.command.type, delPending.command),
+          thread_ts: event.ts,
+        });
+      } catch (err) {
+        await say({ text: `⚠️ ${String(err)}`, thread_ts: event.ts });
+      }
+      return;
+    }
+
     const invPending = tryResolvePendingInvestigateChoice(PLATFORM, channelId, userId, rawText);
     if (invPending.status === 'cancelled') {
       await say({ text: 'Investigation cancelled.', thread_ts: event.ts });
@@ -198,7 +220,10 @@ export function createSlackApp(): App {
         }
       }
       if (parsed.type === 'investigate') {
-        const flow = await resolveInvestigateFlow(parsed, rawText);
+        const flow = await resolveInvestigateFlow(parsed, rawText, {
+          platform: PLATFORM,
+          verbose: getChannelPref(PLATFORM, channelId).verbose,
+        });
         if (flow.kind === 'reply') {
           await say({ text: flow.text, thread_ts: event.ts });
           return;
@@ -281,6 +306,25 @@ export function createSlackApp(): App {
       return;
     }
 
+    const delPendingDm = tryResolvePendingDeleteChoice(PLATFORM, channelId, userId, rawText);
+    if (delPendingDm.status === 'cancelled') {
+      await say({ text: 'Delete cancelled.' });
+      return;
+    }
+    if (delPendingDm.status === 'selected' && delPendingDm.command) {
+      try {
+        const result = await handleCommand(delPendingDm.command, userId, PLATFORM, channelId, rawText);
+        await say({
+          text:
+            result.immediateReply ??
+            ackMessage(result.incidentId, delPendingDm.command.type, delPendingDm.command),
+        });
+      } catch (err) {
+        await say({ text: `⚠️ ${String(err)}` });
+      }
+      return;
+    }
+
     const invPending = tryResolvePendingInvestigateChoice(PLATFORM, channelId, userId, rawText);
     if (invPending.status === 'cancelled') {
       await say({ text: 'Investigation cancelled.' });
@@ -323,7 +367,10 @@ export function createSlackApp(): App {
         }
       }
       if (parsed.type === 'investigate') {
-        const flow = await resolveInvestigateFlow(parsed, rawText);
+        const flow = await resolveInvestigateFlow(parsed, rawText, {
+          platform: PLATFORM,
+          verbose: getChannelPref(PLATFORM, channelId).verbose,
+        });
         if (flow.kind === 'reply') {
           await say({ text: flow.text });
           return;

@@ -193,6 +193,89 @@ app.post('/suggest-plan', async (req: Request, res: Response) => {
   }
 });
 
+/** UX-6: LLM CI classification when regex confidence is low. */
+app.post('/classify-ci', async (req: Request, res: Response) => {
+  const body = req.body as {
+    incidentId?: string;
+    ciRun?: import('../../../shared/src/ci-types.js').CiRunFacts;
+  };
+  if (!body.incidentId || !body.ciRun) {
+    res.status(400).json({ error: 'incidentId and ciRun required' });
+    return;
+  }
+  try {
+    const { classifyCiWithLlm } = await import('./ci-classify.js');
+    const result = await classifyCiWithLlm({
+      incidentId: body.incidentId,
+      ciRun: body.ciRun,
+    });
+    if (!result) {
+      res.json({ skipped: true });
+      return;
+    }
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'classify-ci failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** CI dependency / code-fix planning for orchestrator. */
+app.post('/plan-ci-fix', async (req: Request, res: Response) => {
+  const body = req.body as {
+    incidentId?: string;
+    ciRun?: import('../../../shared/src/ci-types.js').CiRunFacts;
+    repoContext?: import('../../../shared/src/ci-repo-context.js').CiRepoContext;
+  };
+  if (!body.incidentId || !body.ciRun || !body.repoContext) {
+    res.status(400).json({ error: 'incidentId, ciRun, repoContext required' });
+    return;
+  }
+  try {
+    const { planCiCodeFix } = await import('./ci-code-fix.js');
+    const result = await planCiCodeFix({
+      incidentId: body.incidentId,
+      ciRun: body.ciRun,
+      repoContext: body.repoContext,
+    });
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'plan-ci-fix failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** CI application-code fix planning for coding-agent (multi-attempt loop). */
+app.post('/plan-app-fix', async (req: Request, res: Response) => {
+  const body = req.body as {
+    incidentId?: string;
+    ciRun?: import('../../../shared/src/ci-types.js').CiRunFacts;
+    repoContext?: import('../../../shared/src/ci-repo-context.js').CiRepoContext;
+    attempt?: number;
+    maxAttempts?: number;
+    previousError?: string;
+  };
+  if (!body.incidentId || !body.ciRun || !body.repoContext) {
+    res.status(400).json({ error: 'incidentId, ciRun, repoContext required' });
+    return;
+  }
+  try {
+    const { planCiAppFix } = await import('./ci-app-fix.js');
+    const result = await planCiAppFix({
+      incidentId: body.incidentId,
+      ciRun: body.ciRun,
+      repoContext: body.repoContext,
+      attempt: body.attempt ?? 1,
+      maxAttempts: body.maxAttempts ?? 5,
+      previousError: body.previousError,
+    });
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'plan-app-fix failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 /** Synchronous plan for orchestrator — no HIL dispatch. */
 app.post('/plan-only', async (req: Request, res: Response) => {
   const body = req.body as Partial<DiagnosisContext>;

@@ -29,6 +29,7 @@ function statusColor(status: string): string {
     case 'PENDING':  return '#ffcc00';
     case 'APPROVED': return '#44cc44';
     case 'REJECTED': return '#ff4444';
+    case 'IGNORED':  return '#6688aa';
     case 'EXPIRED':  return '#888888';
     default:         return '#aaaaaa';
   }
@@ -86,6 +87,10 @@ function renderCard(approval: PendingApproval): string {
       <form method="POST" action="/reject/${encodeURIComponent(incidentId)}" style="display:inline">
         <input type="hidden" name="reason" value="Rejected via web dashboard" />
         <button type="submit" class="btn-reject">❌ Reject</button>
+      </form>
+      <form method="POST" action="/ignore/${encodeURIComponent(incidentId)}" style="display:inline">
+        <input type="hidden" name="reason" value="Ignored via web dashboard" />
+        <button type="submit" class="btn-ignore">🔕 Ignore</button>
       </form>
       <div class="suggest-box">
         <div class="section-label">✏️ Suggest your own fix</div>
@@ -145,7 +150,10 @@ function renderCard(approval: PendingApproval): string {
   </div>`;
 }
 
-export function renderDashboard(approvals: PendingApproval[]): string {
+export function renderDashboard(
+  approvals: PendingApproval[],
+  ignored: import('../../../shared/src/incident-ignore.js').IgnoredResource[] = []
+): string {
   const pending = approvals.filter((a) => a.status === 'PENDING').length;
   const cards = approvals.length === 0
     ? '<div class="empty-state">🎉 No pending approvals. All quiet.</div>'
@@ -158,6 +166,24 @@ export function renderDashboard(approvals: PendingApproval[]): string {
         })
         .map(renderCard)
         .join('\n');
+
+  const ignoredPanel =
+    ignored.length > 0
+      ? `<div class="ignored-panel">
+          <div class="section-label">🔕 Ignored resources (won't be remediated again)</div>
+          ${ignored
+            .map(
+              (i) =>
+                `<div class="ignored-row">
+                  <span><code>${escapeHtml(i.key)}</code> — since ${new Date(i.ignoredAt).toLocaleString()}</span>
+                  <form method="POST" action="/unignore/${encodeURIComponent(i.key)}" style="display:inline">
+                    <button type="submit" class="btn-ignore">Unignore</button>
+                  </form>
+                </div>`
+            )
+            .join('')}
+        </div>`
+      : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -368,7 +394,7 @@ export function renderDashboard(approvals: PendingApproval[]): string {
       cursor: pointer;
       margin-right: 8px;
     }
-    .btn-approve, .btn-reject {
+    .btn-approve, .btn-reject, .btn-ignore {
       padding: 0.45rem 1.1rem;
       border: none;
       border-radius: 6px;
@@ -382,6 +408,10 @@ export function renderDashboard(approvals: PendingApproval[]): string {
     .btn-approve:hover { opacity: 0.85; }
     .btn-reject  { background: #da3633; color: #fff; }
     .btn-reject:hover  { opacity: 0.85; }
+    .btn-ignore  { background: #484f58; color: #fff; }
+    .btn-ignore:hover  { opacity: 0.85; }
+    .ignored-panel { margin: 1.5rem 0; padding: 1rem; background: #161b22; border-radius: 8px; border: 1px solid #30363d; }
+    .ignored-row { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid #21262d; font-size: 0.9rem; }
 
     .handled-badge {
       display: inline-block;
@@ -436,6 +466,7 @@ export function renderDashboard(approvals: PendingApproval[]): string {
     <div class="badge-count">${pending} pending</div>
   </header>
   <div class="refresh-note">Auto-refreshes every 10 seconds. Last rendered: ${new Date().toUTCString()}</div>
+  ${ignoredPanel}
   ${cards}
 </body>
 </html>`;

@@ -45,13 +45,37 @@ function normalizeName(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9-]/g, '');
 }
 
-function scoreMatch(hint: string, candidate: string): number {
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const row = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    let prev = row[0]!;
+    row[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const next = Math.min(row[j]! + 1, row[j - 1]! + 1, prev + cost);
+      prev = row[j]!;
+      row[j] = next;
+    }
+  }
+  return row[n]!;
+}
+
+/** Exported for unit tests (typo-tolerant matching). */
+export function scoreWorkloadHint(hint: string, candidate: string): number {
   const h = normalizeName(hint);
   const c = normalizeName(candidate);
   if (!h || !c) return 0;
   if (c === h) return 100;
   if (c.includes(h) || h.includes(c)) return 80;
   if (c.startsWith(h) || h.startsWith(c)) return 65;
+  const dist = levenshtein(h, c);
+  const maxLen = Math.max(h.length, c.length);
+  if (maxLen <= 12 && dist === 1) return 82;
+  if (maxLen >= 4 && dist === 2 && Math.abs(h.length - c.length) <= 1) return 72;
   return 0;
 }
 
@@ -202,7 +226,7 @@ export async function resolveWorkloadCandidates(
       const ns = dep.metadata?.namespace ?? 'default';
       const name = dep.metadata?.name ?? '';
       if (!name) continue;
-      let score = browseMode ? 50 : scoreMatch(trimmed, name);
+      let score = browseMode ? 50 : scoreWorkloadHint(trimmed, name);
       if (preferredNamespace && preferredNamespace !== '_all' && ns === preferredNamespace) {
         score += 10;
       }
@@ -224,7 +248,7 @@ export async function resolveWorkloadCandidates(
       const ns = sts.metadata?.namespace ?? 'default';
       const name = sts.metadata?.name ?? '';
       if (!name) continue;
-      let score = (browseMode ? 45 : scoreMatch(trimmed, name)) - 5;
+      let score = (browseMode ? 45 : scoreWorkloadHint(trimmed, name)) - 5;
       if (preferredNamespace && preferredNamespace !== '_all' && ns === preferredNamespace) {
         score += 10;
       }
@@ -243,7 +267,7 @@ export async function resolveWorkloadCandidates(
       const ns = pod.metadata?.namespace ?? 'default';
       const name = pod.metadata?.name ?? '';
       if (!name) continue;
-      let score = browseMode ? 40 : scoreMatch(trimmed, name);
+      let score = browseMode ? 40 : scoreWorkloadHint(trimmed, name);
       if (browseMode || score >= 70) {
         const { ready, phase } = podReadySummary(pod);
         results.push({
@@ -260,6 +284,27 @@ export async function resolveWorkloadCandidates(
     }
 
     results.sort((a, b) => b.score - a.score);
+
+    // Prefer Deployment/StatefulSet over Pod when the hint matches a controller name.
+    if (!browseMode && trimmed) {
+      const h = normalizeName(trimmed);
+      const topController = results.find(
+        (r) =>
+          (r.resourceKind === 'Deployment' || r.resourceKind === 'StatefulSet') &&
+          normalizeName(r.resourceName) === h
+      );
+      if (topController) {
+        const filtered = results.filter(
+          (r) =>
+            r.resourceKind !== 'Pod' ||
+            !r.resourceName.startsWith(`${topController.resourceName}-`)
+        );
+        results.length = 0;
+        results.push(...filtered);
+        results.sort((a, b) => b.score - a.score);
+      }
+    }
+
     const top = results.slice(0, limit);
 
     for (const c of top) {

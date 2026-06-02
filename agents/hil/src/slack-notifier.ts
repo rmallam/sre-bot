@@ -14,7 +14,7 @@
 import pkg from '@slack/bolt';
 import type { App, BlockAction, ButtonAction } from '@slack/bolt';
 import { approvalStore } from './store.js';
-import { onApproved, onRejected } from './dispatcher.js';
+import { onApproved, onRejected, onIgnored } from './dispatcher.js';
 import { log } from '../../../shared/src/http.js';
 import type { ApprovalRequest } from '../../../shared/src/types.js';
 
@@ -123,6 +123,47 @@ function getSlackApp(): App | null {
         await respond({
           replace_original: true,
           text: `❌ *Rejected* by <@${userId}> via Slack.`,
+        });
+      } else if (result === 'already_handled') {
+        const entry = approvalStore.get(incidentId);
+        await respond({
+          replace_original: false,
+          text: `ℹ️ This incident has already been handled (${entry?.status ?? 'unknown'}).`,
+        });
+      } else {
+        await respond({
+          replace_original: false,
+          text: `❓ Unknown incident \`${incidentId}\`.`,
+        });
+      }
+    }
+  );
+
+  // ── Action: Ignore ────────────────────────────────────────────────────────
+  slackApp.action<BlockAction<ButtonAction>>(
+    /^hil_ignore_/,
+    async ({ action, ack, respond, body }) => {
+      await ack();
+
+      const incidentId = action.action_id.replace('hil_ignore_', '');
+      const userId = body.user.id;
+      const username = body.user.name ?? body.user.id;
+
+      log('info', AGENT, 'Slack ignore button clicked', { incidentId, userId });
+
+      const result = approvalStore.tryIgnore(
+        incidentId,
+        username,
+        'slack',
+        'Ignored via Slack'
+      );
+
+      if (result === 'ok') {
+        const entry = approvalStore.get(incidentId)!;
+        await onIgnored(entry, username, 'slack', 'Ignored via Slack');
+        await respond({
+          replace_original: true,
+          text: `🔕 *Ignored* by <@${userId}> — this resource won't be remediated again.`,
         });
       } else if (result === 'already_handled') {
         const entry = approvalStore.get(incidentId);
@@ -269,6 +310,12 @@ export async function notifySlack(request: ApprovalRequest): Promise<void> {
               text: { type: 'plain_text', text: '❌ Reject', emoji: true },
               style: 'danger',
               action_id: `hil_reject_${incidentId}`,
+              value: incidentId,
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: '🔕 Ignore', emoji: true },
+              action_id: `hil_ignore_${incidentId}`,
               value: incidentId,
             },
             {

@@ -27,7 +27,7 @@ const DEFAULTS = {
   },
   gemini: {
     brain: 'gemini-2.5-pro',
-    commander: 'gemini-2.0-flash',
+    commander: 'gemini-2.5-flash',
   },
 } as const;
 

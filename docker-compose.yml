@@ -25,6 +25,7 @@ volumes:
   gitops-mirror:
   run-data:
   postgres-data:
+  hil-data:
 
 services:
   postgres:
@@ -99,6 +100,7 @@ services:
       - INVESTIGATOR_URL=http://investigator-agent:8080
       - ORCHESTRATOR_URL=http://orchestrator-agent:8080
       - USE_ORCHESTRATOR=true
+      - HIL_URL=http://hil-agent:8080
       - COOLDOWN_MINUTES=2
       - WATCH_NAMESPACES=${WATCH_NAMESPACES:-}
       - KUBECONFIG=/tmp/kube/config
@@ -116,6 +118,7 @@ services:
       - investigator-agent
       - security-agent
       - gitops-agent
+      - redis
     healthcheck: *agent-healthcheck
     environment:
       - PORT=8080
@@ -132,7 +135,17 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_COMMANDER_MODEL=${OPENROUTER_COMMANDER_MODEL:-google/gemini-2.5-flash}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_COMMANDER_MODEL=${GEMINI_COMMANDER_MODEL:-gemini-2.5-flash}
       - HIL_URL=http://hil-agent:8080
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
+      - GITHUB_WEBHOOK_NOTIFY_PLATFORM=${GITHUB_WEBHOOK_NOTIFY_PLATFORM:-telegram}
+      - GITHUB_WEBHOOK_NOTIFY_CHANNEL_ID=${GITHUB_WEBHOOK_NOTIFY_CHANNEL_ID:-}
+      - TELEGRAM_ALERT_CHAT_ID=${TELEGRAM_ALERT_CHAT_ID:-}
+      - CONVERSATIONAL_NARRATE=${CONVERSATIONAL_NARRATE:-true}
+      - CONVERSATIONAL_NARRATE_LLM=${CONVERSATIONAL_NARRATE_LLM:-true}
+      - REDIS_URL=redis://redis:6379
+      - CHAT_SESSION_BACKEND=${CHAT_SESSION_BACKEND:-redis}
+      - CHAT_SESSION_TTL_SECONDS=${CHAT_SESSION_TTL_SECONDS:-604800}
 
   investigator-agent:
     container_name: sre-bot-investigator
@@ -155,6 +168,9 @@ services:
       - GITOPS_REPO_URL=${GITOPS_REPO_URL}
       - INVESTIGATOR_SAFE_MODE=true
       - GIT_SYNC_INTERVAL_SECONDS=60
+      - LOKI_URL=${LOKI_URL:-}
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-}
+      - DEEP_RCA_ENABLED=${DEEP_RCA_ENABLED:-true}
       - KUBECONFIG=/tmp/kube/config
     volumes:
       - ~/.kube:/root/.kube:ro
@@ -180,9 +196,11 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_BRAIN_MODEL=${GEMINI_BRAIN_MODEL:-gemini-2.5-pro}
       - CIRCUIT_BREAKER_LIMIT=3
+      - CICD_SKILLS_DIR=/data/skills
       - KUBECONFIG=/tmp/kube/config
     volumes:
       - ~/.kube:/root/.kube:ro
+      - ./skills:/data/skills:ro
 
   orchestrator-agent:
     build:
@@ -195,10 +213,14 @@ services:
       - postgres
       - investigator-agent
       - security-agent
+      - cicd-agent
+      - coding-agent
     healthcheck: *agent-healthcheck
     environment:
       - PORT=8080
       - INVESTIGATOR_URL=http://investigator-agent:8080
+      - CICD_URL=http://cicd-agent:8080
+      - CODING_AGENT_URL=http://coding-agent:8080
       - SECURITY_URL=http://security-agent:8080
       - BRAIN_URL=http://brain-agent:8080
       - EXECUTOR_URL=http://executor-agent:8080
@@ -212,6 +234,11 @@ services:
       - USE_CAPABILITY_PLANNER=false
       - PER_TOOL_HIL=false
       - FAILURE_ANALYSIS_ENABLED=${FAILURE_ANALYSIS_ENABLED:-true}
+      - CI_CODE_FIX_ENABLED=${CI_CODE_FIX_ENABLED:-true}
+      - CI_CLASSIFY_LLM=${CI_CLASSIFY_LLM:-true}
+      - CODING_AGENT_ENABLED=${CODING_AGENT_ENABLED:-true}
+      - CODING_AGENT_MAX_ITERATIONS=${CODING_AGENT_MAX_ITERATIONS:-5}
+      - CONVERSATIONAL_NARRATE=${CONVERSATIONAL_NARRATE:-true}
     volumes:
       - run-data:/data/runs
 
@@ -263,8 +290,33 @@ services:
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
       - SLACK_ALERT_CHANNEL=${SLACK_ALERT_CHANNEL}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_ALERT_CHAT_ID=${TELEGRAM_ALERT_CHAT_ID}
       - ORCHESTRATOR_URL=http://orchestrator-agent:8080
+      - COMMANDER_URL=http://commander-agent:8080
+      - IGNORE_STORE_PATH=/data/ignored-resources.json
+    volumes:
+      - hil-data:/data
+
+  console-agent:
+    build:
+      context: .
+      dockerfile: agents/console/Dockerfile
+    networks: [sre-net]
+    ports:
+      - "8091:8080"
+    depends_on:
+      - hil-agent
+      - orchestrator-agent
+      - commander-agent
+    healthcheck: *agent-healthcheck
+    environment:
+      - PORT=8080
+      - HIL_URL=http://hil-agent:8080
+      - ORCHESTRATOR_URL=http://orchestrator-agent:8080
+      - COMMANDER_URL=http://commander-agent:8080
+      - INVESTIGATOR_URL=http://investigator-agent:8080
+      - BRAIN_URL=http://brain-agent:8080
+      - CICD_URL=http://cicd-agent:8080
+      - CODING_AGENT_URL=http://coding-agent:8080
 
   gitops-agent:
     build:
@@ -298,6 +350,46 @@ services:
       - gitops-mirror:/data/gitops-mirror
       - ~/.kube:/root/.kube:ro
       - ~/.ssh:/root/.ssh:ro
+
+  cicd-agent:
+    container_name: sre-bot-cicd
+    build:
+      context: .
+      dockerfile: agents/cicd-agent/Dockerfile
+    networks: [sre-net]
+    ports:
+      - "8089:8080"
+    healthcheck: *agent-healthcheck
+    environment:
+      - PORT=8080
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - DEPLOY_APP_REPO_WRITE_TOKEN=${DEPLOY_APP_REPO_WRITE_TOKEN:-}
+
+  coding-agent:
+    container_name: sre-bot-coding-agent
+    build:
+      context: .
+      dockerfile: agents/coding-agent/Dockerfile
+    networks: [sre-net]
+    depends_on:
+      - brain-agent
+      - cicd-agent
+      - commander-agent
+    ports:
+      - "8092:8080"
+    healthcheck: *agent-healthcheck
+    environment:
+      - PORT=8080
+      - BRAIN_URL=http://brain-agent:8080
+      - CICD_URL=http://cicd-agent:8080
+      - COMMANDER_URL=http://commander-agent:8080
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - DEPLOY_APP_REPO_WRITE_TOKEN=${DEPLOY_APP_REPO_WRITE_TOKEN:-}
+      - CODING_AGENT_ENABLED=${CODING_AGENT_ENABLED:-true}
+      - CODING_AGENT_MAX_ITERATIONS=${CODING_AGENT_MAX_ITERATIONS:-5}
+      - CICD_SKILLS_DIR=/data/skills
+    volumes:
+      - ./skills:/data/skills:ro
 
   # v2: optional AI gateway (enable AI_GATEWAY_URL in orchestrator/brain)
   ai-gateway:

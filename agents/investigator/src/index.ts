@@ -30,6 +30,7 @@ import {
 } from './git-mirror.js';
 import { gatherFactsSync } from './facts-sync.js';
 import { verifyDeployment } from './verify.js';
+import { queryLogs, queryMetrics } from './observability.js';
 import { clusterGet, type ClusterGetResource } from './cluster-get.js';
 import {
   resolveWorkloadCandidates,
@@ -138,6 +139,36 @@ app.get('/facts', async (req: Request, res: Response) => {
   }
 });
 
+// ── GET /workload-status — is workload running? (commander sync reply) ───────
+
+app.get('/workload-status', async (req: Request, res: Response) => {
+  const namespace = String(req.query.namespace ?? 'default');
+  const resourceName = String(req.query.resourceName ?? '');
+  const resourceKind = (String(req.query.resourceKind ?? 'Deployment')) as import('../../../shared/src/types.js').ResourceKind;
+  const podName = req.query.podName ? String(req.query.podName) : undefined;
+  const incidentId = String(req.query.incidentId ?? 'status');
+
+  if (!resourceName) {
+    res.status(400).json({ error: 'resourceName required' });
+    return;
+  }
+
+  try {
+    const { gatherWorkloadStatus } = await import('./workload-status.js');
+    const facts = await gatherWorkloadStatus({
+      incidentId,
+      namespace,
+      resourceName,
+      resourceKind,
+      podName,
+    });
+    res.json(facts);
+  } catch (err) {
+    log('error', AGENT, 'GET /workload-status failed', { incidentId, error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ── GET /resolve-workload — match vague hints to workloads (commander confirmation) ─
 
 app.get('/resolve-workload', async (req: Request, res: Response) => {
@@ -202,8 +233,6 @@ app.get('/get', async (req: Request, res: Response) => {
   }
 });
 
-// ── GET /verify — workload health check ───────────────────────────────────────
-
 app.get('/verify', async (req: Request, res: Response) => {
   const namespace = String(req.query.namespace ?? 'default');
   const resourceName = String(req.query.resourceName ?? '');
@@ -215,7 +244,51 @@ app.get('/verify', async (req: Request, res: Response) => {
   }
 
   const result = await verifyDeployment(namespace, resourceName, incidentId);
-  res.json({ healthy: result.healthy, message: result.message, ...result });
+  res.json(result);
+});
+
+app.post('/observability/logs', async (req: Request, res: Response) => {
+  const body = req.body as {
+    namespace?: string;
+    podName?: string;
+    labelSelector?: string;
+    sinceMinutes?: number;
+    limit?: number;
+    incidentId?: string;
+  };
+  const incidentId = body.incidentId ?? 'observability';
+  try {
+    const result = await queryLogs({
+      namespace: body.namespace,
+      podName: body.podName,
+      labelSelector: body.labelSelector,
+      sinceMinutes: body.sinceMinutes,
+      limit: body.limit,
+      incidentId,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post('/observability/metrics', async (req: Request, res: Response) => {
+  const body = req.body as {
+    namespace?: string;
+    deployment?: string;
+    incidentId?: string;
+  };
+  const incidentId = body.incidentId ?? 'observability';
+  try {
+    const result = await queryMetrics({
+      namespace: body.namespace,
+      deployment: body.deployment,
+      incidentId,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // ── POST /analyze ─────────────────────────────────────────────────────────────

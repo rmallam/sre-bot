@@ -77,7 +77,7 @@ export function storeResourceCreatePrompt(
     resource,
     expiresAt: Date.now() + CHOICE_TTL_MS,
   });
-  rememberDeployDraft(platform, channelId, userId, deploy);
+  void rememberDeployDraft(platform, channelId, userId, deploy);
 }
 
 export function buildResourceCreatePrompt(resource: CreateResourceRequest): string {

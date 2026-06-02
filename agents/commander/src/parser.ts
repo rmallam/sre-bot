@@ -3,6 +3,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { listCatalogAppNames, resolveCatalogImage } from '../../../shared/src/app-image-catalog.js';
+import {
+  ALL_NAMESPACES,
+  isAllNamespacesScope,
+  isMetaNamespaceToken,
+} from '../../../shared/src/namespace-scope.js';
 
 export type InvestigateScope = 'workload' | 'namespace' | 'cluster';
 
@@ -51,6 +56,17 @@ export interface DeleteCmd {
   namespace: string;
   resourceName: string;
   label: string;
+  /** Original user token when resolved from a typo (e.g. appache → apache). */
+  userHint?: string;
+}
+
+export interface CiCmd {
+  type: 'ci-failure';
+  githubRepo: string;
+  gitRef?: string;
+  workflowName?: string;
+  workflowRunId?: number;
+  label: string;
 }
 
 export type GetResource =
@@ -68,6 +84,15 @@ export interface GetCmd {
   label: string;
 }
 
+export interface WorkloadStatusCmd {
+  type: 'workload-status';
+  namespace: string;
+  resourceName: string;
+  resourceKind?: import('../../../shared/src/types.js').ResourceKind;
+  podName?: string;
+  label: string;
+}
+
 export interface UnknownCmd {
   type: 'unknown';
 }
@@ -77,7 +102,9 @@ export type ParsedCommand =
   | InvestigateCmd
   | RollbackCmd
   | DeleteCmd
+  | CiCmd
   | GetCmd
+  | WorkloadStatusCmd
   | UnknownCmd;
 
 const DELETE_RESERVED = new Set([
@@ -105,6 +132,8 @@ const STOP_WORDS = new Set([
   'your',
   'this',
   'that',
+  'it',
+  'also',
   'please',
   'can',
   'you',
@@ -266,14 +295,19 @@ function extractGitRef(text: string): string {
 }
 
 function extractNamespaceHint(text: string): string | undefined {
+  if (isAllNamespacesScope(text)) return undefined;
   const slash = text.match(/\b([\w-]+)\/([\w-]+)\b/);
   if (slash) return slash[1];
   const inNs = text.match(/\bin\s+(?:the\s+)?([\w-]+)\s+namespace\b/i);
-  if (inNs?.[1]) return inNs[1];
+  if (inNs?.[1] && !isMetaNamespaceToken(inNs[1], text)) return inNs[1];
   const namedNs = text.match(/\b([\w-]+)\s+namespace\b/i);
-  if (namedNs?.[1] && !STOP_WORDS.has(namedNs[1].toLowerCase())) return namedNs[1];
+  if (namedNs?.[1] && !isMetaNamespaceToken(namedNs[1], text)) return namedNs[1];
   const nsKw = text.match(/\bnamespace\s+([\w-]+)\b/i);
-  if (nsKw?.[1]) return nsKw[1];
+  if (nsKw?.[1] && !isMetaNamespaceToken(nsKw[1], text)) return nsKw[1];
+  const inBare = text.match(/\bin\s+(?:the\s+)?([\w-]+)(?:\s+namespace)?(?:\s*[?.!]|$)/i);
+  if (inBare?.[1] && !isMetaNamespaceToken(inBare[1], text) && !STOP_WORDS.has(inBare[1].toLowerCase())) {
+    return inBare[1];
+  }
   return undefined;
 }
 
@@ -286,7 +320,9 @@ function isClusterHealthQuery(text: string): boolean {
     /\b(my|our)\s+cluster\b/i.test(text) ||
     /\binvestigate\s+(my\s+)?cluster\b/i.test(text) ||
     /\b(cluster\s+health|health\s+of\s+(the\s+)?cluster)\b/i.test(text) ||
-    /\b(how\s+is|how\s+are)\s+(things|everything)\b/i.test(text)
+  /\b(how\s+is|how\s+are)\s+(things|everything|the\s+cluster|my\s+cluster|our\s+cluster)\b/i.test(text) ||
+    /\bwhat\s+is\s+(the\s+)?cluster\s+health\b/i.test(text) ||
+    /\bhow\s+is\s+cluster\s+health\b/i.test(text)
   );
 }
 
@@ -365,6 +401,7 @@ function parseInvestigate(text: string): InvestigateCmd | null {
   if (
     !INVESTIGATE_TRIGGERS.test(normalised) &&
     !/\b(cluster|namespace)\s+health\b/i.test(normalised) &&
+    !isClusterHealthQuery(normalised) &&
     !remediationIntent
   ) {
     return null;
@@ -557,6 +594,9 @@ export function parseCommand(text: string): ParsedCommand {
   const simpleDeploy = parseSimpleDeploy(normalised);
   if (simpleDeploy) return simpleDeploy;
 
+  const ciCmd = parseCi(normalised);
+  if (ciCmd) return ciCmd;
+
   const githubRepos = extractGithubRepos(normalised);
   const githubRepo = githubRepos[0] ?? null;
   const investigateIntent =
@@ -600,6 +640,11 @@ export function parseCommand(text: string): ParsedCommand {
     return getCmd;
   }
 
+  const statusCmd = parseWorkloadStatus(normalised);
+  if (statusCmd) {
+    return statusCmd;
+  }
+
   const investigate = parseInvestigate(normalised);
   if (investigate) {
     return investigate;
@@ -624,6 +669,47 @@ function parseResourceToken(token: string): GetResource | null {
   return RESOURCE_ALIASES[token.toLowerCase()] ?? null;
 }
 
+/** why did CI fail on github.com/org/repo | ci failure rmallam/sre-bot run #123 */
+export function parseCi(text: string): CiCmd | null {
+  const ciIntent =
+    /\b(?:ci|github\s+actions?|workflow|pipeline|build)\b.*\b(?:fail(?:ed|ure)?|broken|red)\b/i.test(
+      text
+    ) ||
+    /\b(?:why\s+did|what\s+(?:went|happened)|check|triage|diagnose)\b.*\b(?:ci|workflow|pipeline|build)\b/i.test(
+      text
+    ) ||
+    /\b(?:ci|workflow)\s+(?:status|triage|diagnose|check)\b/i.test(text);
+  if (!ciIntent) return null;
+
+  let githubRepo = extractGithubRepo(text);
+  if (!githubRepo) {
+    const slug =
+      text.match(/\bon\s+([\w.-]+\/[\w.-]+)(?:\s|$|[?.!,])/i)?.[1] ??
+      text.match(/\bfor\s+([\w.-]+\/[\w.-]+)(?:\s|$|[?.!,])/i)?.[1];
+    if (slug && slug.includes('/')) {
+      githubRepo = slug.startsWith('github.com/') ? slug : `github.com/${slug}`;
+    }
+  }
+  if (!githubRepo) return null;
+
+  const runIdMatch = text.match(/\brun\s+#?(\d+)\b/i);
+  const workflowName = text
+    .match(/\bworkflow\s+["']?([\w\s./-]+?)["']?(?:\s|$|[?.!,])/i)?.[1]
+    ?.trim();
+  const branch =
+    text.match(/\b(?:branch|on)\s+([\w./-]+)\b/i)?.[1] ??
+    text.match(/\bon\s+branch\s+([\w./-]+)\b/i)?.[1];
+
+  return {
+    type: 'ci-failure',
+    githubRepo,
+    gitRef: branch,
+    workflowName,
+    workflowRunId: runIdMatch ? parseInt(runIdMatch[1]!, 10) : undefined,
+    label: `CI on ${githubRepo.replace(/^github\.com\//, '')}`,
+  };
+}
+
 /** delete|remove|uninstall httpd from default namespace */
 export function parseDelete(text: string): DeleteCmd | null {
   if (!/\b(?:delete|remove|uninstall|destroy|tear\s*down|undeploy)\b/i.test(text)) {
@@ -646,6 +732,98 @@ export function parseDelete(text: string): DeleteCmd | null {
     namespace,
     resourceName,
     label: `${resourceName} in ${namespace}`,
+  };
+}
+
+export function parseWorkloadStatus(text: string): WorkloadStatusCmd | null {
+  if (!/\b(is|are)\b/i.test(text)) return null;
+  if (!/\b(running|up|healthy|ready|alive)\b/i.test(text)) return null;
+
+  const m = text.match(
+    /\b(?:is|are)\s+(?:the\s+)?([a-z0-9][\w-]*)(?:\s+(?:also|still|even))?\s+(?:(?:pod|deployment)\s+)?(?:running|up|healthy|ready|alive)\b(?:\s+in\s+(?:the\s+)?([\w-]+)(?:\s+namespace)?)?/i
+  );
+  if (!m?.[1]) return null;
+
+  const resourceName = m[1];
+  if (STOP_WORDS.has(resourceName.toLowerCase())) return null;
+
+  const allNs = isAllNamespacesScope(text);
+  const ns = allNs
+    ? ALL_NAMESPACES
+    : m[2] && !isMetaNamespaceToken(m[2], text)
+      ? m[2]
+      : extractNamespaceHint(text) ?? 'default';
+
+  const kind: import('../../../shared/src/types.js').ResourceKind =
+    /\bpod\b/i.test(text) && !/\bdeployment\b/i.test(text) ? 'Pod' : 'Deployment';
+
+  const label =
+    ns === ALL_NAMESPACES
+      ? `${resourceName} (all namespaces)`
+      : `${resourceName} in ${ns}`;
+
+  return {
+    type: 'workload-status',
+    namespace: ns,
+    resourceName,
+    resourceKind: kind,
+    label,
+  };
+}
+
+export function isWorkloadStatusQuery(text: string): boolean {
+  return parseWorkloadStatus(text) !== null;
+}
+
+const PRONOUN_STATUS =
+  /\b(?:is|are)\s+(?:it|that|this|the\s+(?:same|app|deployment|pod|workload))\b/i;
+const ALSO_ABOUT = /\b(?:also|what\s+about|how\s+about|and\s+in|still)\b/i;
+const STATUS_WORDS = /\b(running|up|healthy|ready|alive|there)\b/i;
+
+function resolveFollowUpNamespace(text: string, fallback?: string): string {
+  if (isAllNamespacesScope(text)) return ALL_NAMESPACES;
+  const hint = extractNamespaceHint(text);
+  if (hint) return hint;
+  const about = text.match(/\b(?:what|how)\s+about\s+(?:the\s+)?([\w-]+)(?:\s+namespace)?\b/i);
+  if (about?.[1] && !isMetaNamespaceToken(about[1], text)) return about[1];
+  return fallback ?? 'default';
+}
+
+/** Follow-up when session remembers the last workload ("is it also running in simple?"). */
+export function parseWorkloadStatusFollowUp(
+  text: string,
+  subject: { resourceName: string; resourceKind: import('../../../shared/src/types.js').ResourceKind; namespace?: string }
+): WorkloadStatusCmd | null {
+  const hasPronoun = PRONOUN_STATUS.test(text);
+  const hasAlsoAbout = ALSO_ABOUT.test(text);
+  const hasStatusCue = STATUS_WORDS.test(text);
+  const hasNsHint =
+    !!extractNamespaceHint(text) ||
+    /\b(?:what|how)\s+about\s+(?:the\s+)?[\w-]+\b/i.test(text) ||
+    /\bin\s+(?:the\s+)?[\w-]+(?:\s+namespace)?\b/i.test(text);
+
+  if (!hasPronoun && !hasAlsoAbout && !(hasNsHint && hasStatusCue)) {
+    return null;
+  }
+  if (!hasStatusCue && !hasNsHint) {
+    return null;
+  }
+
+  const ns = resolveFollowUpNamespace(text, subject.namespace);
+  const kind: import('../../../shared/src/types.js').ResourceKind =
+    /\bpod\b/i.test(text) && !/\bdeployment\b/i.test(text) ? 'Pod' : subject.resourceKind;
+
+  const label =
+    ns === ALL_NAMESPACES
+      ? `${subject.resourceName} (all namespaces)`
+      : `${subject.resourceName} in ${ns}`;
+
+  return {
+    type: 'workload-status',
+    namespace: ns,
+    resourceName: subject.resourceName,
+    resourceKind: kind,
+    label,
   };
 }
 
@@ -720,4 +898,45 @@ export function investigateNeedsLlmResolution(parsed: ParsedCommand): boolean {
       parsed.resourceName === 'unknown' ||
       STOP_WORDS.has(parsed.resourceName.toLowerCase()))
   );
+}
+
+/**
+ * UX-3 synchronous fast path — skip LLM for unambiguous commands (<50ms).
+ */
+export function parseRegexFastPath(text: string): ParsedCommand | null {
+  const normalised = text.trim();
+
+  const simple = parseSimpleDeploy(normalised);
+  if (simple) return simple;
+
+  const ci = parseCi(normalised);
+  if (ci) return ci;
+
+  const getCmd = parseGet(normalised);
+  if (getCmd) return getCmd;
+
+  const statusCmd = parseWorkloadStatus(normalised);
+  if (statusCmd) return statusCmd;
+
+  const del = parseDelete(normalised);
+  if (del) return del;
+
+  if (/\brollback\b/i.test(normalised)) {
+    const rb = parseCommand(normalised);
+    if (rb.type === 'rollback') return rb;
+  }
+
+  if (/\bdeploy\b/i.test(normalised) && extractGithubRepo(normalised)) {
+    const d = parseCommand(normalised);
+    if (d.type === 'deploy') return d;
+  }
+
+  const parsed = parseCommand(normalised);
+  if (parsed.type === 'investigate') {
+    if (parsed.scope === 'cluster') return parsed;
+    if (parsed.scope === 'namespace' && parsed.resourceName === '_namespace') return parsed;
+    if (!investigateNeedsLlmResolution(parsed)) return parsed;
+  }
+
+  return null;
 }

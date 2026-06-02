@@ -1,0 +1,187 @@
+/**
+ * Map CommandIntent → ParsedCommand (regex helpers for field extraction).
+ */
+
+import type { CommandIntent } from '../../../shared/src/command-intent.js';
+import {
+  parseCommand,
+  parseSimpleDeploy,
+  parseDelete,
+  parseCi,
+  parseWorkloadStatus,
+  extractGithubRepo,
+  type ParsedCommand,
+  type DeployCmd,
+  type InvestigateCmd,
+  type WorkloadStatusCmd,
+} from './parser.js';
+import { isAllNamespacesScope, ALL_NAMESPACES } from '../../../shared/src/namespace-scope.js';
+import { HELP_MESSAGE } from './help.js';
+
+export function commandIntentToParsed(intent: CommandIntent, text: string): ParsedCommand | null {
+  switch (intent.intent) {
+    case 'get':
+      return intentGetToParsed(intent, text);
+    case 'investigate':
+      return intentInvestigateToParsed(intent);
+    case 'deploy':
+      return intentDeployToParsed(intent, text);
+    case 'rollback': {
+      const rb = parseCommand(text.includes('rollback') ? text : `rollback ${text}`);
+      return rb.type === 'rollback' ? rb : null;
+    }
+    case 'delete':
+      return intentDeleteToParsed(intent, text);
+    case 'ci-failure':
+      return intentCiToParsed(intent, text);
+    case 'workload-status':
+      return intentWorkloadStatusToParsed(intent, text);
+    case 'help':
+      return null;
+    case 'chat':
+      return null;
+    default:
+      return null;
+  }
+}
+
+/** UX-12 — stable help text when intent is help. */
+export function helpIntentReply(): string {
+  return HELP_MESSAGE;
+}
+
+function intentGetToParsed(s: CommandIntent, text: string): ParsedCommand | null {
+  const getParsed = parseCommand(text);
+  if (getParsed.type === 'get') return getParsed;
+  const rebuilt = parseCommand(
+    `get ${s.getResource ?? 'pods'}${s.namespace ? ` in ${s.namespace}` : ''}`
+  );
+  return rebuilt.type === 'get' ? rebuilt : null;
+}
+
+function intentInvestigateToParsed(s: CommandIntent): InvestigateCmd | null {
+  const scope = s.investigateScope ?? (s.workloadHint ? 'workload' : 'cluster');
+  if (scope === 'cluster') {
+    return {
+      type: 'investigate',
+      scope: 'cluster',
+      namespace: '_all',
+      resourceName: '_cluster',
+      label: s.label ?? 'cluster health',
+    };
+  }
+  if (scope === 'namespace' && s.namespace) {
+    return {
+      type: 'investigate',
+      scope: 'namespace',
+      namespace: s.namespace,
+      resourceName: '_namespace',
+      label: s.label ?? `${s.namespace} namespace`,
+    };
+  }
+  if (s.workloadHint) {
+    return {
+      type: 'investigate',
+      scope: 'workload',
+      namespace: s.namespace ?? 'default',
+      resourceName: s.workloadHint,
+      workloadHint: s.workloadHint,
+      label: s.label ?? `${s.workloadHint} deployment`,
+    };
+  }
+  return null;
+}
+
+function intentDeployToParsed(s: CommandIntent, text: string): DeployCmd | null {
+  const catalogDeploy = parseSimpleDeploy(text);
+  if (catalogDeploy) return catalogDeploy;
+
+  const githubRepo = s.githubRepo ?? extractGithubRepo(text);
+  if (!githubRepo) {
+    if (s.workloadHint) {
+      const hintDeploy = parseSimpleDeploy(
+        text.toLowerCase().includes('deploy')
+          ? text
+          : `deploy ${s.workloadHint} in ${s.namespace ?? 'default'} namespace`
+      );
+      if (hintDeploy) return hintDeploy;
+    }
+    return null;
+  }
+
+  const regexDeploy = parseCommand(text.includes('deploy') ? text : `deploy ${text}`);
+  const namespace =
+    s.namespace ?? (regexDeploy.type === 'deploy' ? regexDeploy.namespace : 'default');
+  const gitRef = s.gitRef ?? (regexDeploy.type === 'deploy' ? regexDeploy.gitRef : 'main');
+  const directExplicit =
+    s.deployStrategy === 'direct' ||
+    (regexDeploy.type === 'deploy' && regexDeploy.deployStrategy === 'direct');
+
+  return {
+    type: 'deploy',
+    githubRepo: githubRepo.startsWith('github.com/')
+      ? githubRepo
+      : `github.com/${githubRepo.replace(/^github\.com\//, '')}`,
+    gitRef,
+    namespace,
+    deployStrategy: directExplicit ? 'direct' : 'gitops',
+    deployStrategyExplicit:
+      !!s.deployStrategy ||
+      (regexDeploy.type === 'deploy' && regexDeploy.deployStrategyExplicit),
+  };
+}
+
+function intentDeleteToParsed(s: CommandIntent, text: string): ParsedCommand | null {
+  const del = parseDelete(text);
+  if (del) return del;
+  if (s.workloadHint) {
+    const rebuilt = parseDelete(
+      text.toLowerCase().includes('delete') || text.toLowerCase().includes('remove')
+        ? text
+        : `delete ${s.workloadHint} from ${s.namespace ?? 'default'} namespace`
+    );
+    if (rebuilt) return rebuilt;
+  }
+  return null;
+}
+
+function intentCiToParsed(s: CommandIntent, text: string): ParsedCommand | null {
+  const ci = parseCi(text);
+  if (ci) return ci;
+  if (s.githubRepo) {
+    const repo = s.githubRepo.startsWith('github.com/')
+      ? s.githubRepo
+      : `github.com/${s.githubRepo}`;
+    return {
+      type: 'ci-failure',
+      githubRepo: repo,
+      gitRef: s.gitRef,
+      label: s.label ?? `CI on ${repo.replace(/^github\.com\//, '')}`,
+    };
+  }
+  return null;
+}
+
+function intentWorkloadStatusToParsed(s: CommandIntent, text: string): WorkloadStatusCmd | null {
+  const fromRegex = parseWorkloadStatus(text);
+  if (fromRegex) return fromRegex;
+
+  const name = s.workloadHint?.trim();
+  if (!name) return null;
+
+  const allNs = isAllNamespacesScope(text) || s.namespace === 'any' || s.namespace === 'all';
+  const ns = allNs
+    ? ALL_NAMESPACES
+    : s.namespace?.trim() || 'default';
+
+  const kind =
+    /\bpod\b/i.test(text) && !/\bdeployment\b/i.test(text) ? 'Pod' : 'Deployment';
+
+  return {
+    type: 'workload-status',
+    resourceName: name,
+    resourceKind: kind,
+    namespace: ns,
+    label: ns === ALL_NAMESPACES ? `${name} (all namespaces)` : `${name} in ${ns}`,
+  };
+}

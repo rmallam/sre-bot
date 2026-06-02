@@ -2,6 +2,7 @@
  * HTTP tool adapters for orchestrator nodes.
  */
 
+import type { CiRunFacts } from '../../../shared/src/ci-types.js';
 import type {
   ActionRecord,
   ApprovalRequest,
@@ -17,12 +18,14 @@ import type {
   SanitizedFacts,
   StackDeployAnalysis,
   StartRunRequest,
+  PendingToolApproval,
 } from '../../../shared/src/types.js';
 import type { RuntimeToolContext } from '../../../shared/src/tool-contracts.js';
 import { formatFetchError, log } from '../../../shared/src/http.js';
 import { getToolDefinition } from '../../../shared/src/tool-registry.js';
 import { isProdNamespace } from '../../../shared/src/tool-policy.js';
-import type { PendingToolApproval } from '../../../shared/src/types.js';
+import type { RunUpdatePayload, RunUpdateQuickAction } from '../../../shared/src/run-update.js';
+import { formatRunUpdateFallback, defaultQuickActionsForUpdate } from '../../../shared/src/run-update.js';
 import { compileAndValidatePlan, compileFromToolCalls } from './tool-compiler.js';
 import { executeCompiledPlan } from './tool-runtime.js';
 import {
@@ -40,11 +43,14 @@ export const FAILURE_ANALYSIS_ENABLED =
   (process.env['FAILURE_ANALYSIS_ENABLED'] ?? 'true').toLowerCase() === 'true';
 
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
+const CICD_URL = process.env['CICD_URL'] ?? 'http://cicd-agent:8080';
 const SECURITY_URL = process.env['SECURITY_URL'] ?? 'http://security-agent:8080';
 const BRAIN_URL = process.env['BRAIN_URL'] ?? 'http://brain-agent:8080';
 const HIL_URL = process.env['HIL_URL'] ?? 'http://hil-agent:8080';
 const COMMANDER_URL = process.env['COMMANDER_URL'] ?? 'http://commander-agent:8080';
 const GITOPS_URL = process.env['GITOPS_URL'] ?? 'http://gitops-agent:8080';
+const NARRATE = (process.env['CONVERSATIONAL_NARRATE'] ?? 'true').toLowerCase() === 'true';
+const CI_CLASSIFY_LLM = (process.env['CI_CLASSIFY_LLM'] ?? 'true').toLowerCase() === 'true';
 
 export interface OrchestratorRunContext {
   runId: string;
@@ -55,6 +61,7 @@ export interface OrchestratorRunContext {
   resourceKind: StartRunRequest['resourceKind'];
   mode: StartRunRequest['mode'];
   pendingPlan?: RemediationPlan;
+  ciRun?: CiRunFacts;
 }
 
 async function postJson<T>(url: string, payload: unknown, incidentId: string): Promise<T> {
@@ -102,6 +109,93 @@ export function buildApprovalRequest(
     approvalKind: opts?.pendingTool ? 'tool' : 'plan',
     pendingToolApproval: opts?.pendingTool,
   };
+}
+
+/** Fetch latest or specific GitHub Actions run for CI failure mode. */
+export async function gatherCiFacts(req: StartRunRequest): Promise<CiRunFacts> {
+  const repo = req.githubRepo?.trim();
+  if (!repo) {
+    throw new Error('githubRepo is required for ci-failure mode');
+  }
+  const params = new URLSearchParams({ repo });
+  if (req.workflowRunId != null) params.set('runId', String(req.workflowRunId));
+  if (req.ciBranch?.trim()) params.set('branch', req.ciBranch.trim());
+  if (req.workflowName?.trim()) params.set('workflowName', req.workflowName.trim());
+
+  const res = await fetch(`${CICD_URL}/fetch-run?${params}`);
+  if (!res.ok) {
+    throw new Error(formatFetchError('cicd fetch-run', res.status, await res.text()));
+  }
+  return (await res.json()) as CiRunFacts;
+}
+
+/** Skip watcher/auto runs when resource is on the HIL ignore list. */
+export async function isRunRequestIgnored(req: StartRunRequest): Promise<boolean> {
+  if (req.triggeredBy === 'commander') return false;
+  try {
+    const params = new URLSearchParams({
+      namespace: req.namespace,
+      resourceName: req.resourceName,
+    });
+    if (req.githubRepo) params.set('githubRepo', req.githubRepo);
+    const res = await fetch(`${HIL_URL}/api/ignored/check?${params}`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { ignored?: boolean };
+    return data.ignored === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Call brain when regex CI diagnosis confidence is low. */
+export async function enhanceCiRunFacts(
+  ciRun: CiRunFacts,
+  incidentId: string
+): Promise<CiRunFacts> {
+  if (!CI_CLASSIFY_LLM || !ciRun.diagnosis || ciRun.diagnosis.confidence >= 0.8) {
+    return ciRun;
+  }
+  try {
+    const res = await fetch(`${BRAIN_URL}/classify-ci`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ incidentId, ciRun }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    if (!res.ok) return ciRun;
+    const enhanced = (await res.json()) as Partial<import('../../../shared/src/ci-types.js').CiDiagnosis> & {
+      skipped?: boolean;
+    };
+    if (enhanced.skipped || !enhanced.fixCategory || !enhanced.summary) return ciRun;
+    return {
+      ...ciRun,
+      diagnosis: {
+        ...ciRun.diagnosis,
+        ...enhanced,
+        confidence: Math.max(ciRun.diagnosis.confidence, enhanced.confidence ?? 0.75),
+        errorHighlight: enhanced.errorHighlight ?? ciRun.diagnosis.errorHighlight,
+      },
+    };
+  } catch (err) {
+    log('warn', 'orchestrator-tools', 'CI LLM classify failed', { incidentId, error: String(err) });
+    return ciRun;
+  }
+}
+
+/** UX-8: fire-and-forget progress ping to user. */
+export async function notifyProgress(
+  ctx: OrchestratorRunContext,
+  step: string
+): Promise<void> {
+  await notifyUserUpdate(ctx, {
+    kind: 'progress',
+    incidentId: ctx.incidentId,
+    runId: ctx.runId,
+    mode: ctx.mode,
+    progressStep: step,
+  });
 }
 
 export async function gatherFacts(req: StartRunRequest): Promise<DiagnosisContext> {
@@ -248,6 +342,7 @@ export function buildRuntimeContext(ctx: OrchestratorRunContext): RuntimeToolCon
     resourceKind: ctx.resourceKind,
     request: ctx.request,
     plan: ctx.pendingPlan!,
+    ciRun: ctx.ciRun,
   };
 }
 
@@ -287,6 +382,9 @@ export async function executeAction(
 
   const runtimeCtx = buildRuntimeContext(ctx);
   const stored = await getRun(ctx.runId);
+  if (!runtimeCtx.ciRun && stored?.metadata?.ciRun) {
+    runtimeCtx.ciRun = stored.metadata.ciRun as CiRunFacts;
+  }
   const compiled =
     stored?.compiled?.calls?.length
       ? stored.compiled
@@ -397,6 +495,14 @@ export async function requestHilApproval(
   maxIterations: number,
   pendingTool?: PendingToolApproval
 ): Promise<void> {
+  if (await isRunRequestIgnored(ctx.request)) {
+    log('info', 'orchestrator-tools', 'Skipping HIL — resource ignored', {
+      incidentId: ctx.incidentId,
+      namespace: ctx.namespace,
+      resourceName: ctx.resourceName,
+    });
+    return;
+  }
   const approval = buildApprovalRequest(ctx, plan, iteration, maxIterations, {
     pendingTool,
   });
@@ -418,14 +524,57 @@ export { USE_CAPABILITY_PLANNER, compileFromToolCalls };
 export async function notifyUser(ctx: OrchestratorRunContext, message: string): Promise<void> {
   if (!ctx.request.platform || !ctx.request.channelId) return;
   try {
-    await postJson(`${COMMANDER_URL}/notify`, {
+    const body: Record<string, unknown> = {
       platform: ctx.request.platform,
       channelId: ctx.request.channelId,
       message,
       incidentId: ctx.incidentId,
       runId: ctx.runId,
-    }, ctx.incidentId);
+    };
+    if (NARRATE) {
+      body.update = {
+        kind: 'generic',
+        incidentId: ctx.incidentId,
+        runId: ctx.runId,
+        mode: ctx.mode,
+        technicalMessage: message,
+        namespace: ctx.namespace,
+        resourceName: ctx.resourceName,
+      };
+    }
+    await postJson(`${COMMANDER_URL}/notify`, body, ctx.incidentId);
   } catch (err) {
     log('warn', 'orchestrator-tools', 'Notify failed', { error: String(err) });
+  }
+}
+
+export async function notifyUserUpdate(
+  ctx: OrchestratorRunContext,
+  update: RunUpdatePayload
+): Promise<void> {
+  if (!ctx.request.platform || !ctx.request.channelId) return;
+  const payload: RunUpdatePayload = {
+    ...update,
+    incidentId: update.incidentId || ctx.incidentId,
+    runId: update.runId ?? ctx.runId,
+    mode: update.mode ?? ctx.mode,
+  };
+  const quickActions = payload.quickActions ?? defaultQuickActionsForUpdate(payload);
+  try {
+    await postJson(
+      `${COMMANDER_URL}/notify`,
+      {
+        platform: ctx.request.platform,
+        channelId: ctx.request.channelId,
+        message: formatRunUpdateFallback(payload),
+        update: NARRATE ? { ...payload, quickActions } : undefined,
+        quickActions: NARRATE ? quickActions : undefined,
+        incidentId: ctx.incidentId,
+        runId: ctx.runId,
+      },
+      ctx.incidentId
+    );
+  } catch (err) {
+    log('warn', 'orchestrator-tools', 'Notify update failed', { error: String(err) });
   }
 }

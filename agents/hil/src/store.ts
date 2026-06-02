@@ -195,6 +195,29 @@ class ApprovalStore {
     return 'ok';
   }
 
+  /**
+   * Ignore incident — no remediation; resource added to ignore list separately.
+   */
+  tryIgnore(
+    incidentId: string,
+    userId: string,
+    via: Platform,
+    reason: string
+  ): TryResult {
+    const entry = this.store.get(incidentId);
+    if (!entry) return 'not_found';
+
+    if (entry.status !== 'PENDING') return 'already_handled';
+
+    entry.status = 'IGNORED';
+    entry.lockedBy = userId;
+    entry.lockedAt = new Date().toISOString();
+    entry.lockedVia = via;
+    entry.rejectionReason = reason;
+    this.store.set(incidentId, entry);
+    return 'ok';
+  }
+
   /** Replace the remediation plan on a pending approval (operator suggestion). */
   updatePlan(
     incidentId: string,

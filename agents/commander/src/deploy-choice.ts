@@ -42,7 +42,7 @@ export async function buildDeployChoicePrompt(
     findings,
     expiresAt: Date.now() + CHOICE_TTL_MS,
   });
-  rememberDeployDraft(platform, channelId, userId, deploy);
+  void rememberDeployDraft(platform, channelId, userId, deploy);
 
   const discovered = findings
     ? findings.needsHelmGeneration
