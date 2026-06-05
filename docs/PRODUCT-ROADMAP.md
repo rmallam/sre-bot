@@ -36,17 +36,19 @@ Do **not** replatform on Holmes-style LLM MCP writes. Adopt Holmes **investigati
 | 2 | **PLAT-2** | Run deduplication (skip if resource already in-flight) | Less noise in console |
 | 3 | **PLAT-3** | Watcher cooldown key normalization (Pod → workload) | Fewer duplicate runs |
 | 4 | **CI-2** | Coding agent service (Phase 2) | Application-code CI failures |
-| 5 | **PLAT-4** | Observability investigator plugins (Prom / Loki) | Holmes-style RCA, our security model |
-| 6 | **PLAT-5** | Console auth (SSO or basic) | Production console exposure |
-| 7 | **PLAT-6** | Operator-style scheduled health checks | Proactive beyond K8s events |
-| 8 | **PLAT-7** | Alert ingress (AlertManager → commander) | Alert-driven runs |
-| 9 | **PLAT-8** | Auto-sync skills to `skills/` on successful outcomes | Learning loop |
-| 10 | **CI-3** | Post-PR CI verify + notify | Close CI remediation loop |
-| 11 | **PLAT-9** | Large log/metric payload filtering | Scale investigator/cicd |
-| 12 | **PLAT-10** | Additional backends (Datadog, Tempo) | Optional breadth |
-| 13 | **PLAT-11** | Read-only debug MCP profile (human-only) | Optional power-user |
-| 14 | **PLAT-12** | Hybrid RCA handoff (external summary → orchestrator) | [Design ready](./RCA-HANDOFF-SCHEMA.md) |
-| 15 | **DEPLOY-2** | Source-to-image / buildpack deploy pipeline | [SOURCE-TO-IMAGE-DEPLOY.md](./SOURCE-TO-IMAGE-DEPLOY.md) Phase 1 |
+| 5 | **AGENT-1–2** | Case model + commander case bind ([AGENT-MODE-DESIGN.md](./AGENT-MODE-DESIGN.md) Phase A) | Follow-up continuity; removes handler sprawl |
+| 6 | **PLAT-4** | Observability investigator plugins (Prom / Loki) | Holmes-style RCA, our security model |
+| 7 | **PLAT-5** | Console auth (SSO or basic) | Production console exposure |
+| 8 | **AGENT-3–5** | Investigator tool loop + ReAct graph + `SRE_AGENT_MODE` ([AGENT-MODE-DESIGN.md](./AGENT-MODE-DESIGN.md) Phase B–C) | Full LLM-driven flow (opt-in) |
+| 9 | **PLAT-6** | Operator-style scheduled health checks | Proactive beyond K8s events |
+| 10 | **PLAT-7** | Alert ingress (AlertManager → commander) | Alert-driven runs |
+| 11 | **PLAT-8** | Auto-sync skills to `skills/` on successful outcomes | Learning loop |
+| 12 | **CI-3** | Post-PR CI verify + notify | Close CI remediation loop |
+| 13 | **PLAT-9** | Large log/metric payload filtering | Scale investigator/cicd |
+| 14 | **PLAT-10** | Additional backends (Datadog, Tempo) | Optional breadth |
+| 15 | **PLAT-11** | Read-only debug MCP profile (human-only) | Optional power-user |
+| 16 | **PLAT-12** | Hybrid RCA handoff (external summary → orchestrator) | [Design ready](./RCA-HANDOFF-SCHEMA.md) |
+| 17 | **DEPLOY-2** | Source-to-image / buildpack deploy pipeline | [SOURCE-TO-IMAGE-DEPLOY.md](./SOURCE-TO-IMAGE-DEPLOY.md) Phase 1 |
 
 ---
 
@@ -164,6 +166,23 @@ Holmes comparison: [HOLMES-COMPARISON-AND-ADOPTION.md](./HOLMES-COMPARISON-AND-A
 | UX-15 | Clarification loop | **Done** | `clarification.ts` |
 | UX-16 | Console chat panel | **Done** | `/chat`, Operations Console **Assistant** |
 | UX-17 | LLM workload-status intent | **Done** | `workload-status` in unified router |
+
+---
+
+## Track I — Agent modes (classic vs LLM-driven)
+
+Dual-mode runtime: **`SRE_AGENT_MODE=classic`** (default, today’s pipeline) or **`agentic`** (LLM tool loop + case continuity).
+
+| ID | Item | Status | Doc |
+|----|------|--------|-----|
+| **AGENT-1** | Case model + Redis store | **Done** | Phase A |
+| **AGENT-2** | Commander case bind + user hint merge | **Done** | Phase A |
+| **AGENT-3** | Investigator read tool loop (`POST /agent-step`) | **Done** | Phase B |
+| **AGENT-4** | Orchestrator ReAct graph + reflect node | **Done** | Phase C |
+| **AGENT-5** | `SRE_AGENT_MODE` config + `/health` exposure | **Done** | §4 |
+| **AGENT-6** | LLM-only commander routing when agentic | **Done** | §7.1 |
+| **AGENT-7** | Agent step progress in chat (`agent_step` kind) | **Done** | §7.5 |
+| **AGENT-8** | Per-channel / per-run mode override | Partial | `StartRunRequest.agentMode` |
 
 ---
 

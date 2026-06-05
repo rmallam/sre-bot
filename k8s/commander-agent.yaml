@@ -28,13 +28,33 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            - name: ORCHESTRATOR_URL
+              value: "http://orchestrator-agent:8080"
             - name: INVESTIGATOR_URL
               value: "http://investigator-agent:8080"
+            - name: SECURITY_URL
+              value: "http://security-agent:8080"
+            - name: GITOPS_URL
+              value: "http://gitops-agent:8080"
+            - name: HIL_URL
+              value: "http://hil-agent:8080"
+            - name: USE_ORCHESTRATOR
+              value: "true"
+            - name: SRE_AGENT_MODE
+              value: "agentic"
+            - name: CONVERSATIONAL_NARRATE
+              value: "true"
             - name: ALLOWED_USERS
               valueFrom:
                 secretKeyRef:
                   name: sre-bot-secrets
                   key: allowed_users
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: openrouter_api_key
+                  optional: true
             - name: SLACK_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -52,6 +72,12 @@ spec:
                 secretKeyRef:
                   name: sre-bot-secrets
                   key: telegram_bot_token
+                  optional: true
+            - name: TELEGRAM_ALERT_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: sre-bot-secrets
+                  key: telegram_alert_chat_id
                   optional: true
           livenessProbe:
             httpGet:

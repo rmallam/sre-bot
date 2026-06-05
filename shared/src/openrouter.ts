@@ -24,10 +24,12 @@ export async function openRouterChat(opts: {
     throw new Error('OPENROUTER_API_KEY is not set');
   }
 
+  const maxTokens = parseInt(process.env['OPENROUTER_MAX_TOKENS'] ?? '1024', 10);
   const body: Record<string, unknown> = {
     model: opts.model,
     messages: opts.messages,
     temperature: opts.temperature ?? 0.1,
+    max_tokens: Number.isFinite(maxTokens) ? maxTokens : 1024,
   };
   if (opts.jsonMode) {
     body['response_format'] = { type: 'json_object' };

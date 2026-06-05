@@ -20,6 +20,23 @@ describe('parseCommandIntentJson', () => {
     assert.equal(intent!.namespace, 'staging');
   });
 
+  it('parses containerImage and operatorSuggestion on investigate', () => {
+    const intent = parseCommandIntentJson(
+      JSON.stringify({
+        intent: 'investigate',
+        confidence: 0.88,
+        userReply: 'Fixing the operator image.',
+        workloadHint: 'frappe-operator',
+        namespace: 'frappe-operator-system',
+        containerImage: 'ghcr.io/vyogotech/frappe-operator:latest',
+        operatorSuggestion: 'set image to ghcr.io/vyogotech/frappe-operator:latest',
+      })
+    );
+    assert.ok(intent);
+    assert.equal(intent!.containerImage, 'ghcr.io/vyogotech/frappe-operator:latest');
+    assert.equal(intent!.operatorSuggestion, 'set image to ghcr.io/vyogotech/frappe-operator:latest');
+  });
+
   it('rejects invalid intent', () => {
     assert.equal(parseCommandIntentJson('{"intent":"fly"}'), null);
   });

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sre-agent-platform"
+version = "0.1.0"
+description = "Gold-standard semantic routing + RAG + LangGraph layer for Kube SRE bot"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph>=0.2.74",
+  "langchain-core>=0.3.42",
+  "langchain-openai>=0.2.0",
+  "langchain-google-genai>=2.0.0",
+  "semantic-router>=0.0.72",
+  "psycopg[binary,pool]>=3.2.0",
+  "pgvector>=0.3.6",
+  "pydantic>=2.9.0",
+  "pydantic-settings>=2.5.0",
+  "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+google = ["semantic-router[google]"]
+
+[tool.setuptools]
+py-modules = ["config"]
+packages = ["gateway", "rag", "graph"]

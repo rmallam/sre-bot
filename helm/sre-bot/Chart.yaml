@@ -1,6 +1,6 @@
 apiVersion: v2
 name: sre-bot
-description: Kube SRE autonomous agent platform — nine microservice agents with orchestrator and persistent run store
+description: Kube SRE autonomous agent platform — full compose parity (13 agents + postgres, redis, rag-postgres)
 type: application
 version: 0.1.0
 appVersion: "1.0.0"

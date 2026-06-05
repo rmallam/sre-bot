@@ -216,6 +216,15 @@ function formatClusterGet(data: ClusterGetOutcome, verbose: boolean): string {
 }
 
 function formatHealth(data: HealthOutcome, verbose: boolean): string {
+  if (data.clusterReachable === false) {
+    return joinParagraphs([
+      `⚠️ I can't reach a live Kubernetes cluster for **${data.label}**.`,
+      data.summary?.trim() ??
+        'The API returned no nodes or refused the connection — the cluster may be stopped or kubeconfig may be wrong.',
+      'Start or reconnect the cluster, then ask again (e.g. *investigate cluster health*).',
+    ]);
+  }
+
   const lines: string[] = [];
   lines.push(`Here's the health picture for **${data.label}**.`);
 

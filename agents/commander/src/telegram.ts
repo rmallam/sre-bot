@@ -53,6 +53,7 @@ import {
 } from './hil-suggest-pending.js';
 import { fetchRunDetailsText } from './run-details.js';
 import { getChannelPref } from './channel-prefs.js';
+import { tryPendingRunFollowUp } from './pending-run-followup.js';
 
 const AGENT = 'commander-agent';
 const PLATFORM = 'telegram' as const;
@@ -129,10 +130,19 @@ function ackMessage(incidentId: string, type: string, parsed?: import('./parser.
   return `Got it! I'm on it — I'll message you when done.`;
 }
 
-/** Send a safe reply — Telegraf context may or may not have a message to reply to. */
-async function safeReply(ctx: Context, text: string): Promise<void> {
+/** Send a safe reply — optionally with inline HIL action buttons. */
+async function safeReply(
+  ctx: Context,
+  text: string,
+  quickActions?: Array<{ id: string; label: string }>
+): Promise<void> {
   try {
-    await ctx.reply(text);
+    if (quickActions?.length) {
+      const rows = quickActions.map((a) => [Markup.button.callback(a.label, a.id)]);
+      await ctx.reply(text, Markup.inlineKeyboard(rows));
+    } else {
+      await ctx.reply(text);
+    }
     const uid = userId(ctx);
     const cid = channelId(ctx);
     void recordChatReply(PLATFORM, cid, uid, text);
@@ -154,6 +164,22 @@ async function editHilApprovalCard(ctx: Context, text: string, incidentId: strin
       error: String(err),
     });
     await safeReply(ctx, text).catch(() => {});
+  }
+}
+
+/** Edit the choice prompt in place; fall back to a new message if Telegram rejects the edit. */
+async function editOrReply(ctx: Context, text: string): Promise<void> {
+  try {
+    await ctx.editMessageText(text, { reply_markup: { inline_keyboard: [] } });
+    const uid = userId(ctx);
+    const cid = channelId(ctx);
+    void recordChatReply(PLATFORM, cid, uid, text);
+  } catch (err) {
+    log('warn', AGENT, 'editMessageText failed, sending new reply', {
+      incidentId: 'N/A',
+      error: String(err),
+    });
+    await safeReply(ctx, text);
   }
 }
 
@@ -287,6 +313,12 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
   }
 
   void recordChatUserTurn(PLATFORM, cid, uid, rawText);
+
+  const pendingRun = await tryPendingRunFollowUp(rawText, PLATFORM, cid, uid);
+  if (pendingRun) {
+    await safeReply(ctx, pendingRun.reply, pendingRun.quickActions);
+    return;
+  }
 
   const suggestReply = tryConsumeSuggestReply(PLATFORM, cid, uid, rawText);
   if (suggestReply.status === 'ready') {
@@ -448,7 +480,8 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
     const result = await handleCommand(parsed, uid, PLATFORM, cid, rawText);
     await safeReply(
       ctx,
-      result.immediateReply ?? ackMessage(result.incidentId, parsed.type, parsed)
+      result.immediateReply ?? ackMessage(result.incidentId, parsed.type, parsed),
+      result.quickActions
     );
   } catch (err) {
     log('error', AGENT, 'Error handling Telegram message', {
@@ -587,16 +620,16 @@ export function createTelegramBot(): Telegraf {
           cid,
           `investigate choice: ${resolved.command.label}`
         );
-        await ctx.editMessageText(
+        const replyText =
           result.immediateReply ??
-            ackMessage(result.incidentId, resolved.command.type, resolved.command)
-        ).catch(() => {});
+          ackMessage(result.incidentId, resolved.command.type, resolved.command);
+        await editOrReply(ctx, replyText);
       } catch (err) {
         log('error', AGENT, 'Failed to start investigate after workload selection', {
           incidentId: 'N/A',
           error: String(err),
         });
-        await ctx.editMessageText('⚠️ Failed to start investigation. Please try again.').catch(() => {});
+        await editOrReply(ctx, '⚠️ Failed to start investigation. Please try again.');
       }
       return;
     }
@@ -641,10 +674,10 @@ export function createTelegramBot(): Telegraf {
           cid,
           `deploy choice: ${choice}`
         );
-        await ctx.editMessageText(
+        const replyText =
           result.immediateReply ??
-            ackMessage(result.incidentId, resolved.deploy.type, resolved.deploy)
-        ).catch(() => {});
+          ackMessage(result.incidentId, resolved.deploy.type, resolved.deploy);
+        await editOrReply(ctx, replyText);
       } catch (err) {
         log('error', AGENT, 'Failed to start deploy after strategy selection', {
           incidentId: 'N/A',
@@ -652,7 +685,7 @@ export function createTelegramBot(): Telegraf {
           channelId: cid,
           error: String(err),
         });
-        await ctx.editMessageText('⚠️ Failed to start deploy. Please try again.').catch(() => {});
+        await editOrReply(ctx, '⚠️ Failed to start deploy. Please try again.');
       }
       return;
     }

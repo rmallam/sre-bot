@@ -961,8 +961,63 @@ table.data-table tr.clickable {
 }
 
 .chat-typing {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   color: var(--text-muted);
   font-style: italic;
+}
+
+.chat-streaming {
+  min-height: 1.2em;
+}
+
+.chat-stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: chat-cursor-blink 0.9s step-end infinite;
+}
+
+@keyframes chat-cursor-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.chat-status-text {
+  animation: chat-status-in 0.25s ease-out;
+}
+
+@keyframes chat-status-in {
+  from {
+    opacity: 0.4;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-action-reject {
+  color: var(--danger);
+}
+
+.chat-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
 }
 
 .chat-error {

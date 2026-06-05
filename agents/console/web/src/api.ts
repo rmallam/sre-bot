@@ -105,6 +105,8 @@ export interface ChatTurn {
   at: string;
   incidentId?: string;
   runId?: string;
+  quickActions?: Array<{ id: string; label: string }>;
+  updateKind?: string;
 }
 
 export interface ChatSessionSummary {

@@ -46,6 +46,9 @@ import {
   compileAndValidatePlan,
   compileFromToolCalls,
   verifyWorkload,
+  verifyAfterRemediation,
+  actionNeedsRolloutWait,
+  planHasImagePatch,
   gatherStackFacts,
   validatePlanBeforeExecution,
   notifyUser,
@@ -79,6 +82,26 @@ import {
 } from '../../../shared/src/deploy-readiness-watch.js';
 import { decidePostDeployRecovery } from '../../../shared/src/post-deploy-recovery.js';
 import { buildFullCiFailurePlan } from './ci-failure-plan.js';
+import { tryParseOperatorSuggestion } from '../../../shared/src/suggest-fix-parse.js';
+import {
+  assessGitPatchPreflight,
+  clusterHotFixFallbackPlan,
+  isGitMirrorFailure,
+} from '../../../shared/src/git-patch-preflight.js';
+import { decideDiagnoseVerifyRecovery } from '../../../shared/src/diagnose-verify-recovery.js';
+import { shouldHoldForOperator } from '../../../shared/src/remediation-wait-strategy.js';
+import { resolveRunAgentMode } from '../../../shared/src/agent-mode.js';
+import type { AgentReadToolCall } from '../../../shared/src/agent-read-tools.js';
+import type { AgentStepRecord } from '../../../shared/src/agent-read-tools.js';
+import {
+  agentDecideNode,
+  agentReadNode,
+  agentFinalizeNode,
+  applyAgentReflect,
+  isAgenticDiagnose,
+} from './agent-graph-nodes.js';
+import { groundRunbookFromFacts } from './rag-grounding.js';
+import { ragGroundingEnabled } from '../../../shared/src/platform-client.js';
 
 const AGENT = 'orchestrator-agent';
 const MAX_ITERATIONS = parseInt(process.env['AUTONOMY_MAX_ITERATIONS'] ?? '5', 10);
@@ -115,6 +138,17 @@ const RunAnnotation = Annotation.Root({
   postDeployRecoveryUsed: Annotation<boolean>,
   preflightAttempts: Annotation<number>,
   stackDeployPlan: Annotation<StackExecutionPlan | undefined>,
+  agentEvidence: Annotation<Partial<DiagnosisContext> | undefined>,
+  agentSteps: Annotation<AgentStepRecord[]>,
+  agentFetchedTools: Annotation<string[]>,
+  agentTurns: Annotation<number>,
+  pendingReadTool: Annotation<AgentReadToolCall | undefined>,
+  agentGoal: Annotation<string | undefined>,
+  agentFocusGoal: Annotation<string | undefined>,
+  agentInvestigateComplete: Annotation<boolean>,
+  retrievedPlaybook: Annotation<string | undefined>,
+  detectedErrorSignature: Annotation<string | undefined>,
+  targetComponent: Annotation<string | undefined>,
 });
 
 type GraphState = typeof RunAnnotation.State;
@@ -138,6 +172,12 @@ async function snapshotRunOutcome(
     actionHistory: state.actionHistory ?? [],
     plan,
     humanDecision: decision,
+    ragSeed: {
+      detectedError:
+        state.detectedErrorSignature ?? state.factsSanitized?.detectedErrorSignature,
+      targetComponent: state.targetComponent ?? state.factsSanitized?.targetComponent,
+      mode: state.mode,
+    },
   }).catch(() => undefined);
 }
 
@@ -255,7 +295,8 @@ async function observeNode(state: GraphState): Promise<Partial<GraphState>> {
     state.mode === 'diagnose' &&
     state.request.platform &&
     state.request.channelId &&
-    state.iteration === 0
+    state.iteration === 0 &&
+    !isAgenticDiagnose(state.request, state.mode)
   ) {
     await notifyProgress(runCtx(state), 'Gathering logs, metrics, and cluster evidence…');
   }
@@ -362,6 +403,49 @@ async function observeNode(state: GraphState): Promise<Partial<GraphState>> {
   return { factsRaw: facts, iteration };
 }
 
+function agentNotify(state: GraphState) {
+  const ctx = runCtx(state);
+  return {
+    progress: async (summary: string) => {
+      if (state.request.platform && state.request.channelId) {
+        await notifyUserUpdate(ctx, {
+          kind: 'agent_step',
+          incidentId: state.incidentId,
+          runId: state.runId,
+          mode: state.mode,
+          progressStep: summary,
+          namespace: state.namespace,
+          resourceName: state.resourceName,
+        });
+      }
+    },
+    user: async (message: string) => {
+      await notifyUser(ctx, message);
+    },
+  };
+}
+
+async function agentDecideGraphNode(state: GraphState): Promise<Partial<GraphState>> {
+  if (
+    state.mode === 'diagnose' &&
+    state.request.platform &&
+    state.request.channelId &&
+    state.iteration === 0 &&
+    (state.agentTurns ?? 0) === 0
+  ) {
+    await notifyProgress(runCtx(state), 'Investigating step by step…');
+  }
+  return agentDecideNode(state, agentNotify(state));
+}
+
+async function agentReadGraphNode(state: GraphState): Promise<Partial<GraphState>> {
+  return agentReadNode(state, agentNotify(state));
+}
+
+async function agentFinalizeGraphNode(state: GraphState): Promise<Partial<GraphState>> {
+  return agentFinalizeNode(state, deriveSpecialistDiagnostics, gatherFacts);
+}
+
 async function sanitizeNode(state: GraphState): Promise<Partial<GraphState>> {
   if (!state.factsRaw) return { status: 'failed', lastError: 'No facts' };
   const { sanitized, findings, blocked } = await sanitizeFacts(state.factsRaw);
@@ -378,8 +462,130 @@ async function sanitizeNode(state: GraphState): Promise<Partial<GraphState>> {
   return { factsSanitized: sanitized, securityFindings: findings };
 }
 
+async function ragGroundingNode(state: GraphState): Promise<Partial<GraphState>> {
+  if (state.mode !== 'diagnose' || !state.factsSanitized || !ragGroundingEnabled()) {
+    return {};
+  }
+
+  const queryText =
+    state.request.userHints?.join('; ') ||
+    state.request.eventMessage ||
+    state.request.rawMessage ||
+    '';
+
+  const grounded = await groundRunbookFromFacts(state.factsSanitized, {
+    incidentId: state.incidentId,
+    resourceName: state.resourceName,
+    queryText,
+  });
+
+  if (!grounded.detectedError && !grounded.retrievedPlaybook) {
+    return {};
+  }
+
+  const factsSanitized: SanitizedFacts = {
+    ...state.factsSanitized,
+    retrievedPlaybook: grounded.retrievedPlaybook || state.factsSanitized.retrievedPlaybook,
+    detectedErrorSignature: grounded.detectedError || state.factsSanitized.detectedErrorSignature,
+    targetComponent: grounded.targetComponent || state.factsSanitized.targetComponent,
+    priorActionSummary: [
+      state.factsSanitized.priorActionSummary,
+      grounded.found
+        ? `rag_playbook=grounded similarity=${grounded.similarity.toFixed(2)} error=${grounded.detectedError}`
+        : grounded.detectedError
+          ? `rag_playbook=miss error=${grounded.detectedError}`
+          : undefined,
+    ]
+      .filter(Boolean)
+      .join('; '),
+  };
+
+  if (state.request.platform && state.request.channelId && grounded.found) {
+    await notifyUserUpdate(runCtx(state), {
+      kind: 'agent_step',
+      incidentId: state.incidentId,
+      runId: state.runId,
+      mode: state.mode,
+      progressStep: `📚 Runbook grounded for ${grounded.detectedError} (${Math.round(grounded.similarity * 100)}% match)`,
+      namespace: state.namespace,
+      resourceName: state.resourceName,
+    });
+  }
+
+  if (grounded.detectedError) {
+    await mergeRunMetadata(state.runId, {
+      ragContext: {
+        detectedError: grounded.detectedError,
+        targetComponent: grounded.targetComponent,
+      },
+    }).catch(() => undefined);
+  }
+
+  return {
+    factsSanitized,
+    retrievedPlaybook: grounded.retrievedPlaybook,
+    detectedErrorSignature: grounded.detectedError,
+    targetComponent: grounded.targetComponent,
+  };
+}
+
 async function planNode(state: GraphState): Promise<Partial<GraphState>> {
   if (!state.factsSanitized) return { status: 'failed', lastError: 'No sanitized facts' };
+
+  const operatorHint =
+    state.request.userHints?.join('; ') ||
+    state.request.eventMessage?.trim() ||
+    state.request.rawMessage?.trim() ||
+    '';
+  if (operatorHint && state.mode === 'diagnose') {
+    const rulePlan = tryParseOperatorSuggestion(operatorHint, {
+      namespace: state.namespace,
+      resourceKind: state.resourceKind,
+      resourceName: state.resourceName,
+      basePlan: {
+        action: 'git_patch',
+        rootCause: 'Operator-provided fix after escalation',
+        reasoning: operatorHint,
+        severity: 'MEDIUM',
+        proposedPatch: [],
+        targetManifestPath: `deployments/${state.resourceName}.yaml`,
+        commitMessage: `fix: operator suggestion`,
+        rollbackSafe: true,
+        patchTarget: 'cluster',
+      },
+    });
+    if (rulePlan) {
+      const preflight = assessGitPatchPreflight({
+        plan: rulePlan,
+        mode: state.mode,
+        resourceKind: state.resourceKind,
+        resourceName: state.resourceName,
+        facts: state.factsSanitized ?? state.factsRaw,
+      });
+      if (!preflight.allowed) {
+        const blocked = preflight.issues.map((i) => i.message).join('; ');
+        await notifyUser(
+          runCtx(state),
+          `That fix needs more evidence before I can propose it:\n${blocked}\n\n` +
+            `I'll ask for your input — suggest a cluster hot-fix (image tag, pull secret) when prompted.`
+        );
+        return {
+          pendingPlan: {
+            action: 'escalate_human',
+            rootCause: 'Operator suggestion blocked by preflight',
+            reasoning: blocked,
+            severity: 'HIGH',
+            proposedPatch: [],
+            targetManifestPath: '',
+            commitMessage: `fix: review ${state.resourceName}`,
+            rollbackSafe: true,
+            patchTarget: 'cluster',
+          },
+        };
+      }
+      return { pendingPlan: preflight.normalizedPlan ?? rulePlan };
+    }
+  }
 
   if (state.mode === 'pre-deploy' && state.request.stackServices && state.request.stackServices.length > 1) {
     const analysis = await gatherStackFacts(state.request);
@@ -443,7 +649,7 @@ async function planNode(state: GraphState): Promise<Partial<GraphState>> {
     githubRepo: state.factsSanitized.githubRepo ?? state.request.githubRepo,
   };
 
-  if (USE_CAPABILITY_PLANNER && state.mode === 'diagnose') {
+  if (resolveRunAgentMode(state.request).useCapabilityPlanner && state.mode === 'diagnose') {
     const cap = await callCapabilityPlan(ctx);
     const runtimeCtx = {
       incidentId: state.incidentId,
@@ -532,6 +738,19 @@ async function preflightNode(state: GraphState): Promise<Partial<GraphState>> {
   });
 
   if (validation.allowed) {
+    let pendingPlan = state.pendingPlan;
+    if (pendingPlan?.action === 'git_patch') {
+      const local = assessGitPatchPreflight({
+        plan: pendingPlan,
+        mode: state.mode,
+        resourceKind: state.resourceKind,
+        resourceName: state.resourceName,
+        facts: state.factsSanitized ?? state.factsRaw,
+      });
+      if (local.normalizedPlan) {
+        pendingPlan = local.normalizedPlan;
+      }
+    }
     if (validation.requiresHumanApproval) {
       await notifyUser(
         runCtx(state),
@@ -539,6 +758,7 @@ async function preflightNode(state: GraphState): Promise<Partial<GraphState>> {
       );
     }
     return {
+      pendingPlan,
       authorizeForceHil: state.authorizeForceHil || validation.requiresHumanApproval,
     };
   }
@@ -714,6 +934,31 @@ async function policyNode(state: GraphState): Promise<Partial<GraphState>> {
         pendingAction: 'cicd_rerun',
         repo: state.pendingPlan.githubRepo,
       });
+    } else if (
+      state.request.platform &&
+      state.request.channelId &&
+      !(
+        state.mode === 'ci-failure' &&
+        (state.pendingPlan.action === 'cicd_open_pr' ||
+          state.pendingPlan.action === 'cicd_code_pr' ||
+          state.pendingPlan.action === 'coding_agent_handoff' ||
+          state.pendingPlan.action === 'cicd_rerun')
+      )
+    ) {
+      await notifyUserUpdate(runCtx(state), {
+        kind: 'hil_required',
+        incidentId: state.incidentId,
+        runId: state.runId,
+        mode: state.mode,
+        pendingAction: state.pendingPlan.action,
+        namespace: state.namespace,
+        resourceName: state.resourceName,
+        detailAvailable: true,
+        technicalMessage:
+          state.pendingPlan.rootCause?.slice(0, 400) ??
+          state.pendingPlan.reasoning?.slice(0, 400) ??
+          `Approve to ${state.pendingPlan.action.replace(/_/g, ' ')}.`,
+      });
     }
     const run = await getRun(state.runId);
     if (run?.status !== 'awaiting_human') {
@@ -773,6 +1018,21 @@ async function actNode(state: GraphState): Promise<Partial<GraphState>> {
       result.verifyHealthy === true ? 'healthy' : result.verifyHealthy === false ? 'degraded' : undefined,
     at: new Date().toISOString(),
   };
+
+  if (!result.success && state.pendingPlan?.action === 'git_patch' && isGitMirrorFailure(result.error)) {
+    const fallback = clusterHotFixFallbackPlan(state.pendingPlan, result.error);
+    await notifyUser(
+      runCtx(state),
+      `Git repository patch failed.\n${humanizeOperatorError(result.error ?? '')}\n\n` +
+        `Approve the next prompt to apply the **same change directly on the cluster** (hot-fix).`
+    );
+    return {
+      actionHistory: [record],
+      pendingPlan: fallback,
+      authorizeForceHil: true,
+      lastError: result.error,
+    };
+  }
 
   if (!result.success && FAILURE_ANALYSIS_ENABLED && !state.failureAnalysisUsed) {
     const priorFailures = state.actionHistory.filter((a) => !a.success).length;
@@ -1061,13 +1321,26 @@ async function verifyNode(state: GraphState): Promise<Partial<GraphState>> {
     .filter((t) => t.tool === 'investigator.verify_health')
     .pop();
 
-  const verify =
-    fromTranscript !== undefined
-      ? { healthy: fromTranscript.success, message: fromTranscript.summary ?? fromTranscript.error ?? '' }
-      : await verifyWorkload(state.namespace, state.resourceName, state.incidentId);
-
   const history = [...state.actionHistory];
   const lastAction = history[history.length - 1];
+  const needsRolloutWait =
+    !!lastAction?.success && actionNeedsRolloutWait(lastAction.action);
+
+  const verify =
+    !needsRolloutWait && fromTranscript !== undefined
+      ? { healthy: fromTranscript.success, message: fromTranscript.summary ?? fromTranscript.error ?? '' }
+      : await verifyAfterRemediation(state.namespace, state.resourceName, state.incidentId, {
+          waitForRollout: needsRolloutWait,
+          remediationAction: lastAction?.action,
+          afterImagePatch:
+            lastAction?.action === 'git_patch' &&
+            planHasImagePatch(state.pendingPlan ?? stored?.metadata?.remediationPlan as RemediationPlan | undefined),
+          onProgress:
+            state.request.platform && state.request.channelId
+              ? (msg) => notifyUser(runCtx(state), msg)
+              : undefined,
+        });
+
   if (history.length > 0 && lastAction) {
     history[history.length - 1] = {
       ...lastAction,
@@ -1138,15 +1411,85 @@ async function verifyNode(state: GraphState): Promise<Partial<GraphState>> {
     return { status: 'failed', actionHistory: history, lastError: msg };
   }
 
+  if (state.mode === 'diagnose' && !verify.healthy) {
+    const lastAction = history[history.length - 1];
+    if (shouldHoldForOperator(verify)) {
+      await notifyUser(
+        runCtx(state),
+        `⏳ **${state.resourceName}** is still coming up after the approved fix:\n` +
+          `${verify.waitDetail ?? verify.message ?? 'Rollout in progress'}\n\n` +
+          `I am **not** proposing another change while pods are still pulling/starting. ` +
+          `Reply when you want me to re-check, or suggest a different fix if this takes too long.`
+      );
+      return {
+        actionHistory: history,
+        status: 'awaiting_human',
+        awaitingHuman: true,
+        lastError: verify.message,
+      };
+    }
+    if (lastAction?.success && !state.postDeployRecoveryUsed && !verify.rolloutInProgress) {
+      const recovery = decideDiagnoseVerifyRecovery(
+        verify.message ?? '',
+        state.resourceName,
+        lastAction.action
+      );
+      if (recovery.status === 'ask_confirmation') {
+        await notifyUser(runCtx(state), recovery.userMessage);
+        return {
+          actionHistory: history,
+          status: 'awaiting_human',
+          awaitingHuman: true,
+          postDeployRecoveryUsed: true,
+          lastError: verify.message,
+        };
+      }
+    }
+  }
+
   if (state.iteration >= state.maxIterations) {
     await notifyUser(runCtx(state), `⚠️ Escalated after ${state.iteration} iterations`);
     return { status: 'escalated', actionHistory: history, lastError: verify.message };
+  }
+
+  if (!verify.healthy && shouldHoldForOperator(verify)) {
+    await notifyUser(
+      runCtx(state),
+      `⏳ Still waiting on cluster: ${verify.waitDetail ?? verify.message ?? 'rollout in progress'}`
+    );
+    return {
+      actionHistory: history,
+      status: 'awaiting_human',
+      awaitingHuman: true,
+      lastError: verify.message,
+    };
+  }
+
+  const reflectPatch = await applyAgentReflect(
+    { ...state, actionHistory: history },
+    verify,
+    agentNotify(state)
+  );
+  if (reflectPatch.status === 'succeeded') {
+    return { ...reflectPatch, actionHistory: history };
+  }
+  if (reflectPatch.status === 'escalated' || reflectPatch.status === 'failed') {
+    return { ...reflectPatch, actionHistory: history };
+  }
+  if (Object.keys(reflectPatch).length > 0) {
+    return { ...reflectPatch, actionHistory: history, pendingPlan: undefined };
   }
 
   return { actionHistory: history, pendingPlan: undefined };
 }
 
 function routeAfterSanitize(state: GraphState): string {
+  if (state.status === 'escalated' || state.status === 'failed') return END;
+  if (state.mode === 'diagnose' && ragGroundingEnabled()) return 'ragGrounding';
+  return 'plan';
+}
+
+function routeAfterRagGrounding(state: GraphState): string {
   if (state.status === 'escalated' || state.status === 'failed') return END;
   return 'plan';
 }
@@ -1191,7 +1534,30 @@ function routeAfterVerify(state: GraphState): string {
     if (state.pendingPlan) return 'authorize';
     return END;
   }
+  if (isAgenticDiagnose(state.request, state.mode)) {
+    return 'agentDecide';
+  }
   return 'observe';
+}
+
+function routeAtStart(state: GraphState): string {
+  if (isAgenticDiagnose(state.request, state.mode)) {
+    return 'agentDecide';
+  }
+  return 'observe';
+}
+
+function routeAfterAgentDecide(state: GraphState): string {
+  if (state.status === 'escalated' || state.status === 'failed') {
+    return END;
+  }
+  if (state.agentInvestigateComplete) {
+    return 'agentFinalize';
+  }
+  if (state.pendingReadTool?.name) {
+    return 'agentRead';
+  }
+  return END;
 }
 
 const checkpointer = new MemorySaver();
@@ -1199,7 +1565,11 @@ const checkpointer = new MemorySaver();
 export function buildGraph() {
   return new StateGraph(RunAnnotation)
     .addNode('observe', observeNode)
+    .addNode('agentDecide', agentDecideGraphNode)
+    .addNode('agentRead', agentReadGraphNode)
+    .addNode('agentFinalize', agentFinalizeGraphNode)
     .addNode('sanitize', sanitizeNode)
+    .addNode('ragGrounding', ragGroundingNode)
     .addNode('plan', planNode)
     .addNode('preflight', preflightNode)
     .addNode('authorize', authorizeNode)
@@ -1207,9 +1577,24 @@ export function buildGraph() {
     .addNode('act', actNode)
     .addNode('analyzeFailure', analyzeFailureNode)
     .addNode('verify', verifyNode)
-    .addEdge(START, 'observe')
+    .addConditionalEdges(START, routeAtStart, {
+      observe: 'observe',
+      agentDecide: 'agentDecide',
+    })
     .addEdge('observe', 'sanitize')
-    .addConditionalEdges('sanitize', routeAfterSanitize, { plan: 'plan', [END]: END })
+    .addConditionalEdges('agentDecide', routeAfterAgentDecide, {
+      agentRead: 'agentRead',
+      agentFinalize: 'agentFinalize',
+      [END]: END,
+    })
+    .addEdge('agentRead', 'agentDecide')
+    .addEdge('agentFinalize', 'sanitize')
+    .addConditionalEdges('sanitize', routeAfterSanitize, {
+      ragGrounding: 'ragGrounding',
+      plan: 'plan',
+      [END]: END,
+    })
+    .addConditionalEdges('ragGrounding', routeAfterRagGrounding, { plan: 'plan', [END]: END })
     .addEdge('plan', 'preflight')
     .addConditionalEdges('preflight', routeAfterPreflight, { authorize: 'authorize', [END]: END })
     .addEdge('authorize', 'policy')
@@ -1226,13 +1611,20 @@ export function buildGraph() {
     .addConditionalEdges('verify', routeAfterVerify, {
       authorize: 'authorize',
       observe: 'observe',
+      agentDecide: 'agentDecide',
       [END]: END,
     })
     .compile({
       checkpointer,
-      // Default LangGraph limit is 25 steps; one diagnose loop ≈ 7 nodes × maxIterations.
-      recursionLimit: Math.max(50, MAX_ITERATIONS * 10 + 10),
     });
+}
+
+function graphRecursionLimit(): number {
+  return Math.max(
+    50,
+    MAX_ITERATIONS * 10 + 10,
+    parseInt(process.env['AGENTIC_MAX_TURNS'] ?? '12', 10) * 3 + 20
+  );
 }
 
 export async function startRun(
@@ -1265,9 +1657,25 @@ export async function startRun(
     postDeployRecoveryUsed: false,
     preflightAttempts: 0,
     stackDeployPlan: undefined,
+    agentEvidence: undefined,
+    agentSteps: [],
+    agentFetchedTools: [],
+    agentTurns: 0,
+    pendingReadTool: undefined,
+    agentGoal: undefined,
+    agentFocusGoal: undefined,
+    agentInvestigateComplete: false,
+    retrievedPlaybook: undefined,
+    detectedErrorSignature: undefined,
+    targetComponent: undefined,
   };
 
-  log('info', AGENT, 'Starting run', { runId, incidentId: request.incidentId });
+  log('info', AGENT, 'Starting run', {
+    runId,
+    incidentId: request.incidentId,
+    agentMode: resolveRunAgentMode(request).agentMode,
+    caseId: request.caseId,
+  });
   await initRun(runId, request.incidentId, { mode: request.mode, request });
 
   if (await isRunRequestIgnored(request)) {
@@ -1282,13 +1690,26 @@ export async function startRun(
   }
 
   const compiled = buildGraph();
-  const final = await compiled.invoke(initial, { configurable: { thread_id: runId } });
+  const final = await compiled.invoke(initial, {
+    configurable: { thread_id: runId },
+    recursionLimit: graphRecursionLimit(),
+  });
   const status = final.status as RunStatus;
   const lastError = final.lastError as string | undefined;
   await setRunStatus(runId, status);
   await snapshotRunOutcome(runId, final as GraphState);
 
-  await notifyRunOutcome({ ...initial, runId, status, lastError }, final.actionHistory ?? []);
+  await notifyRunOutcome(
+    {
+      ...initial,
+      ...(final as GraphState),
+      runId,
+      status,
+      lastError,
+      pendingPlan: (final as GraphState).pendingPlan ?? initial.pendingPlan,
+    },
+    (final as GraphState).actionHistory ?? []
+  );
 
   return { runId, status, lastError };
 }
@@ -1302,6 +1723,11 @@ async function notifyRunOutcome(
   const ctx = runCtx(state);
   const modeLabel = modeOutcomeLabel(state.mode);
 
+  if (state.status === 'awaiting_human') {
+    // policyNode already pushed hil_required / ci_approval_* to chat before pausing.
+    return;
+  }
+
   if (state.status === 'failed') {
     const detail = state.lastError ?? 'Unknown error';
     if (/Could not clone|Could not read the deploy repo/i.test(detail)) {
@@ -1314,18 +1740,6 @@ async function notifyRunOutcome(
       mode: state.mode,
       detailAvailable: true,
       technicalMessage: humanizeOperatorError(detail),
-    });
-    return;
-  }
-
-  if (state.status === 'awaiting_human') {
-    await notifyUserUpdate(ctx, {
-      kind: 'hil_required',
-      incidentId: state.incidentId,
-      runId: state.runId,
-      mode: state.mode,
-      pendingAction: state.pendingPlan?.action,
-      technicalMessage: `Your ${modeLabel} is waiting for approval.`,
     });
     return;
   }
@@ -1347,14 +1761,9 @@ async function notifyRunOutcome(
     return;
   }
 
+  // Most escalate paths already sent a detailed notifyUser message (policyNode, failure analyst, etc.).
   if (state.status === 'escalated' && state.mode !== 'pre-deploy') {
-    await notifyUserUpdate(ctx, {
-      kind: 'run_escalated',
-      incidentId: state.incidentId,
-      runId: state.runId,
-      mode: state.mode,
-      technicalMessage: humanizeOperatorError(state.lastError ?? 'Needs follow-up'),
-    });
+    return;
   }
 
   // Pre-deploy success/failure summaries are sent from verify/confirm; avoid duplicate here.
@@ -1382,6 +1791,9 @@ export async function resumeRunAfterApproval(cmd: RemediateCommand): Promise<Run
     requestedBy: cmd.requestedBy ?? storedRequest?.requestedBy,
   };
 
+  const storedPlan =
+    (existing?.metadata?.remediationPlan as RemediationPlan | undefined) ?? cmd.plan;
+
   let state: GraphState = {
     runId,
     incidentId: cmd.incidentId,
@@ -1390,9 +1802,9 @@ export async function resumeRunAfterApproval(cmd: RemediateCommand): Promise<Run
     resourceName: cmd.resourceName,
     resourceKind: cmd.resourceKind,
     mode: cmd.mode,
-    pendingPlan: cmd.plan,
+    pendingPlan: cmd.plan ?? storedPlan,
     actionHistory: [],
-    iteration: existing?.transcript?.length ? Math.max(1, existing.transcript.length) : 1,
+    iteration: Math.max(1, existing?.transcript?.length ?? 1),
     maxIterations: MAX_ITERATIONS,
     authorizeForceHil: false,
     autonomyMode: getAutonomyMode(),
@@ -1408,6 +1820,17 @@ export async function resumeRunAfterApproval(cmd: RemediateCommand): Promise<Run
     postDeployRecoveryUsed: false,
     preflightAttempts: 0,
     stackDeployPlan: undefined,
+    agentEvidence: undefined,
+    agentSteps: [],
+    agentFetchedTools: [],
+    agentTurns: 0,
+    pendingReadTool: undefined,
+    agentGoal: undefined,
+    agentFocusGoal: undefined,
+    agentInvestigateComplete: false,
+    retrievedPlaybook: undefined,
+    detectedErrorSignature: undefined,
+    targetComponent: undefined,
   };
 
   await setRunStatus(runId, 'running');
@@ -1420,6 +1843,30 @@ export async function resumeRunAfterApproval(cmd: RemediateCommand): Promise<Run
   }
 
   let merged = { ...state, ...(await actNode(state)) } as GraphState;
+
+  if (
+    merged.pendingPlan &&
+    merged.authorizeForceHil &&
+    merged.status !== 'awaiting_human' &&
+    merged.status !== 'succeeded'
+  ) {
+    const lastAct = merged.actionHistory[merged.actionHistory.length - 1];
+    if (lastAct && !lastAct.success) {
+      await requestHilApproval(
+        runCtx(merged),
+        merged.pendingPlan,
+        merged.iteration,
+        merged.maxIterations
+      );
+      await setRunStatus(runId, 'awaiting_human');
+      await snapshotRunOutcome(runId, { ...merged, status: 'awaiting_human' }, 'pending');
+      await notifyRunOutcome(
+        { ...merged, runId, status: 'awaiting_human' },
+        merged.actionHistory ?? []
+      );
+      return 'awaiting_human';
+    }
+  }
 
   const firstAct = merged.actionHistory[merged.actionHistory.length - 1];
   if (firstAct && !firstAct.success && request.platform && request.channelId) {

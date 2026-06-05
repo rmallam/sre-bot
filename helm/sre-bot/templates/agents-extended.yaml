@@ -1,0 +1,322 @@
+{{- $ns := include "sre-bot.namespace" . }}
+{{- $secret := include "sre-bot.secretName" . }}
+
+{{- if and .Values.agents.platform.enabled .Values.ragPostgres.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-agent
+  namespace: {{ $ns }}
+  labels:
+    {{- include "sre-bot.labels" . | nindent 4 }}
+    sre-bot/agent: platform
+spec:
+  replicas: {{ .Values.agents.platform.replicas }}
+  selector:
+    matchLabels:
+      app: platform-agent
+  template:
+    metadata:
+      labels:
+        app: platform-agent
+        sre-bot/agent: platform
+    spec:
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: platform
+          image: {{ include "sre-bot.customImage" (dict "root" . "repository" .Values.platform.imageRepository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SRE_RAG_DATABASE_URL
+              value: {{ include "sre-bot.ragDatabaseUrl" . | quote }}
+            - name: SRE_RAG_ENABLED
+              value: {{ .Values.platform.ragEnabled | quote }}
+            - name: SRE_RAG_AUTO_MIGRATE
+              value: {{ .Values.platform.ragAutoMigrate | quote }}
+            - name: SRE_RAG_LEARNING
+              value: {{ .Values.agentMode.ragLearning | quote }}
+            - name: SRE_ROUTER_ENCODER
+              value: {{ .Values.platform.routerEncoder | quote }}
+            - name: SRE_EMBEDDING_PROVIDER
+              value: {{ .Values.platform.embeddingProvider | quote }}
+            - name: SRE_ROUTER_SCORE_THRESHOLD
+              value: {{ .Values.platform.routerScoreThreshold | quote }}
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: openrouter_api_key
+                  optional: true
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: gemini_api_key
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: openai_api_key
+                  optional: true
+            {{- if .Values.platform.openaiBaseUrl }}
+            - name: OPENAI_BASE_URL
+              value: {{ .Values.platform.openaiBaseUrl | quote }}
+            {{- end }}
+            - name: OPENROUTER_BASE_URL
+              value: {{ .Values.platform.openrouterBaseUrl | quote }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 90
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.agents.platform.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-agent
+  namespace: {{ $ns }}
+spec:
+  type: {{ .Values.service.platform.type }}
+  selector:
+    app: platform-agent
+  ports:
+    - port: {{ .Values.service.platform.port }}
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.console.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: console-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.console.replicas }}
+  selector:
+    matchLabels:
+      app: console-agent
+  template:
+    metadata:
+      labels:
+        app: console-agent
+    spec:
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: console
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "console") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: HIL_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "hil" "root" .) | quote }}
+            - name: ORCHESTRATOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "orchestrator" "root" .) | quote }}
+            - name: COMMANDER_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "commander" "root" .) | quote }}
+            - name: INVESTIGATOR_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "investigator" "root" .) | quote }}
+            - name: BRAIN_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "brain" "root" .) | quote }}
+            {{- if .Values.agents.cicd.enabled }}
+            - name: CICD_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "cicd" "root" .) | quote }}
+            {{- end }}
+            {{- if .Values.agents.coding.enabled }}
+            - name: CODING_AGENT_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "coding" "root" .) | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.agents.console.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: console-agent
+  namespace: {{ $ns }}
+spec:
+  type: {{ .Values.service.console.type }}
+  selector:
+    app: console-agent
+  ports:
+    - port: {{ .Values.service.console.port }}
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.cicd.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cicd-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.cicd.replicas }}
+  selector:
+    matchLabels:
+      app: cicd-agent
+  template:
+    metadata:
+      labels:
+        app: cicd-agent
+    spec:
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: cicd
+          image: {{ include "sre-bot.image" (dict "root" . "agent" .Values.agents.cicd.imageName) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: github_token
+                  optional: true
+            - name: DEPLOY_APP_REPO_WRITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: deploy_app_repo_write_token
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.agents.cicd.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cicd-agent
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app: cicd-agent
+  ports:
+    - port: 8080
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.coding.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coding-agent
+  namespace: {{ $ns }}
+spec:
+  replicas: {{ .Values.agents.coding.replicas }}
+  selector:
+    matchLabels:
+      app: coding-agent
+  template:
+    metadata:
+      labels:
+        app: coding-agent
+    spec:
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: coding
+          image: {{ include "sre-bot.customImage" (dict "root" . "repository" .Values.agents.coding.imageRepository) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: BRAIN_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "brain" "root" .) | quote }}
+            - name: CICD_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "cicd" "root" .) | quote }}
+            - name: COMMANDER_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "commander" "root" .) | quote }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: github_token
+                  optional: true
+            - name: DEPLOY_APP_REPO_WRITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: deploy_app_repo_write_token
+                  optional: true
+            - name: CODING_AGENT_ENABLED
+              value: {{ .Values.codingAgent.enabled | quote }}
+            - name: CODING_AGENT_MAX_ITERATIONS
+              value: {{ .Values.codingAgent.maxIterations | quote }}
+            - name: CICD_SKILLS_DIR
+              value: /data/skills
+          {{- if .Values.skills.configMapName }}
+          volumeMounts:
+            - name: skills
+              mountPath: /data/skills
+              readOnly: true
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.agents.coding.resources | nindent 12 }}
+      {{- if .Values.skills.configMapName }}
+      volumes:
+        - name: skills
+          configMap:
+            name: {{ .Values.skills.configMapName | quote }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coding-agent
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app: coding-agent
+  ports:
+    - port: 8080
+      targetPort: http
+{{- end }}

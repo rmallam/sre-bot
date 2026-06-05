@@ -11,6 +11,7 @@ import { postNotify } from './notify.js';
 import { getChannelPref } from './channel-prefs.js';
 import type { Platform } from '../../../shared/src/types.js';
 import { initSessionStore } from './session-store.js';
+import { initCaseStore } from './case-store.js';
 import {
   createWebChatSession,
   listWebChatSessions,
@@ -27,6 +28,12 @@ async function start() {
     return { backend: 'memory' as const };
   });
   log('info', AGENT, `Chat session store: ${sessionBackend.backend}`, { incidentId: 'N/A' });
+
+  const caseBackend = await initCaseStore().catch((err) => {
+    log('error', AGENT, 'Case store init failed, using memory', { error: String(err) });
+    return { backend: 'memory' as const };
+  });
+  log('info', AGENT, `Case store: ${caseBackend.backend}`, { incidentId: 'N/A' });
 
   const app = express();
 
@@ -45,13 +52,23 @@ async function start() {
   // ── Express Endpoints ──────────────────────────────────────────────────────
   app.get('/health', (req, res) => {
     void import('../../../shared/src/llm-config.js').then(({ llmConfigSummary }) => {
-      const probe = getLastCommanderLlmProbe();
-      res.json({
-        status: probe && !probe.ok ? 'degraded' : 'ok',
-        agent: AGENT,
-        llm: llmConfigSummary(),
-        commanderLlmProbe: probe,
-        chatSessionBackend: process.env['CHAT_SESSION_BACKEND'] ?? (process.env['REDIS_URL'] ? 'redis' : 'memory'),
+      void import('../../../shared/src/agent-mode.js').then(({ agentModeHealthPayload }) => {
+        void import('../../../shared/src/platform-client.js').then(({ platformHealth, platformRoutingEnabled }) => {
+          void platformHealth().then((platform) => {
+            const probe = getLastCommanderLlmProbe();
+            res.json({
+              status: probe && !probe.ok ? 'degraded' : 'ok',
+              agent: AGENT,
+              llm: llmConfigSummary(),
+              commanderLlmProbe: probe,
+              chatSessionBackend: process.env['CHAT_SESSION_BACKEND'] ?? (process.env['REDIS_URL'] ? 'redis' : 'memory'),
+              caseStoreBackend: process.env['CASE_STORE_BACKEND'] ?? (process.env['REDIS_URL'] ? 'redis' : 'memory'),
+              platformRouting: platformRoutingEnabled(),
+              platform,
+              ...agentModeHealthPayload(),
+            });
+          });
+        });
       });
     }).catch(() => {
       res.json({ status: 'ok', agent: AGENT, commanderLlmProbe: getLastCommanderLlmProbe() });

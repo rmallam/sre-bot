@@ -15,7 +15,20 @@ SRE Bot has been deployed to namespace {{ include "sre-bot.namespace" . }}.
    open http://localhost:8085
 {{- end }}
 
-4. Images (GHCR):
+4. Web console:
+{{- if .Values.ingress.console.enabled }}
+   https://{{ .Values.ingress.console.host }}
+{{- else if .Values.agents.console.enabled }}
+   kubectl port-forward -n {{ include "sre-bot.namespace" . }} svc/console-agent 8091:8080
+   open http://localhost:8091
+{{- end }}
+
+5. Platform (RAG / semantic router):
+{{- if .Values.agents.platform.enabled }}
+   kubectl port-forward -n {{ include "sre-bot.namespace" . }} svc/platform-agent 8090:8080
+{{- end }}
+
+6. Images (GHCR):
    {{ .Values.global.imageRegistry }}/{{ .Values.global.imageOwner }}/sre-bot-<agent>:{{ .Values.global.imageTag }}
 
 {{- if .Values.secrets.create }}

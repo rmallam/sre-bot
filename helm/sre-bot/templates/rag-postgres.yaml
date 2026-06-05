@@ -1,0 +1,103 @@
+{{- if .Values.ragPostgres.enabled }}
+{{- $ns := include "sre-bot.namespace" . }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-postgres
+  namespace: {{ $ns }}
+  labels:
+    {{- include "sre-bot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rag-postgres
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+  selector:
+    app.kubernetes.io/component: rag-postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rag-postgres
+  namespace: {{ $ns }}
+  labels:
+    {{- include "sre-bot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rag-postgres
+spec:
+  serviceName: rag-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: rag-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: rag-postgres
+        {{- include "sre-bot.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- if not .Values.ragPostgres.persistence.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+      containers:
+        - name: postgres
+          image: {{ .Values.ragPostgres.image }}
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.ragPostgres.auth.username | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.ragPostgres.auth.password | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.ragPostgres.auth.database | quote }}
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.ragPostgres.auth.username | quote }}
+                - -d
+                - {{ .Values.ragPostgres.auth.database | quote }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.ragPostgres.auth.username | quote }}
+                - -d
+                - {{ .Values.ragPostgres.auth.database | quote }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  {{- if .Values.ragPostgres.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.ragPostgres.persistence.storageClass }}
+        storageClassName: {{ .Values.ragPostgres.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.ragPostgres.persistence.size }}
+  {{- end }}
+{{- end }}

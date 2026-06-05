@@ -43,6 +43,8 @@ spec:
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "orchestrator" "root" .) | quote }}
             - name: USE_ORCHESTRATOR
               value: {{ .Values.watcher.useOrchestrator | quote }}
+            - name: HIL_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "hil" "root" .) | quote }}
             - name: COOLDOWN_MINUTES
               value: {{ .Values.watcher.cooldownMinutes | quote }}
             - name: WATCH_NAMESPACES
@@ -112,6 +114,32 @@ spec:
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "security" "root" .) | quote }}
             - name: USE_ORCHESTRATOR
               value: {{ .Values.commander.useOrchestrator | quote }}
+            - name: HIL_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "hil" "root" .) | quote }}
+            - name: GITOPS_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "gitops" "root" .) | quote }}
+            - name: CONVERSATIONAL_NARRATE
+              value: {{ .Values.commander.conversationalNarrate | quote }}
+            - name: CONVERSATIONAL_NARRATE_LLM
+              value: {{ .Values.commander.conversationalNarrateLlm | quote }}
+            - name: SRE_AGENT_MODE
+              value: {{ .Values.agentMode.sreAgentMode | quote }}
+            {{- if .Values.agentMode.commanderRoutingMode }}
+            - name: COMMANDER_ROUTING_MODE
+              value: {{ .Values.agentMode.commanderRoutingMode | quote }}
+            {{- end }}
+            {{- include "sre-bot.redisSessionEnv" . | nindent 12 }}
+            {{- include "sre-bot.platformEnv" . | nindent 12 }}
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: github_webhook_secret
+                  optional: true
+            - name: GITHUB_WEBHOOK_NOTIFY_PLATFORM
+              value: {{ .Values.commander.githubWebhookNotifyPlatform | quote }}
+            - name: GITHUB_WEBHOOK_NOTIFY_CHANNEL_ID
+              value: {{ .Values.commander.githubWebhookNotifyChannelId | quote }}
             - name: ALLOWED_USERS
               valueFrom:
                 secretKeyRef:
@@ -146,6 +174,12 @@ spec:
                 secretKeyRef:
                   name: {{ $secret }}
                   key: telegram_bot_token
+                  optional: true
+            - name: TELEGRAM_ALERT_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: telegram_alert_chat_id
                   optional: true
           livenessProbe:
             httpGet:
@@ -209,6 +243,17 @@ spec:
               value: {{ .Values.investigator.safeMode | quote }}
             - name: GIT_SYNC_INTERVAL_SECONDS
               value: {{ .Values.investigator.gitSyncIntervalSeconds | quote }}
+            - name: DEEP_RCA_ENABLED
+              value: {{ .Values.investigator.deepRcaEnabled | quote }}
+            {{- if .Values.investigator.lokiUrl }}
+            - name: LOKI_URL
+              value: {{ .Values.investigator.lokiUrl | quote }}
+            {{- end }}
+            {{- if .Values.investigator.prometheusUrl }}
+            - name: PROMETHEUS_URL
+              value: {{ .Values.investigator.prometheusUrl | quote }}
+            {{- end }}
+            {{- include "sre-bot.agentModeEnv" . | nindent 12 }}
             - name: GITOPS_REPO_URL
               valueFrom:
                 secretKeyRef:
@@ -294,6 +339,17 @@ spec:
                   key: gemini_api_key
                   optional: true
             {{- include "sre-bot.llmEnv" . | nindent 12 }}
+            - name: SKILLS_DIR
+              value: /data/skills
+            - name: CICD_SKILLS_DIR
+              value: /data/skills
+            {{- include "sre-bot.agentModeEnv" . | nindent 12 }}
+          {{- if .Values.skills.configMapName }}
+          volumeMounts:
+            - name: skills
+              mountPath: /data/skills
+              readOnly: true
+          {{- end }}
           livenessProbe:
             httpGet:
               path: /health
@@ -302,6 +358,12 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.agents.brain.resources | nindent 12 }}
+      {{- if .Values.skills.configMapName }}
+      volumes:
+        - name: skills
+          configMap:
+            name: {{ .Values.skills.configMapName | quote }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -453,6 +515,14 @@ spec:
               value: "8080"
             - name: INVESTIGATOR_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "investigator" "root" .) | quote }}
+            {{- if .Values.agents.cicd.enabled }}
+            - name: CICD_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "cicd" "root" .) | quote }}
+            {{- end }}
+            {{- if .Values.agents.coding.enabled }}
+            - name: CODING_AGENT_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "coding" "root" .) | quote }}
+            {{- end }}
             - name: SECURITY_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "security" "root" .) | quote }}
             - name: BRAIN_URL
@@ -465,14 +535,34 @@ spec:
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "hil" "root" .) | quote }}
             - name: COMMANDER_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "commander" "root" .) | quote }}
+            - name: CONVERSATIONAL_NARRATE
+              value: {{ .Values.commander.conversationalNarrate | quote }}
+            {{- include "sre-bot.agentModeEnv" . | nindent 12 }}
+            {{- include "sre-bot.platformEnv" . | nindent 12 }}
+            - name: SRE_RAG_GROUNDING
+              value: {{ .Values.agentMode.ragGrounding | quote }}
+            - name: SRE_RAG_LEARNING
+              value: {{ .Values.agentMode.ragLearning | quote }}
             - name: AUTONOMY_MODE
               value: {{ .Values.orchestrator.autonomyMode | quote }}
             - name: AUTONOMY_MAX_ITERATIONS
               value: {{ .Values.orchestrator.maxIterations | quote }}
+            - name: FAILURE_ANALYSIS_ENABLED
+              value: {{ .Values.orchestrator.failureAnalysisEnabled | quote }}
+            - name: CI_CODE_FIX_ENABLED
+              value: {{ .Values.orchestrator.ciCodeFixEnabled | quote }}
+            - name: CI_CLASSIFY_LLM
+              value: {{ .Values.orchestrator.ciClassifyLlm | quote }}
+            - name: CODING_AGENT_ENABLED
+              value: {{ .Values.orchestrator.codingAgentEnabled | quote }}
+            - name: CODING_AGENT_MAX_ITERATIONS
+              value: {{ .Values.orchestrator.codingAgentMaxIterations | quote }}
             - name: RUN_STORE_BACKEND
               value: {{ .Values.runStore.backend | quote }}
+            {{- if .Values.orchestrator.useCapabilityPlanner }}
             - name: USE_CAPABILITY_PLANNER
               value: {{ .Values.orchestrator.useCapabilityPlanner | quote }}
+            {{- end }}
             - name: PER_TOOL_HIL
               value: {{ .Values.orchestrator.perToolHil | quote }}
             - name: REGISTRY_DRY_RUN
@@ -563,8 +653,12 @@ spec:
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "orchestrator" "root" .) | quote }}
             - name: BRAIN_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "brain" "root" .) | quote }}
+            - name: COMMANDER_URL
+              value: {{ include "sre-bot.serviceUrl" (dict "agent" "commander" "root" .) | quote }}
             - name: APPROVAL_TIMEOUT_MINUTES
               value: {{ .Values.hil.approvalTimeoutMinutes | quote }}
+            - name: IGNORE_STORE_PATH
+              value: /data/ignored-resources.json
             - name: SLACK_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -595,6 +689,9 @@ spec:
                   name: {{ $secret }}
                   key: telegram_alert_chat_id
                   optional: true
+          volumeMounts:
+            - name: hil-data
+              mountPath: /data
           livenessProbe:
             httpGet:
               path: /health
@@ -603,6 +700,9 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.agents.hil.resources | nindent 12 }}
+      volumes:
+        - name: hil-data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -659,6 +759,10 @@ spec:
               value: {{ .Values.gitops.deployPushAppRepo | quote }}
             - name: DEPLOY_PUSH_GITOPS
               value: {{ .Values.gitops.deployPushGitops | quote }}
+            - name: GITOPS_PATCH_MODE
+              value: {{ .Values.gitops.patchMode | quote }}
+            - name: DIRECT_DEPLOY_DRY_RUN
+              value: {{ .Values.gitops.directDeployDryRun | quote }}
             - name: GITOPS_REPO_URL
               valueFrom:
                 secretKeyRef:

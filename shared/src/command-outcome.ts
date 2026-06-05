@@ -58,6 +58,8 @@ export interface HealthOutcome {
   warnings: Array<{ reason: string; message: string }>;
   deployments: string[];
   evidence?: string;
+  /** False when investigator could not reach a live cluster API. */
+  clusterReachable?: boolean;
 }
 
 export interface ChoicePromptOutcome {

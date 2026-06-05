@@ -42,21 +42,69 @@ function mapEvents(items: k8s.CoreV1Event[]): KubeEvent[] {
   }));
 }
 
+function formatK8sApiError(err: unknown): string {
+  const body = (err as { body?: { message?: string } })?.body?.message;
+  if (body) return body;
+  const msg = String(err);
+  if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|connect EHOST/i.test(msg)) {
+    return 'Cannot connect to the Kubernetes API — the cluster may be stopped.';
+  }
+  return msg.slice(0, 240);
+}
+
+async function listWithError<T>(
+  label: string,
+  fn: () => Promise<T>
+): Promise<{ value: T; error?: string }> {
+  try {
+    return { value: await fn() };
+  } catch (err) {
+    const error = formatK8sApiError(err);
+    log('warn', AGENT, `Kubernetes ${label} failed`, { error });
+    return { value: { body: { items: [] } } as T, error };
+  }
+}
+
 export async function gatherClusterHealthFacts(incidentId: string): Promise<Partial<DiagnosisContext>> {
   log('info', AGENT, 'Gathering cluster health overview', { incidentId });
 
   const [nodesRes, eventsRes, depsRes] = await Promise.all([
-    coreV1Api.listNode().catch(() => ({ body: { items: [] } })),
-    coreV1Api.listEventForAllNamespaces().catch(() => ({ body: { items: [] } })),
-    appsV1Api.listDeploymentForAllNamespaces().catch(() => ({ body: { items: [] } })),
+    listWithError('listNode', () => coreV1Api.listNode()),
+    listWithError('listEventForAllNamespaces', () => coreV1Api.listEventForAllNamespaces()),
+    listWithError('listDeploymentForAllNamespaces', () => appsV1Api.listDeploymentForAllNamespaces()),
   ]);
 
-  const nodes = nodesRes.body.items ?? [];
+  const apiErrors = [nodesRes.error, eventsRes.error, depsRes.error].filter(Boolean) as string[];
+  const nodes = nodesRes.value.body.items ?? [];
+  const clusterReachable = apiErrors.length === 0 && nodes.length > 0;
+
+  if (!clusterReachable) {
+    const reason =
+      apiErrors[0] ??
+      'No nodes returned — the cluster appears stopped or the API is not serving data.';
+    log('warn', AGENT, 'Cluster health: API unreachable or empty', {
+      incidentId,
+      apiErrors: apiErrors.length,
+      nodeCount: nodes.length,
+    });
+    return {
+      namespace: 'default',
+      resourceName: '_cluster',
+      resourceKind: 'Deployment',
+      recentEvents: [],
+      currentLogs: reason,
+      previousLogs: '',
+      existingDeployments: [],
+      namespaceExists: false,
+      clusterReachable: false,
+    };
+  }
+
   const notReadyNodes = nodes.filter((n) =>
     (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status !== 'True')
   );
 
-  const deployments = depsRes.body.items ?? [];
+  const deployments = depsRes.value.body.items ?? [];
   const unhealthy = deployments
     .map((d) => {
       const desired = d.status?.replicas ?? 0;
@@ -69,7 +117,7 @@ export async function gatherClusterHealthFacts(incidentId: string): Promise<Part
     .sort((a, b) => b.gap - a.gap)
     .slice(0, 10);
 
-  const warnings = (eventsRes.body.items ?? [])
+  const warnings = (eventsRes.value.body.items ?? [])
     .filter((e) => e.type === 'Warning')
     .sort((a, b) => {
       const at = a.lastTimestamp?.getTime() ?? 0;
@@ -109,6 +157,7 @@ export async function gatherClusterHealthFacts(incidentId: string): Promise<Part
       .filter(Boolean)
       .slice(0, 50),
     namespaceExists: true,
+    clusterReachable: true,
   };
 }
 

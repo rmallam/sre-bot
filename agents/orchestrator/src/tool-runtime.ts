@@ -4,11 +4,12 @@
 
 import type { RemediateCommand } from '../../../shared/src/types.js';
 import type { ToolCall, RuntimeToolContext } from '../../../shared/src/tool-contracts.js';
-import type { ToolTranscriptEntry } from '../../../shared/src/types.js';
+import type { ToolTranscriptEntry, VerifyResult } from '../../../shared/src/types.js';
 import type { CompiledPlan } from '../../../shared/src/tool-registry.js';
 import { getToolDefinition } from '../../../shared/src/tool-registry.js';
 import { log } from '../../../shared/src/http.js';
 import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
+import { waitForWorkloadReady } from '../../../shared/src/workload-readiness-wait.js';
 import { mergeRunMetadata } from './run-store.js';
 
 const AGENT = 'orchestrator-tool-runtime';
@@ -67,6 +68,42 @@ function idempotencyKey(incidentId: string, tool: string, attempt: number): stri
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const MUTATE_TOOLS = new Set(['gitops.apply_plan', 'executor.restart_workload']);
+
+async function fetchVerifyResult(
+  namespace: string,
+  resourceName: string,
+  incidentId: string
+): Promise<VerifyResult> {
+  const res = await fetch(
+    `${INVESTIGATOR_URL}/verify?namespace=${encodeURIComponent(namespace)}&resourceName=${encodeURIComponent(resourceName)}&incidentId=${encodeURIComponent(incidentId)}`,
+    { signal: AbortSignal.timeout(30_000) }
+  );
+  if (!res.ok) {
+    return { healthy: false, message: `Verify HTTP ${res.status}` };
+  }
+  return res.json() as Promise<VerifyResult>;
+}
+
+async function notifyOperatorProgress(cmd: RemediateCommand, message: string): Promise<void> {
+  if (!cmd.platform || !cmd.channelId) return;
+  try {
+    await postJson(
+      `${COMMANDER_URL}/notify`,
+      {
+        platform: cmd.platform,
+        channelId: cmd.channelId,
+        message,
+        runId: cmd.runId,
+        incidentId: cmd.incidentId,
+      },
+      cmd.incidentId
+    );
+  } catch (err) {
+    log('debug', AGENT, 'Rollout progress notify failed', { error: String(err) });
+  }
 }
 
 function buildNotifyMessage(ctx: RuntimeToolContext, success: boolean, detail: string): string {
@@ -514,6 +551,7 @@ export async function executeCompiledPlan(
   let commitUrls: string[] | undefined;
   let verifyHealthy: boolean | undefined;
   let mutateFailed = false;
+  let priorMutateSucceeded = false;
   const startIndex = opts?.startIndex ?? 0;
 
   for (let i = startIndex; i < compiled.calls.length; i++) {
@@ -545,21 +583,43 @@ export async function executeCompiledPlan(
     let result: ToolExecuteResult = { success: false, error: 'not executed' };
     const started = Date.now();
 
-    while (attempt < def.maxRetries) {
-      attempt += 1;
-      try {
-        result = await executeToolCallOnce(
-          call,
-          cmd,
-          ctx,
-          overallSuccess,
-          lastSummary || lastError || 'completed'
-        );
-        if (result.success || def.idempotent) break;
-      } catch (err) {
-        result = { success: false, error: String(err) };
+    if (call.name === 'investigator.verify_health' && priorMutateSucceeded) {
+      const input = call.input as { namespace: string; resourceName: string };
+      const imagePatch =
+        cmd.plan.action === 'git_patch' &&
+        (cmd.plan.proposedPatch ?? []).some((p) => String(p.path ?? '').includes('/image'));
+      const verifyResult = await waitForWorkloadReady({
+        namespace: input.namespace,
+        resourceName: input.resourceName,
+        incidentId: cmd.incidentId,
+        remediationAction: cmd.plan.action,
+        afterImagePatch: imagePatch,
+        fetchVerify: fetchVerifyResult,
+        onProgress: (msg) => notifyOperatorProgress(cmd, msg),
+      });
+      result = {
+        success: verifyResult.healthy,
+        error: verifyResult.healthy ? undefined : verifyResult.message,
+        summary: verifyResult.healthy ? 'healthy' : verifyResult.message ?? 'degraded',
+      };
+      attempt = 1;
+    } else {
+      while (attempt < def.maxRetries) {
+        attempt += 1;
+        try {
+          result = await executeToolCallOnce(
+            call,
+            cmd,
+            ctx,
+            overallSuccess,
+            lastSummary || lastError || 'completed'
+          );
+          if (result.success || def.idempotent) break;
+        } catch (err) {
+          result = { success: false, error: String(err) };
+        }
+        if (attempt < def.maxRetries) await sleep(500 * attempt);
       }
-      if (attempt < def.maxRetries) await sleep(500 * attempt);
     }
 
     const entry: ToolTranscriptEntry = {
@@ -584,13 +644,15 @@ export async function executeCompiledPlan(
 
     if (!result.success) {
       overallSuccess = false;
-      if (call.name === 'gitops.apply_plan' || call.name === 'executor.restart_workload') {
+      if (MUTATE_TOOLS.has(call.name)) {
         mutateFailed = true;
       }
       if (call.name === 'investigator.repo_inspect') {
         log('warn', AGENT, 'Repo inspect failed — continuing', { incidentId: cmd.incidentId });
         overallSuccess = true;
       }
+    } else if (MUTATE_TOOLS.has(call.name)) {
+      priorMutateSucceeded = true;
     }
   }
 

@@ -9,7 +9,7 @@ export type { ChatTurn };
 const MAX_TURNS = parseInt(process.env['CHAT_TRANSCRIPT_MAX_TURNS'] ?? '40', 10);
 const MAX_CHARS = parseInt(process.env['CHAT_TRANSCRIPT_MAX_CHARS'] ?? '6000', 10);
 
-function trimTranscript(turns: ChatTurn[]): ChatTurn[] {
+export function trimTranscript(turns: ChatTurn[]): ChatTurn[] {
   let slice = turns.slice(-MAX_TURNS);
   while (slice.length > 1) {
     const chars = slice.reduce((n, t) => n + t.content.length, 0);

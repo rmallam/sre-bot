@@ -260,18 +260,47 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
         shouldTryGitOpsMirror(patchTarget, clusterApplied, hasGitOpsRepo) &&
         plan.proposedPatch.length > 0
       ) {
-        const applyResult = await repoMirror.applyPatchAndPush({
-          incidentId,
-          manifestPath: plan.targetManifestPath,
-          patch: plan.proposedPatch,
-          commitMessage: plan.commitMessage,
-          openPR: GITOPS_USE_PR,
-        });
-        commitSha = applyResult.commitSha;
-        commitUrl = applyResult.commitUrl;
-        if (patchTarget === 'gitops' || !clusterApplied) {
-          success = true;
-          dryRunPassed = true;
+        try {
+          const applyResult = await repoMirror.applyPatchAndPush({
+            incidentId,
+            manifestPath: plan.targetManifestPath,
+            patch: plan.proposedPatch,
+            commitMessage: plan.commitMessage,
+            openPR: GITOPS_USE_PR,
+          });
+          commitSha = applyResult.commitSha;
+          commitUrl = applyResult.commitUrl;
+          if (patchTarget === 'gitops' || !clusterApplied) {
+            success = true;
+            dryRunPassed = true;
+          }
+        } catch (mirrorErr) {
+          const mirrorError = String(mirrorErr);
+          if (!clusterApplied && shouldTryClusterPatch('cluster', plan.proposedPatch.length > 0)) {
+            log('warn', AGENT, 'Git mirror failed — falling back to cluster hot-fix', {
+              incidentId,
+              error: mirrorError,
+            });
+            const clusterResult = await applyClusterGitPatch(cmd);
+            if (clusterResult.success) {
+              clusterApplied = true;
+              success = true;
+              dryRunPassed = true;
+              argoCDSyncStatus = 'Unknown';
+              if (platform && channelId) {
+                await sendDeployProgress(
+                  { incidentId, platform, channelId },
+                  `✅ Git patch failed; applied cluster hot-fix on ${clusterResult.targetKind}/${clusterResult.targetName}`
+                );
+              }
+            } else {
+              throw new Error(
+                `Git mirror failed (${mirrorError}); cluster hot-fix failed: ${clusterResult.error ?? 'unknown'}`
+              );
+            }
+          } else {
+            throw mirrorErr;
+          }
         }
       } else if (patchTarget === 'gitops' && !hasGitOpsRepo) {
         throw new Error(

@@ -8,6 +8,13 @@ import {
   isAllNamespacesScope,
   isMetaNamespaceToken,
 } from '../../../shared/src/namespace-scope.js';
+import {
+  extractOperatorNamespaceHint,
+  extractContainerImageHint,
+  looksLikeKubernetesNamespace,
+  resolveOperatorSuggestion,
+  workloadHintFromNamespace,
+} from './investigate-target.js';
 
 export type InvestigateScope = 'workload' | 'namespace' | 'cluster';
 
@@ -42,6 +49,8 @@ export interface InvestigateCmd {
   podName?: string;
   /** Set after user confirms or auto-matched workload. */
   workloadConfirmed?: boolean;
+  /** Normalized fix hint when user replies after an escalation (e.g. "set image to …"). */
+  operatorSuggestion?: string;
 }
 
 export interface RollbackCmd {
@@ -295,6 +304,8 @@ function extractGitRef(text: string): string {
 }
 
 function extractNamespaceHint(text: string): string | undefined {
+  const operatorNs = extractOperatorNamespaceHint(text);
+  if (operatorNs) return operatorNs;
   if (isAllNamespacesScope(text)) return undefined;
   const slash = text.match(/\b([\w-]+)\/([\w-]+)\b/);
   if (slash) return slash[1];
@@ -469,14 +480,21 @@ function parseInvestigate(text: string): InvestigateCmd | null {
   }
 
   if (remediationIntent) {
-    const hint = extractRemediationWorkloadHint(normalised);
+    const opNs = extractOperatorNamespaceHint(normalised);
+    let hint = extractRemediationWorkloadHint(normalised);
+    const namespace = opNs ?? (hint && looksLikeKubernetesNamespace(hint) ? hint : nsHint) ?? 'default';
+    if (hint && (hint === namespace || looksLikeKubernetesNamespace(hint))) {
+      hint = opNs ? workloadHintFromNamespace(opNs) : undefined;
+    }
+    const imageSuggestion = resolveOperatorSuggestion({ text: normalised, workloadHint: hint });
     return {
       type: 'investigate',
       scope: 'workload',
-      namespace: nsHint ?? 'default',
+      namespace: opNs ?? namespace,
       resourceName: hint ?? '_unresolved',
       workloadHint: hint,
-      label: hint ? `${hint} remediation` : 'remediation request',
+      label: hint ? `${hint} remediation` : opNs ? `${opNs} remediation` : 'remediation request',
+      operatorSuggestion: imageSuggestion,
     };
   }
 

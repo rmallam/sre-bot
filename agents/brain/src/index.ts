@@ -37,15 +37,18 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 
 app.get('/health', (_req: Request, res: Response) => {
   const llm = llmConfigSummary();
-  res.json({
-    status: 'ok',
-    agent: AGENT,
-    llm: {
-      provider: llm.provider,
-      brain: llm.brain
-        ? { backend: llm.brain.backend, model: llm.brain.model }
-        : null,
-    },
+  void import('../../../shared/src/agent-mode.js').then(({ agentModeHealthPayload }) => {
+    res.json({
+      status: 'ok',
+      agent: AGENT,
+      llm: {
+        provider: llm.provider,
+        brain: llm.brain
+          ? { backend: llm.brain.backend, model: llm.brain.model }
+          : null,
+      },
+      ...agentModeHealthPayload(),
+    });
   });
 });
 
@@ -129,6 +132,40 @@ app.post('/plan-capability', async (req: Request, res: Response) => {
     res.json(result);
   } catch (err) {
     log('error', AGENT, 'plan-capability failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** AGENT-4 — next read tool for agentic investigate loop. */
+app.post('/agent-next-read', async (req: Request, res: Response) => {
+  const body = req.body;
+  if (!body?.incidentId || !body.namespace || !body.resourceName) {
+    res.status(400).json({ error: 'incidentId, namespace, resourceName required' });
+    return;
+  }
+  try {
+    const { agentNextRead } = await import('./agent-loop.js');
+    const result = await agentNextRead(body);
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'agent-next-read failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** AGENT-4 — post-verify reflection for ReAct graph. */
+app.post('/agent-reflect', async (req: Request, res: Response) => {
+  const body = req.body;
+  if (!body?.incidentId) {
+    res.status(400).json({ error: 'incidentId required' });
+    return;
+  }
+  try {
+    const { agentReflect } = await import('./agent-loop.js');
+    const result = await agentReflect(body);
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'agent-reflect failed', { error: String(err) });
     res.status(500).json({ error: String(err) });
   }
 });

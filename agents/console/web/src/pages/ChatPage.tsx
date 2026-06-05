@@ -9,18 +9,12 @@ import {
   type ChatSessionSummary,
   type ChatTurn,
 } from '../api';
+import { ChatMessageBubble } from '../components/ChatMessageBubble';
 
 const STORAGE_KEY = 'sre-console-active-channel';
 
-function formatContent(text: string): string {
-  const normalized = text.replace(/\n{3,}/g, '\n\n').trim();
-  return normalized
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/_(.+?)_/g, '<em>$1</em>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .split('\n\n')
-    .map((p) => `<p>${p.replace(/\n/g, '<br />')}</p>`)
-    .join('');
+function turnKey(turn: ChatTurn, index: number): string {
+  return `${turn.at}-${turn.role}-${index}`;
 }
 
 function formatSessionTitle(s: ChatSessionSummary): string {
@@ -38,6 +32,43 @@ export function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const [waitingForRun, setWaitingForRun] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  /** Turns that should not typewriter-animate (history or already shown). */
+  const seenTurnKeysRef = useRef<Set<string>>(new Set());
+  const prevTurnCountRef = useRef(0);
+  const [animatingKey, setAnimatingKey] = useState<string | null>(null);
+
+  const markTurnsSeen = useCallback((list: ChatTurn[], upToIndex?: number) => {
+    const limit = upToIndex ?? list.length;
+    for (let i = 0; i < limit; i++) {
+      seenTurnKeysRef.current.add(turnKey(list[i]!, i));
+    }
+  }, []);
+
+  const applyTranscript = useCallback(
+    (list: ChatTurn[], opts?: { markAllSeen?: boolean }) => {
+      if (opts?.markAllSeen) {
+        markTurnsSeen(list);
+        setAnimatingKey(null);
+      } else {
+        // New assistant messages since last snapshot get typewriter.
+        const prevCount = prevTurnCountRef.current;
+        let nextAnimate: string | null = null;
+        for (let i = prevCount; i < list.length; i++) {
+          const t = list[i]!;
+          if (t.role === 'assistant') {
+            const key = turnKey(t, i);
+            if (!seenTurnKeysRef.current.has(key)) {
+              nextAnimate = key;
+            }
+          }
+        }
+        setAnimatingKey(nextAnimate);
+      }
+      prevTurnCountRef.current = list.length;
+      setTurns(list);
+    },
+    [markTurnsSeen]
+  );
 
   const scrollDown = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -45,10 +76,10 @@ export function ChatPage() {
 
   const loadTranscript = useCallback(async (cid: string) => {
     const data = await fetchChatSession(cid);
-    setTurns(data.transcript);
+    applyTranscript(data.transcript);
     setWaitingForRun(data.waitingForRun);
     return data;
-  }, []);
+  }, [applyTranscript]);
 
   const refreshSessions = useCallback(async () => {
     const data = await listChatSessions();
@@ -62,9 +93,14 @@ export function ChatPage() {
       localStorage.setItem(STORAGE_KEY, cid);
       setSearchParams({}, { replace: true });
       setError(null);
-      await loadTranscript(cid);
+      seenTurnKeysRef.current = new Set();
+      prevTurnCountRef.current = 0;
+      setAnimatingKey(null);
+      const data = await fetchChatSession(cid);
+      applyTranscript(data.transcript, { markAllSeen: true });
+      setWaitingForRun(data.waitingForRun);
     },
-    [loadTranscript, setSearchParams]
+    [applyTranscript, setSearchParams]
   );
 
   const startNewChat = useCallback(async () => {
@@ -123,7 +159,7 @@ export function ChatPage() {
 
   useEffect(() => {
     scrollDown();
-  }, [turns, scrollDown]);
+  }, [turns, animatingKey, scrollDown]);
 
   useEffect(() => {
     if (!channelId || !waitingForRun) return;
@@ -141,20 +177,30 @@ export function ChatPage() {
     setInput('');
     setError(null);
     setLoading(true);
-    setTurns((prev) => [
-      ...prev,
-      { role: 'user', content: text, at: new Date().toISOString() },
-    ]);
+    setTurns((prev) => {
+      const next = [
+        ...prev,
+        { role: 'user' as const, content: text, at: new Date().toISOString() },
+      ];
+      prevTurnCountRef.current = next.length;
+      return next;
+    });
 
     try {
       const result = await sendChatMessage(text, channelId);
       if (result.transcript?.length) {
-        setTurns(result.transcript);
+        applyTranscript(result.transcript);
       } else {
-        setTurns((prev) => [
-          ...prev,
-          { role: 'assistant', content: result.reply, at: new Date().toISOString() },
-        ]);
+        setTurns((prev) => {
+          const next = [
+            ...prev,
+            { role: 'assistant' as const, content: result.reply, at: new Date().toISOString() },
+          ];
+          const key = turnKey(next[next.length - 1]!, next.length - 1);
+          setAnimatingKey(key);
+          prevTurnCountRef.current = next.length - 1;
+          return next;
+        });
       }
       setWaitingForRun(result.waitingForRun ?? false);
       if (result.waitingForRun) {
@@ -173,7 +219,10 @@ export function ChatPage() {
     setLoading(true);
     try {
       const data = await resetChatSession(channelId);
-      setTurns(data.transcript);
+      seenTurnKeysRef.current = new Set();
+      prevTurnCountRef.current = 0;
+      setAnimatingKey(null);
+      applyTranscript(data.transcript, { markAllSeen: true });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -261,33 +310,33 @@ export function ChatPage() {
                   </button>
                 </div>
               )}
-              {turns.map((turn, i) => (
-                <div
-                  key={`${turn.at}-${i}`}
-                  className={
-                    turn.role === 'user'
-                      ? 'chat-bubble chat-bubble-user'
-                      : turn.role === 'status'
-                        ? 'chat-bubble chat-bubble-status'
-                        : 'chat-bubble chat-bubble-assistant'
-                  }
-                >
-                  {turn.role === 'status' ? (
-                    <div className="chat-bubble-body chat-status-line">
-                      <span className="chat-status-dot" aria-hidden />
-                      {turn.content}
-                    </div>
-                  ) : (
-                    <div
-                      className="chat-bubble-body"
-                      dangerouslySetInnerHTML={{ __html: formatContent(turn.content) }}
-                    />
-                  )}
-                </div>
-              ))}
+              {turns.map((turn, i) => {
+                const key = turnKey(turn, i);
+                const shouldAnimate = turn.role === 'assistant' && animatingKey === key;
+                return (
+                  <ChatMessageBubble
+                    key={key}
+                    turn={turn}
+                    animate={shouldAnimate}
+                    onAnimationComplete={() => {
+                      seenTurnKeysRef.current.add(key);
+                      if (animatingKey === key) setAnimatingKey(null);
+                    }}
+                    onQuickAction={() => {
+                      if (channelId) {
+                        setWaitingForRun(true);
+                        void loadTranscript(channelId);
+                      }
+                    }}
+                  />
+                );
+              })}
               {loading && !turns.some((t) => t.role === 'status') && (
                 <div className="chat-bubble chat-bubble-assistant">
-                  <div className="chat-bubble-body chat-typing">Thinking…</div>
+                  <div className="chat-bubble-body chat-typing">
+                    <span className="chat-status-dot" aria-hidden />
+                    Thinking…
+                  </div>
                 </div>
               )}
               {waitingForRun && !loading && !turns.some((t) => t.role === 'status') && (

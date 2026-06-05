@@ -13,6 +13,7 @@ import {
 import { formatRunSummaryForUser } from '../../../shared/src/run-summary.js';
 import { createRunStore, closeRunStore } from './stores/index.js';
 import { findActiveDuplicateRun } from './run-dedupe.js';
+import { reconcileStaleAwaitingHuman } from './stale-run-reconcile.js';
 
 const AGENT = 'orchestrator-agent';
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
@@ -28,7 +29,9 @@ async function boot(): Promise<void> {
 }
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', agent: AGENT });
+  void import('../../../shared/src/agent-mode.js').then(({ agentModeHealthPayload }) => {
+    res.json({ status: 'ok', agent: AGENT, ...agentModeHealthPayload() });
+  });
 });
 
 app.get('/tools', (_req, res) => {
@@ -58,25 +61,30 @@ app.post('/runs', async (req: Request, res: Response) => {
   const recent = await listRuns({ limit: dedupeLimit });
   const duplicate = findActiveDuplicateRun(body, recent);
   if (duplicate) {
-    log('info', AGENT, 'Skipped duplicate run request', {
-      incidentId: body.incidentId,
-      existingIncidentId: duplicate.incidentId,
-      existingRunId: duplicate.runId,
-      mode: body.mode,
-      namespace: body.namespace,
-      resourceName: body.resourceName,
-      githubRepo: body.githubRepo,
-      status: duplicate.status,
+    const reconciled = await reconcileStaleAwaitingHuman(duplicate, async (runId) => {
+      await setRunStatus(runId, 'cancelled');
     });
-    res.status(202).json({
-      accepted: false,
-      deduplicated: true,
-      incidentId: body.incidentId,
-      existingIncidentId: duplicate.incidentId,
-      existingRunId: duplicate.runId,
-      existingStatus: duplicate.status,
-    });
-    return;
+    if (reconciled !== 'cancelled_stale') {
+      log('info', AGENT, 'Skipped duplicate run request', {
+        incidentId: body.incidentId,
+        existingIncidentId: duplicate.incidentId,
+        existingRunId: duplicate.runId,
+        mode: body.mode,
+        namespace: body.namespace,
+        resourceName: body.resourceName,
+        githubRepo: body.githubRepo,
+        status: duplicate.status,
+      });
+      res.status(202).json({
+        accepted: false,
+        deduplicated: true,
+        incidentId: body.incidentId,
+        existingIncidentId: duplicate.incidentId,
+        existingRunId: duplicate.runId,
+        existingStatus: duplicate.status,
+      });
+      return;
+    }
   }
 
   res.status(202).json({ accepted: true, incidentId: body.incidentId });
@@ -99,7 +107,7 @@ app.post('/runs', async (req: Request, res: Response) => {
       });
       if (body.platform && body.channelId) {
         const { notifyUser, buildRuntimeContext } = await import('./tools.js');
-        const { humanizeOperatorError } = await import('../../../shared/src/user-outcomes.js');
+        const { humanizeOperatorError } = await import('../../../shared/src/user-errors.js');
         const ctx = buildRuntimeContext({
           runId: body.incidentId,
           incidentId: body.incidentId,

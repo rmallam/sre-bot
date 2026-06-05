@@ -4,7 +4,7 @@
 
 import type { RunUpdateKind, RunUpdatePayload, RunUpdateQuickAction } from '../../../shared/src/run-update.js';
 import { getSession, setSession } from './sessions.js';
-import { appendChatTurn } from './chat-transcript.js';
+import { trimTranscript } from './chat-transcript.js';
 import type { ChatTurn } from './sessions.js';
 
 const WEB_USER_ID = 'console';
@@ -32,10 +32,21 @@ function stripStatusForIncident(turns: ChatTurn[], incidentId: string): ChatTurn
   return turns.filter((t) => !(t.role === 'status' && t.incidentId === incidentId));
 }
 
-function formatQuickActionsHint(actions?: RunUpdateQuickAction[]): string {
-  if (!actions?.length) return '';
-  const labels = actions.map((a) => a.label).join(' · ');
-  return `\n\n${labels}`;
+function resolveQuickActions(
+  quickActions: RunUpdateQuickAction[] | undefined,
+  update: RunUpdatePayload | undefined,
+  stillWaiting: boolean
+): Array<{ id: string; label: string }> | undefined {
+  if (quickActions?.length) {
+    return quickActions.map((a) => ({ id: a.id, label: a.label }));
+  }
+  if (stillWaiting && update?.incidentId) {
+    return [
+      { id: `hil_approve_${update.incidentId}`, label: '✅ Approve' },
+      { id: `hil_reject_${update.incidentId}`, label: '❌ Reject' },
+    ];
+  }
+  return undefined;
 }
 
 /** Push narrated text into the web chat transcript (and session flags). */
@@ -52,11 +63,12 @@ export async function deliverWebChatUpdate(opts: {
   const prev = session?.transcript ?? [];
   const runId = update?.runId ?? session?.lastRunId;
   const kind = update?.kind;
-  const body = text.trim() + formatQuickActionsHint(quickActions);
-  const stillWaiting = kind && STILL_WAITING_KINDS.has(kind);
-  const terminal = kind && TERMINAL_KINDS.has(kind);
+  const body = text.trim();
+  const stillWaiting = !!(kind && STILL_WAITING_KINDS.has(kind));
+  const terminal = !!(kind && TERMINAL_KINDS.has(kind));
+  const actions = resolveQuickActions(quickActions, update, stillWaiting);
 
-  if (kind === 'progress' || kind === 'deploy_progress' || kind === 'coding_agent_progress') {
+  if (kind === 'progress' || kind === 'deploy_progress' || kind === 'coding_agent_progress' || kind === 'agent_step') {
     const step = update?.progressStep ?? body;
     const withoutOld = stripStatusForIncident(prev, incidentId);
     await setSession('web', channelId, userId, {
@@ -87,9 +99,15 @@ export async function deliverWebChatUpdate(opts: {
         at: new Date().toISOString(),
         incidentId,
         runId,
+        quickActions: actions,
+        updateKind: kind,
       },
     ]),
-    waitingForRun: stillWaiting ? true : terminal ? false : session?.waitingForRun,
+    waitingForRun: stillWaiting
+      ? true
+      : terminal || kind === 'generic'
+        ? false
+        : session?.waitingForRun,
     lastIncidentId: incidentId,
     lastRunId: runId,
     lastMode: update?.mode ?? session?.lastMode,
@@ -134,7 +152,9 @@ export async function markWebRunWaiting(
 export async function clearWebStatus(channelId: string, incidentId: string): Promise<void> {
   const session = await getSession('web', channelId, WEB_USER_ID);
   if (!session?.transcript) return;
-  await setSession('web', channelId, WEB_USER_ID, {
-    transcript: stripStatusForIncident(session.transcript, incidentId),
-  });
+  const transcript =
+    incidentId === 'pending'
+      ? session.transcript.filter((t) => t.role !== 'status')
+      : stripStatusForIncident(session.transcript, incidentId);
+  await setSession('web', channelId, WEB_USER_ID, { transcript });
 }

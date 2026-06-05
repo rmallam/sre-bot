@@ -283,6 +283,8 @@ export async function resolveWorkloadCandidates(
       }
     }
 
+    dropPodsOwnedByMatchingControllers(results, trimmed);
+
     results.sort((a, b) => b.score - a.score);
 
     // Prefer Deployment/StatefulSet over Pod when the hint matches a controller name.
@@ -331,6 +333,23 @@ export async function resolveWorkloadCandidates(
 
 async function appsV1ApiListStatefulSets(): Promise<{ body: k8s.V1StatefulSetList }> {
   return appsV1.listStatefulSetForAllNamespaces();
+}
+
+/** Pods that belong to a matching Deployment/STS should not prompt as separate targets. */
+function dropPodsOwnedByMatchingControllers(results: WorkloadCandidate[], hint: string): void {
+  if (!hint.trim()) return;
+  const controllers = results.filter(
+    (r) => r.resourceKind === 'Deployment' || r.resourceKind === 'StatefulSet'
+  );
+  const matching = controllers.filter((c) => scoreWorkloadHint(hint, c.resourceName) >= 65);
+  if (matching.length === 0) return;
+  const names = matching.map((c) => c.resourceName);
+  const kept = results.filter((r) => {
+    if (r.resourceKind !== 'Pod') return true;
+    return !names.some((cn) => r.resourceName.startsWith(`${cn}-`));
+  });
+  results.length = 0;
+  results.push(...kept);
 }
 
 export function needsUserConfirmation(candidates: WorkloadCandidate[]): boolean {

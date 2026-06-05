@@ -70,12 +70,31 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 
 app.get('/health', (_req: Request, res: Response) => {
   const mirror = getMirrorStatus();
-  res.json({
-    status: 'ok',
-    agent: AGENT,
-    mirror,
-    useOrchestrator: USE_ORCHESTRATOR,
+  void import('../../../shared/src/agent-mode.js').then(({ agentModeHealthPayload }) => {
+    res.json({
+      status: 'ok',
+      agent: AGENT,
+      mirror,
+      useOrchestrator: USE_ORCHESTRATOR,
+      ...agentModeHealthPayload(),
+    });
   });
+});
+
+app.post('/agent-step', async (req: Request, res: Response) => {
+  const body = req.body as import('./agent-step.js').AgentStepRequest;
+  if (!body?.incidentId || !body.namespace || !body.resourceName || !body.toolCall?.name) {
+    res.status(400).json({ error: 'incidentId, namespace, resourceName, toolCall.name required' });
+    return;
+  }
+  try {
+    const { executeAgentReadTool } = await import('./agent-step.js');
+    const result = await executeAgentReadTool(body);
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'agent-step failed', { error: String(err), incidentId: body.incidentId });
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // ── GET /namespace-check — lightweight exists probe for commander preflight ───

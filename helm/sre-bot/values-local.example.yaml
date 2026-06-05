@@ -1,4 +1,4 @@
-# Example local overrides — copy to my-values.yaml (gitignored via .env patterns; do not commit secrets)
+# Example local overrides — copy to my-values.yaml (do not commit secrets)
 
 global:
   imageOwner: rmallam
@@ -16,8 +16,11 @@ secrets:
   create: true
   openrouterApiKey: "YOUR_OPENROUTER_KEY"
   geminiApiKey: ""
+  openaiApiKey: ""
   gitopsRepoUrl: "git@github.com:your-org/your-gitops-repo.git"
   githubToken: "ghp_xxx"
+  deployAppRepoWriteToken: ""
+  githubWebhookSecret: ""
   allowedUsers: "123456789"
   telegramBotToken: "your-telegram-bot-token"
   telegramAlertChatId: "-100xxxxxxxx"
@@ -33,6 +36,14 @@ postgres:
   auth:
     password: "change-me-in-production"
 
+ragPostgres:
+  auth:
+    password: "change-me-in-production"
+
+investigator:
+  lokiUrl: ""
+  prometheusUrl: ""
+
 orchestrator:
   registryDryRun: "true"
 
@@ -40,3 +51,6 @@ ingress:
   hil:
     enabled: false
     host: hil.your-domain.example
+  console:
+    enabled: false
+    host: console.your-domain.example

@@ -119,7 +119,14 @@ export async function tryStatusFollowUp(
   userId: string,
   text: string
 ): Promise<string | null> {
-  if (!/\b(status|update|progress|how(?:'?s| is) it going|what happened)\b/i.test(text)) {
+  // "update the image to …" is remediation, not a run-status query.
+  if (
+    /\b(update|change|set|use|switch)\s+(?:the\s+)?(?:image|impage|container)\b/i.test(text) ||
+    /\b(ghcr\.io|docker\.io|gcr\.io)\b/i.test(text)
+  ) {
+    return null;
+  }
+  if (!/\b(status|(?:what(?:'?s| is) the )?update|progress|how(?:'?s| is) it going|what happened)\b/i.test(text)) {
     return null;
   }
   const session = await getSession(platform, channelId, userId);

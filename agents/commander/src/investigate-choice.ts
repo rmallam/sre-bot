@@ -1,9 +1,15 @@
 import { v4 as uuidv4 } from 'uuid';
+import type { Platform } from '../../../shared/src/types.js';
 import type { ComposeOptions } from '../../../shared/src/command-outcome.js';
 import type { ResourceKind } from '../../../shared/src/types.js';
 import type { InvestigateCmd } from './parser.js';
 import { isWorkloadStatusQuery } from './parser.js';
 import { composeUserReply } from './compose-outcome.js';
+import {
+  resolveInvestigateNamespace,
+  resolveWorkloadHintForMessage,
+  looksLikeImageRemediation,
+} from './investigate-target.js';
 
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 const CHOICE_TTL_MS = parseInt(process.env['INVESTIGATE_CHOICE_TTL_MS'] ?? '180000', 10);
@@ -20,7 +26,7 @@ export interface WorkloadCandidate {
 }
 
 interface PendingInvestigate {
-  platform: 'telegram' | 'slack';
+  platform: Platform;
   channelId: string;
   userId: string;
   rawMessage: string;
@@ -38,7 +44,8 @@ function key(platform: string, channelId: string, userId: string): string {
 }
 
 function workloadHint(parsed: InvestigateCmd, rawMessage: string): string {
-  if (parsed.workloadHint?.trim()) return parsed.workloadHint.trim();
+  const resolved = resolveWorkloadHintForMessage(parsed, rawMessage);
+  if (resolved) return resolved;
   if (!parsed.resourceName.startsWith('_') && parsed.resourceName !== 'unknown') {
     return parsed.resourceName;
   }
@@ -47,8 +54,13 @@ function workloadHint(parsed: InvestigateCmd, rawMessage: string): string {
 
 function extractLikelyWorkload(raw: string): string {
   const text = raw.trim();
+  const fixTarget = text.match(
+    /\b(?:fix|repair|remediate|patch|update|change)\s+(?:the\s+)?([a-z0-9][\w.-]*(?:-controller(?:-manager)?)?)\b/i
+  );
+  if (fixTarget?.[1] && !isStopToken(fixTarget[1])) return fixTarget[1];
+
   const explicit = text.match(
-    /\b(?:for|on|fix|remediate|repair|patch|update|change)\s+([a-z0-9][\w.-]*)\b/i
+    /\b(?:for|on)\s+(?:the\s+)?([a-z0-9][\w.-]*)\b/i
   );
   if (explicit?.[1] && !isStopToken(explicit[1])) return explicit[1];
 
@@ -76,6 +88,39 @@ function isStopToken(token: string): boolean {
     'cluster',
     'default',
   ]).has(token.toLowerCase());
+}
+
+function isImageRemediationRequest(parsed: InvestigateCmd, rawMessage: string): boolean {
+  return !!parsed.operatorSuggestion?.trim() || looksLikeImageRemediation(rawMessage);
+}
+
+function deploymentControllers(candidates: WorkloadCandidate[]): WorkloadCandidate[] {
+  return candidates.filter(
+    (c) => c.resourceKind === 'Deployment' || c.resourceKind === 'StatefulSet'
+  );
+}
+
+/** Image fixes apply to Deployments/StatefulSets — pick the best controller match. */
+function bestControllerForHint(
+  controllers: WorkloadCandidate[],
+  hint: string
+): WorkloadCandidate | undefined {
+  if (controllers.length === 0) return undefined;
+  const h = hint.trim().toLowerCase();
+  if (!h) {
+    return [...controllers].sort((a, b) => b.score - a.score)[0];
+  }
+  const exact = controllers.find((c) => c.resourceName.toLowerCase() === h);
+  if (exact) return exact;
+  const related = controllers.filter((c) => {
+    const n = c.resourceName.toLowerCase();
+    return n.startsWith(h) || h.startsWith(n) || n.includes(h) || h.includes(n);
+  });
+  if (related.length === 1) return related[0];
+  if (related.length > 1) {
+    return [...related].sort((a, b) => b.score - a.score)[0];
+  }
+  return [...controllers].sort((a, b) => b.score - a.score)[0];
 }
 
 function candidateToCommand(base: InvestigateCmd, c: WorkloadCandidate): InvestigateCmd {
@@ -144,25 +189,50 @@ export async function prepareInvestigateCommand(
     return { status: 'proceed', command: parsed };
   }
 
-  const hint = workloadHint(parsed, rawMessage);
-  if (!hint) {
+  const ns = resolveInvestigateNamespace(parsed.namespace, rawMessage);
+  let hint = workloadHint(parsed, rawMessage);
+
+  if (!hint && !ns) {
     return {
       status: 'not_found',
       message:
-        "I couldn't tell which workload you mean. Try:\n• investigate the frappe deployment\n• investigate default/nginx",
+        "I couldn't tell which workload you mean. Try:\n• investigate the frappe deployment\n• fix frappe-operator-system using ghcr.io/org/app:latest",
     };
   }
 
-  const ns =
-    parsed.namespace && parsed.namespace !== '_all' ? parsed.namespace : undefined;
-  const { needsConfirmation, autoConfirm, candidates } = await fetchWorkloadResolution(hint, ns);
+  let { needsConfirmation, autoConfirm, candidates } = await fetchWorkloadResolution(hint, ns);
+
+  if (candidates.length === 0 && ns && hint) {
+    const retry = await fetchWorkloadResolution('', ns);
+    needsConfirmation = retry.needsConfirmation;
+    autoConfirm = retry.autoConfirm;
+    candidates = retry.candidates;
+  }
+
+  if (candidates.length === 0 && hint) {
+    const retry = await fetchWorkloadResolution(hint, undefined);
+    needsConfirmation = retry.needsConfirmation;
+    autoConfirm = retry.autoConfirm;
+    candidates = retry.candidates;
+  }
 
   if (candidates.length === 0) {
+    const subject = hint || ns || 'workload';
     return {
       status: 'not_found',
-      message: `I couldn't find a workload matching "${hint}" in the cluster. Try a more specific name or namespace/app.`,
+      message: `I couldn't find a workload matching "${subject}" in the cluster. Try a more specific name or namespace/app.`,
     };
   }
+
+  // Image remediation always targets a controller — never ask user to pick a Pod.
+  if (isImageRemediationRequest(parsed, rawMessage)) {
+    const pick = bestControllerForHint(deploymentControllers(candidates), hint);
+    if (pick) {
+      return { status: 'proceed', command: candidateToCommand(parsed, pick) };
+    }
+  }
+
+  const effectiveNs = ns ?? (parsed.namespace !== '_all' ? parsed.namespace : undefined);
 
   if (!needsConfirmation && autoConfirm) {
     const cmd = candidateToCommand(parsed, autoConfirm);
@@ -171,9 +241,7 @@ export async function prepareInvestigateCommand(
 
   if (isWorkloadStatusQuery(rawMessage)) {
     const nsFilter =
-      parsed.namespace && parsed.namespace !== '_all' && parsed.namespace !== 'default'
-        ? parsed.namespace
-        : ns;
+      effectiveNs && effectiveNs !== '_all' && effectiveNs !== 'default' ? effectiveNs : ns;
     const inNs = candidates.filter(
       (c) =>
         (c.resourceKind === 'Deployment' || c.resourceKind === 'StatefulSet') &&
@@ -197,11 +265,37 @@ export async function prepareInvestigateCommand(
     return { status: 'proceed', command: candidateToCommand(parsed, candidates[0]!) };
   }
 
+  // Namespace-only fix ("fix frappe-operator-system") — pick best deployment in that ns
+  if (ns && candidates.length > 1) {
+    const inNs = candidates.filter((c) => c.namespace === ns && c.resourceKind === 'Deployment');
+    const notReady = inNs.find((c) => {
+      const m = c.ready?.match(/^(\d+)\/(\d+)$/);
+      return m != null && m[1] !== m[2];
+    });
+    if (notReady) {
+      return { status: 'proceed', command: candidateToCommand(parsed, notReady) };
+    }
+    const top = [...inNs].sort((a, b) => b.score - a.score)[0];
+    if (top && top.score >= 40) {
+      return { status: 'proceed', command: candidateToCommand(parsed, top) };
+    }
+  }
+
   return {
     status: 'prompt',
-    prompt: buildChoicePrompt(hint, candidates),
-    candidates,
+    prompt: buildChoicePrompt(hint || ns || 'workload', filterPromptCandidates(candidates, parsed, rawMessage)),
+    candidates: filterPromptCandidates(candidates, parsed, rawMessage),
   };
+}
+
+function filterPromptCandidates(
+  candidates: WorkloadCandidate[],
+  parsed: InvestigateCmd,
+  rawMessage: string
+): WorkloadCandidate[] {
+  if (!isImageRemediationRequest(parsed, rawMessage)) return candidates;
+  const controllers = deploymentControllers(candidates);
+  return controllers.length > 0 ? controllers : candidates;
 }
 
 function buildChoicePrompt(hint: string, candidates: WorkloadCandidate[]): string {
@@ -225,7 +319,7 @@ function buildChoicePrompt(hint: string, candidates: WorkloadCandidate[]): strin
 }
 
 export function storeInvestigateChoice(
-  platform: 'telegram' | 'slack',
+  platform: Platform,
   channelId: string,
   userId: string,
   rawMessage: string,
@@ -245,7 +339,7 @@ export function storeInvestigateChoice(
 }
 
 export function tryResolvePendingInvestigateChoice(
-  platform: 'telegram' | 'slack',
+  platform: Platform,
   channelId: string,
   userId: string,
   text: string
@@ -262,7 +356,7 @@ export function tryResolvePendingInvestigateChoice(
 }
 
 export function resolveInvestigateChoiceSelection(
-  platform: 'telegram' | 'slack',
+  platform: Platform,
   channelId: string,
   userId: string,
   selection: 'cancel' | number
@@ -290,7 +384,7 @@ export function resolveInvestigateChoiceSelection(
 }
 
 export function getPendingInvestigateCandidates(
-  platform: 'telegram' | 'slack',
+  platform: Platform,
   channelId: string,
   userId: string
 ): WorkloadCandidate[] | undefined {
@@ -318,11 +412,12 @@ export async function resolveInvestigateFlow(
   const hint = workloadHint(parsed, rawMessage) || parsed.resourceName;
 
   if (prep.status === 'not_found') {
+    const ns = resolveInvestigateNamespace(parsed.namespace, rawMessage);
     const text = await composeUserReply(
       {
         kind: 'not_found',
         subject: hint,
-        namespace: parsed.namespace !== '_all' ? parsed.namespace : undefined,
+        namespace: ns,
         context: 'Try naming the deployment or namespace more specifically.',
       },
       composeOpts

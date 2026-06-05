@@ -30,10 +30,18 @@ spec:
               value: "8080"
             - name: GITOPS_URL
               value: "http://gitops-agent:8080"
+            - name: EXECUTOR_URL
+              value: "http://executor-agent:8080"
+            - name: ORCHESTRATOR_URL
+              value: "http://orchestrator-agent:8080"
+            - name: COMMANDER_URL
+              value: "http://commander-agent:8080"
             - name: BRAIN_URL
               value: "http://brain-agent:8080"
             - name: APPROVAL_TIMEOUT_MINUTES
               value: "60"
+            - name: IGNORE_STORE_PATH
+              value: /data/ignored-resources.json
             - name: SLACK_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -64,6 +72,9 @@ spec:
                   name: sre-bot-secrets
                   key: telegram_alert_chat_id
                   optional: true
+          volumeMounts:
+            - name: hil-data
+              mountPath: /data
           livenessProbe:
             httpGet:
               path: /health
@@ -77,6 +88,9 @@ spec:
             limits:
               cpu: "200m"
               memory: "256Mi"
+      volumes:
+        - name: hil-data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

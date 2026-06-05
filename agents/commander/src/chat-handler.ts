@@ -2,6 +2,7 @@
  * UX-16 — Unified chat entry for Telegram, Slack, and web console.
  */
 
+import { v4 as uuidv4 } from 'uuid';
 import type { Platform } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
 import type { ParsedCommand } from './parser.js';
@@ -10,8 +11,16 @@ import { routeMessage } from './llm-router.js';
 import { recordUserMessage, recordAssistantMessage, getChatTranscriptForLlm } from './chat-transcript.js';
 import { syncActiveTopicFromCommand } from './active-topic.js';
 import { tryResolvePendingClarification } from './clarification.js';
+import { tryPendingRunFollowUp } from './pending-run-followup.js';
 import { tryResolvePendingDeleteChoice } from './delete-choice.js';
+import {
+  resolveInvestigateFlow,
+  storeInvestigateChoice,
+  tryResolvePendingInvestigateChoice,
+} from './investigate-choice.js';
+import { getChannelPref } from './channel-prefs.js';
 import { appendWebStatusStep, markWebRunWaiting, clearWebStatus } from './chat-web-notify.js';
+import { getSession } from './sessions.js';
 
 const AGENT = 'commander-chat';
 
@@ -29,6 +38,7 @@ export interface ChatProcessResult {
   commandType?: ParsedCommand['type'];
   /** Web console: keep polling transcript for orchestrator updates. */
   waitingForRun?: boolean;
+  quickActions?: Array<{ id: string; label: string }>;
 }
 
 function ackMessage(incidentId: string, type: ParsedCommand['type']): string {
@@ -62,6 +72,48 @@ export async function processChatMessage(opts: {
 
   if (platform === 'web') {
     await webThinking(channelId, 'Reading your message…');
+  }
+
+  const pendingRun = await tryPendingRunFollowUp(text, platform, channelId, userId);
+  if (pendingRun) {
+    await recordAssistantMessage(platform, channelId, userId, pendingRun.reply);
+    return {
+      reply: pendingRun.reply,
+      executed: false,
+      ...(pendingRun.quickActions?.length
+        ? { quickActions: pendingRun.quickActions }
+        : {}),
+    };
+  }
+
+  const investigateChoice = tryResolvePendingInvestigateChoice(platform, channelId, userId, text);
+  if (investigateChoice.status === 'cancelled') {
+    const reply = 'Investigation choice cancelled.';
+    await recordAssistantMessage(platform, channelId, userId, reply);
+    return { reply, executed: false };
+  }
+  if (investigateChoice.status === 'selected' && investigateChoice.command) {
+    try {
+      const result = await handleCommand(investigateChoice.command, userId, platform, channelId, text);
+      await syncActiveTopicFromCommand(platform, channelId, userId, investigateChoice.command);
+      if (platform === 'web') {
+        await clearWebStatus(channelId, 'pending');
+        await markWebRunWaiting(channelId, result.incidentId);
+      }
+      const reply = result.immediateReply ?? ackMessage(result.incidentId, 'investigate');
+      await recordAssistantMessage(platform, channelId, userId, reply);
+      return {
+        reply,
+        incidentId: result.incidentId,
+        executed: true,
+        commandType: 'investigate',
+        waitingForRun: !result.immediateReply,
+      };
+    } catch (err) {
+      const reply = `⚠️ ${String(err)}`;
+      await recordAssistantMessage(platform, channelId, userId, reply);
+      return { reply, executed: false };
+    }
   }
 
   const deletePending = tryResolvePendingDeleteChoice(platform, channelId, userId, text);
@@ -104,6 +156,7 @@ export async function processChatMessage(opts: {
       await syncActiveTopicFromCommand(platform, channelId, userId, clarified);
       const asyncRun = ASYNC_COMMANDS.has(clarified.type);
       if (platform === 'web' && asyncRun) {
+        await clearWebStatus(channelId, 'pending');
         await markWebRunWaiting(channelId, result.incidentId);
       } else if (platform === 'web') {
         await clearWebStatus(channelId, result.incidentId);
@@ -130,11 +183,15 @@ export async function processChatMessage(opts: {
   }
 
   const routed = await routeMessage(text, platform, userId, channelId);
-  const parsed = routed.parsed;
+  let parsed = routed.parsed;
 
   if (parsed.type === 'unknown') {
     if (platform === 'web') {
       await clearWebStatus(channelId, 'pending');
+      const session = await getSession(platform, channelId, userId);
+      if (session?.lastIncidentId) {
+        await clearWebStatus(channelId, session.lastIncidentId);
+      }
     }
     const reply = routed.conversationalReply ?? routed.userReply ?? "I didn't understand that.";
     await recordAssistantMessage(platform, channelId, userId, reply);
@@ -147,6 +204,26 @@ export async function processChatMessage(opts: {
     }
     await recordAssistantMessage(platform, channelId, userId, routed.conversationalReply);
     return { reply: routed.conversationalReply, executed: false, commandType: 'deploy' };
+  }
+
+  if (parsed.type === 'investigate') {
+    const flow = await resolveInvestigateFlow(parsed, text, {
+      platform,
+      verbose: getChannelPref(platform, channelId).verbose,
+      incidentId: uuidv4(),
+    });
+    if (flow.kind === 'reply') {
+      if (platform === 'web') await clearWebStatus(channelId, 'pending');
+      await recordAssistantMessage(platform, channelId, userId, flow.text);
+      return { reply: flow.text, executed: false, commandType: 'investigate' };
+    }
+    if (flow.kind === 'confirm') {
+      storeInvestigateChoice(platform, channelId, userId, text, parsed, flow.candidates);
+      if (platform === 'web') await clearWebStatus(channelId, 'pending');
+      await recordAssistantMessage(platform, channelId, userId, flow.prompt);
+      return { reply: flow.prompt, executed: false, commandType: 'investigate' };
+    }
+    parsed = flow.command;
   }
 
   if (routed.conversationalReply && parsed.type === 'deploy') {
@@ -171,6 +248,7 @@ export async function processChatMessage(opts: {
 
     const asyncRun = ASYNC_COMMANDS.has(parsed.type) && !result.immediateReply;
     if (platform === 'web' && asyncRun) {
+      await clearWebStatus(channelId, 'pending');
       await markWebRunWaiting(channelId, result.incidentId);
     } else if (platform === 'web') {
       await clearWebStatus(channelId, result.incidentId);
@@ -188,6 +266,7 @@ export async function processChatMessage(opts: {
       executed: true,
       commandType: parsed.type,
       waitingForRun: asyncRun,
+      ...(result.quickActions?.length ? { quickActions: result.quickActions } : {}),
     };
   } catch (err) {
     log('error', AGENT, 'Chat command failed', { error: String(err), commandType: parsed.type });

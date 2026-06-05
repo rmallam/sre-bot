@@ -9,8 +9,21 @@ import { getSession } from './sessions.js';
 import { statusSubjectFromTopic } from './active-topic.js';
 import { fetchLatestRunSummaryByIncident, fetchRunDetailsText } from './run-details.js';
 import { getChannelPref } from './channel-prefs.js';
+import { extractContainerImageViaLlm } from './image-hint-llm.js';
+import {
+  extractContainerImageHint,
+  looksLikeImageRemediation,
+  resolveOperatorSuggestion,
+} from './investigate-target.js';
 
 const CICD_URL = process.env['CICD_URL'] ?? 'http://cicd-agent:8080';
+
+/** Build a container image ref from natural-language follow-ups after ImagePullBackOff, etc. */
+export { extractContainerImageHint as extractImageRefFromText } from './investigate-target.js';
+
+function isImageRemediationFollowUp(text: string): boolean {
+  return looksLikeImageRemediation(text);
+}
 
 export type SessionFollowUp =
   | { type: 'reply'; text: string }
@@ -35,6 +48,40 @@ export async function trySessionFollowUp(
       if (followUp) {
         return { type: 'parsed', parsed: followUp };
       }
+    }
+  }
+
+  if (
+    session?.activeTopic?.kind === 'investigate' &&
+    session.activeTopic.resourceName &&
+    session.activeTopic.namespace &&
+    isImageRemediationFollowUp(t)
+  ) {
+    const topic = session.activeTopic;
+    const imageRef =
+      resolveOperatorSuggestion({ text: t, workloadHint: topic.resourceName })?.replace(
+        /^set image to /i,
+        ''
+      ) ??
+      (await extractContainerImageViaLlm(t, userId, {
+        workloadHint: topic.resourceName,
+        namespace: topic.namespace,
+      }));
+    if (imageRef) {
+      const parsed: ParsedCommand = {
+        type: 'investigate',
+        scope: 'workload',
+        namespace: topic.namespace!,
+        resourceName: topic.resourceName!,
+        resourceKind: 'Deployment',
+        label: topic.label ?? topic.resourceName!,
+        operatorSuggestion: `set image to ${imageRef}`,
+      };
+      return {
+        type: 'parsed',
+        parsed,
+        reply: `Got it — I'll update the image to \`${imageRef}\` on **${topic.namespace}/${topic.resourceName}** and retry the fix.`,
+      };
     }
   }
 

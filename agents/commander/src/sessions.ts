@@ -7,6 +7,12 @@ import type { IncidentMode, ResourceKind } from '../../../shared/src/types.js';
 import { getSessionStore, type WebSessionSummary } from './session-store.js';
 import { v4 as uuidv4 } from 'uuid';
 
+/** Inline approve/reject actions (mirrors run-update quickActions). */
+export interface ChatTurnQuickAction {
+  id: string;
+  label: string;
+}
+
 /** UX-13 — one turn in rolling chat transcript. */
 export interface ChatTurn {
   role: 'user' | 'assistant' | 'status';
@@ -14,6 +20,9 @@ export interface ChatTurn {
   at: string;
   incidentId?: string;
   runId?: string;
+  /** Approve / reject / show logs buttons when orchestrator needs HIL. */
+  quickActions?: ChatTurnQuickAction[];
+  updateKind?: string;
 }
 
 export interface StatusSubject {
@@ -60,6 +69,8 @@ export interface ChatSession {
   transcript?: ChatTurn[];
   /** Console: orchestrator run still in progress — UI should poll for updates. */
   waitingForRun?: boolean;
+  /** AGENT-1 — active remediation case thread. */
+  activeCaseId?: string;
   sessionLabel?: string;
   preview?: string;
   updatedAt: string;

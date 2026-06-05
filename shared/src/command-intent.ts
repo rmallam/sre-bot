@@ -30,6 +30,10 @@ export interface CommandIntent {
   githubRepo?: string;
   gitRef?: string;
   deployStrategy?: 'gitops' | 'direct';
+  /** Full OCI image ref when user wants a container image change (e.g. ghcr.io/org/app:tag). */
+  containerImage?: string;
+  /** Normalized fix hint for orchestrator, e.g. "set image to ghcr.io/org/app:tag". */
+  operatorSuggestion?: string;
 }
 
 const INTENT_NAMES = new Set<CommandIntentName>([
@@ -67,6 +71,10 @@ export function parseCommandIntentJson(raw: string): CommandIntent | null {
       githubRepo: parsed.githubRepo,
       gitRef: parsed.gitRef,
       deployStrategy: parsed.deployStrategy,
+      containerImage:
+        typeof parsed.containerImage === 'string' ? parsed.containerImage.trim() : undefined,
+      operatorSuggestion:
+        typeof parsed.operatorSuggestion === 'string' ? parsed.operatorSuggestion.trim() : undefined,
     };
   } catch {
     return null;

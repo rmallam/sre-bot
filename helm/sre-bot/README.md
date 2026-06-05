@@ -1,6 +1,27 @@
 # sre-bot Helm chart
 
-Deploys all nine SRE agents, Postgres (run transcript store), optional Redis, RBAC, CRD, and secrets.
+Deploys the full SRE Bot stack with **parity to `docker-compose.yml`**:
+
+| Component | Compose service | Helm resource |
+|-----------|-----------------|---------------|
+| Run store DB | `postgres` | `postgres` StatefulSet |
+| Session store | `redis` | `redis` Deployment |
+| RAG vector DB | `rag-postgres` | `rag-postgres` StatefulSet |
+| Semantic platform | `platform-agent` | `platform-agent` Deployment |
+| Event watcher | `watcher-agent` | `watcher-agent` Deployment |
+| Chat / routing | `commander-agent` | `commander-agent` Deployment |
+| Investigation | `investigator-agent` | `investigator-agent` Deployment |
+| LLM reasoning | `brain-agent` | `brain-agent` Deployment |
+| Workflow hub | `orchestrator-agent` | `orchestrator-agent` Deployment |
+| Security scan | `security-agent` | `security-agent` Deployment |
+| K8s apply | `executor-agent` | `executor-agent` Deployment |
+| Approvals | `hil-agent` | `hil-agent` Deployment |
+| GitOps deploy | `gitops-agent` | `gitops-agent` Deployment |
+| CI/CD | `cicd-agent` | `cicd-agent` Deployment |
+| Code fixes | `coding-agent` | `coding-agent` Deployment |
+| Web console | `console-agent` | `console-agent` Deployment |
+
+**Not included** (compose profiles only): `kube-proxy`, `ai-gateway`.
 
 ## Prerequisites
 
@@ -20,8 +41,8 @@ kubectl create secret docker-registry ghcr-credentials \
 ## Quick install
 
 ```bash
-# Copy and edit secrets (do not commit)
 cp helm/sre-bot/values-local.example.yaml my-values.yaml
+# Edit secrets and optional LOKI_URL / PROMETHEUS_URL
 
 helm upgrade --install sre-bot ./helm/sre-bot \
   -f my-values.yaml \
@@ -38,6 +59,14 @@ Default images match CI output:
 ghcr.io/<imageOwner>/sre-bot-<agent>:<imageTag>
 ```
 
+Special image names (same registry/tag pattern):
+
+| Agent | Image repository |
+|-------|------------------|
+| platform | `sre-bot-platform` |
+| coding | `sre-bot-coding-agent` |
+| cicd | `sre-bot-cicd` |
+
 | Value | Default |
 |-------|---------|
 | `global.imageOwner` | `rmallam` |
@@ -49,14 +78,25 @@ Set in `my-values.yaml` under `secrets:` (or use `secrets.existingSecret`):
 
 | Key | Used by |
 |-----|---------|
-| `geminiApiKey` | brain, commander |
+| `openrouterApiKey` | brain, commander, platform |
+| `geminiApiKey` | brain, commander, platform (optional) |
+| `openaiApiKey` | platform RAG embeddings (optional) |
 | `gitopsRepoUrl` | investigator, gitops |
 | `allowedUsers` | commander |
+| `telegramBotToken` / `telegramAlertChatId` | commander, hil |
+| `githubToken` | gitops, cicd, coding |
+| `deployAppRepoWriteToken` | cicd, coding (optional) |
+| `githubWebhookSecret` | commander GitHub webhooks (optional) |
 | `gitSshPrivateKey` | investigator, gitops (Git SSH clone) |
 
-Investigator ClusterRole includes read access for chat `get` commands: namespaces, pods, deployments, nodes, services, events.
-| `telegramBotToken` / `slackBotToken` | commander, hil (optional) |
-| `githubToken` | gitops (optional, HTTPS push) |
+## Skills volume (brain + coding-agent)
+
+Mount a ConfigMap of skills at `/data/skills`:
+
+```yaml
+skills:
+  configMapName: sre-bot-skills
+```
 
 ## Useful values
 
@@ -69,20 +109,36 @@ global:
 runStore:
   backend: postgres   # postgres | redis | file
 
-postgres:
+redis:
   enabled: true
-  auth:
-    password: CHANGE_ME
+
+ragPostgres:
+  enabled: true
+
+session:
+  chatBackend: redis
+  caseBackend: redis
+
+agentMode:
+  sreAgentMode: classic
+  platformRouting: true
+  ragGrounding: true
+  ragLearning: true
+
+investigator:
+  lokiUrl: "http://loki.monitoring:3100"
+  prometheusUrl: "http://prometheus.monitoring:9090"
 
 ingress:
   hil:
     enabled: true
     host: hil.example.com
-    className: nginx
+  console:
+    enabled: true
+    host: console.example.com
 
 orchestrator:
-  autonomyMode: low_risk_only
-  registryDryRun: "true"   # set "false" for real applies
+  registryDryRun: "true"   # K8s safety default; set "false" for real applies
 ```
 
 ## Upgrade
@@ -98,16 +154,8 @@ helm uninstall sre-bot -n sre-bot-system
 # CRD and ClusterRoles remain unless deleted manually
 ```
 
-## Disable bundled Postgres
+## Validate templates locally
 
-Use an external database:
-
-```yaml
-postgres:
-  enabled: false
-runStore:
-  backend: postgres
-# Pass DATABASE_URL via orchestrator extra env (future) or patch deployment
+```bash
+helm template sre-bot ./helm/sre-bot -f helm/sre-bot/values-local.example.yaml
 ```
-
-For now, keep `postgres.enabled: true` unless you patch `orchestrator-agent` with an external `DATABASE_URL`.

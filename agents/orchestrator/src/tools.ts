@@ -12,6 +12,7 @@ import type {
   FailureAnalysisResult,
   RemediateCommand,
   RemediationPlan,
+  RemediationAction,
   ResourceKind,
   IncidentMode,
   PlanValidationResult,
@@ -19,9 +20,11 @@ import type {
   StackDeployAnalysis,
   StartRunRequest,
   PendingToolApproval,
+  VerifyResult,
 } from '../../../shared/src/types.js';
 import type { RuntimeToolContext } from '../../../shared/src/tool-contracts.js';
 import { formatFetchError, log } from '../../../shared/src/http.js';
+import { waitForWorkloadReady } from '../../../shared/src/workload-readiness-wait.js';
 import { getToolDefinition } from '../../../shared/src/tool-registry.js';
 import { isProdNamespace } from '../../../shared/src/tool-policy.js';
 import type { RunUpdatePayload, RunUpdateQuickAction } from '../../../shared/src/run-update.js';
@@ -477,7 +480,11 @@ export async function executeAction(
 
 export { compileAndValidatePlan };
 
-export async function verifyWorkload(namespace: string, resourceName: string, incidentId: string) {
+export async function verifyWorkload(
+  namespace: string,
+  resourceName: string,
+  incidentId: string
+): Promise<VerifyResult> {
   const res = await fetch(
     `${INVESTIGATOR_URL}/verify?namespace=${encodeURIComponent(namespace)}&resourceName=${encodeURIComponent(resourceName)}&incidentId=${encodeURIComponent(incidentId)}`,
     { signal: AbortSignal.timeout(30_000) }
@@ -485,7 +492,44 @@ export async function verifyWorkload(namespace: string, resourceName: string, in
   if (!res.ok) {
     return { healthy: false, message: `Verify HTTP ${res.status}` };
   }
-  return res.json() as Promise<{ healthy: boolean; message: string }>;
+  return res.json() as Promise<VerifyResult>;
+}
+
+const ROLLOUT_WAIT_ACTIONS = new Set(['git_patch', 'restart', 'helm_deploy', 'repo_apply']);
+
+export function planHasImagePatch(plan?: RemediationPlan): boolean {
+  if (!plan?.proposedPatch?.length) return false;
+  return plan.proposedPatch.some((p) => String(p.path ?? '').includes('/image'));
+}
+
+/** After cluster patch/restart, poll until rollout completes (image pull, probes). */
+export async function verifyAfterRemediation(
+  namespace: string,
+  resourceName: string,
+  incidentId: string,
+  opts: {
+    waitForRollout: boolean;
+    remediationAction?: RemediationAction;
+    afterImagePatch?: boolean;
+    onProgress?: (message: string) => void | Promise<void>;
+  }
+): Promise<VerifyResult> {
+  if (!opts.waitForRollout) {
+    return verifyWorkload(namespace, resourceName, incidentId);
+  }
+  return waitForWorkloadReady({
+    namespace,
+    resourceName,
+    incidentId,
+    remediationAction: opts.remediationAction,
+    afterImagePatch: opts.afterImagePatch,
+    fetchVerify: verifyWorkload,
+    onProgress: opts.onProgress,
+  });
+}
+
+export function actionNeedsRolloutWait(action: string | undefined): boolean {
+  return !!action && ROLLOUT_WAIT_ACTIONS.has(action);
 }
 
 export async function requestHilApproval(

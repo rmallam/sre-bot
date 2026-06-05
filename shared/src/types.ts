@@ -3,7 +3,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { RcaPointer } from './rca-pointers.js';
+import type { RolloutPhase } from './rollout-phase.js';
 export type { RcaPointer, RcaPointerSource } from './rca-pointers.js';
+export type { RolloutPhase } from './rollout-phase.js';
 
 export type Platform = 'slack' | 'telegram' | 'teams' | 'web';
 export type ResourceKind = 'Deployment' | 'StatefulSet' | 'Pod' | 'Job' | 'DaemonSet';
@@ -161,10 +163,18 @@ export interface DiagnosisContext extends IncidentEnvelope {
   stackDeploy?: StackDeployAnalysis;
   /** Parallel specialist summaries (workload/network/database). */
   specialistDiagnostics?: SpecialistDiagnostic[];
+  /** Official runbook markdown from platform RAG (grounding). */
+  retrievedPlaybook?: string;
+  /** Detected K8s error signature for RAG lookup. */
+  detectedErrorSignature?: string;
+  /** RAG metadata filter component (compute|storage|network|gitops). */
+  targetComponent?: string;
   /** Multi-source RCA evidence (K8s, Loki, Prometheus, …). */
   rcaPointers?: RcaPointer[];
   /** One-paragraph merge of top RCA pointers for planners. */
   observabilitySummary?: string;
+  /** False when the Kubernetes API is unreachable or returned no nodes. */
+  clusterReachable?: boolean;
   /** Populated in ci-failure mode from cicd-agent. */
   ciRun?: CiRunFacts;
 }
@@ -332,6 +342,14 @@ export interface VerifyResult {
   healthy: boolean;
   readyReplicas?: number;
   desiredReplicas?: number;
+  /** Apps/v1 status.updatedReplicas — rollout progress. */
+  updatedReplicas?: number;
+  /** True when replicas are still converging (not a terminal pod error). */
+  rolloutInProgress?: boolean;
+  /** What the cluster is doing during rollout (image pull, probes, etc.). */
+  rolloutPhase?: RolloutPhase;
+  /** Operator-facing detail, e.g. "2 pods pulling ghcr.io/org/app:v2". */
+  waitDetail?: string;
   podPhases?: string[];
   recentWarningCount?: number;
   message: string;
@@ -396,6 +414,12 @@ export interface StartRunRequest extends IncidentEnvelope {
   workflowName?: string;
   prNumber?: number;
   ciBranch?: string;
+  /** AGENT-1 — durable case thread id (commander-managed). */
+  caseId?: string;
+  /** Override global SRE_AGENT_MODE for this run. */
+  agentMode?: 'classic' | 'agentic';
+  /** Merged user hints from case evidence. */
+  userHints?: string[];
 }
 
 export interface StartRunResponse {

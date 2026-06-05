@@ -132,11 +132,13 @@ STRICT RULES:
 2. Set "action" field explicitly:
    - "restart": transient failures (CrashLoopBackOff, probe failures) when priorActionSummary does NOT contain restart_failed
    - "git_patch": config fixes (OOM limits, image tags, resources) or after restart_failed
+   - In "diagnose" mode: use git_patch ONLY when gitManifestContent is present OR patchTarget is cluster for live Deployment/StatefulSet image/resource fixes. If no manifest and no verified workload, set action to "escalate_human".
    - "helm_deploy": pre-deploy GitOps mode when needsHelmGeneration is true — include helmChart.files with Chart.yaml, values.yaml, templates/
    - "repo_apply": pre-deploy direct mode where manifests/charts should be applied from source repo without any Git push
    - "escalate_human": insufficient data or CRITICAL risk
    - "noop": nothing to do
 3. In "diagnose" mode: If you cannot determine a root cause, set action to "escalate_human" and proposedPatch to [].
+3b. In "diagnose" mode without gitManifestContent: prefer escalate_human over git_patch unless proposing a cluster hot-fix with a concrete proposedPatch on /spec/template/*.
 4. In "pre-deploy" mode:
    - If needsHelmGeneration is true, set action to "helm_deploy" and populate helmChart.files
    - If gitManifestContent is provided, use action "git_patch"
@@ -145,6 +147,7 @@ STRICT RULES:
 6. targetManifestPath from gitManifestPath or deployments/<resourceName>.yaml (or deploy/helm/<resourceName> for helm)
 7. commitMessage MUST follow Conventional Commits format.
 8. Output JSON must include: action, rootCause, reasoning, severity, proposedPatch, targetManifestPath, commitMessage, rollbackSafe, and optionally helmChart, targetRepo.
+9. When retrievedPlaybook is present in facts, align remediation with that official runbook; do not invent steps outside it unless action is escalate_human.
 Do not add conversational text outside the JSON object.`;
 
 function systemPrompt(): string {
@@ -179,6 +182,9 @@ function buildUserPrompt(ctx: DiagnosisContext): string {
     specialistDiagnostics: ctx.specialistDiagnostics ?? null,
     rcaPointers: ctx.rcaPointers ?? null,
     observabilitySummary: ctx.observabilitySummary ?? null,
+    retrievedPlaybook: ctx.retrievedPlaybook ?? null,
+    detectedErrorSignature: ctx.detectedErrorSignature ?? null,
+    targetComponent: ctx.targetComponent ?? null,
   };
 
   return `Here are the structured cluster facts for incident ${ctx.incidentId}:
@@ -187,7 +193,7 @@ function buildUserPrompt(ctx: DiagnosisContext): string {
 ${JSON.stringify(facts, null, 2)}
 \`\`\`
 
-${ctx.observabilitySummary ? `Multi-source RCA summary:\n${ctx.observabilitySummary}\n\n` : ''}Analyze these facts and all RCA pointers. Cross-reference events, logs, and metrics before choosing root cause. Remember: only use information from the facts above.`;
+${ctx.retrievedPlaybook ? `## OFFICIAL RUNBOOK (mandatory grounding)\n${ctx.retrievedPlaybook}\n\n` : ''}${ctx.observabilitySummary ? `Multi-source RCA summary:\n${ctx.observabilitySummary}\n\n` : ''}Analyze these facts and all RCA pointers. Cross-reference events, logs, and metrics before choosing root cause. Remember: only use information from the facts above.`;
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -207,9 +213,11 @@ function validateRemediationPlan(obj: unknown): RemediationPlan {
   }
 
   const validSeverities = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
-  if (!validSeverities.includes(plan['severity'] as string)) {
+  const severityRaw = String(plan['severity']).trim().toUpperCase();
+  if (!validSeverities.includes(severityRaw)) {
     throw new Error(`Invalid severity value: ${plan['severity']}`);
   }
+  plan['severity'] = severityRaw;
 
   if (!Array.isArray(plan['proposedPatch'])) {
     throw new Error('proposedPatch must be an array');

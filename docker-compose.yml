@@ -25,6 +25,7 @@ volumes:
   gitops-mirror:
   run-data:
   postgres-data:
+  rag-postgres-data:
   hil-data:
 
 services:
@@ -51,6 +52,60 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  rag-postgres:
+    image: pgvector/pgvector:pg16
+    networks: [sre-net]
+    environment:
+      POSTGRES_USER: sre
+      POSTGRES_PASSWORD: sre
+      POSTGRES_DB: sre_rag
+    volumes:
+      - rag-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U sre -d sre_rag']
+      interval: 5s
+      timeout: 5s
+      retries: 8
+
+  platform-agent:
+    container_name: sre-bot-platform
+    build:
+      context: .
+      dockerfile: sre-agent-platform/Dockerfile
+    env_file:
+      - .env.local
+    networks: [sre-net]
+    depends_on:
+      rag-postgres:
+        condition: service_healthy
+    ports:
+      - "8090:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+    environment:
+      - SRE_RAG_DATABASE_URL=postgresql://sre:sre@rag-postgres:5432/sre_rag
+      - SRE_RAG_ENABLED=true
+      - SRE_RAG_AUTO_MIGRATE=true
+      - SRE_RAG_LEARNING=${SRE_RAG_LEARNING:-true}
+      - SRE_ROUTER_ENCODER=openai
+      - SRE_EMBEDDING_PROVIDER=openai
+      - SRE_ROUTER_SCORE_THRESHOLD=${SRE_ROUTER_SCORE_THRESHOLD:-0.70}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
 
   # Optional: in-compose kubectl proxy. Default stack uses host.containers.internal instead
   # (Podman Desktop API e.g. https://127.0.0.1:50750 on the Mac).
@@ -119,6 +174,7 @@ services:
       - security-agent
       - gitops-agent
       - redis
+      - platform-agent
     healthcheck: *agent-healthcheck
     environment:
       - PORT=8080
@@ -146,6 +202,12 @@ services:
       - REDIS_URL=redis://redis:6379
       - CHAT_SESSION_BACKEND=${CHAT_SESSION_BACKEND:-redis}
       - CHAT_SESSION_TTL_SECONDS=${CHAT_SESSION_TTL_SECONDS:-604800}
+      - SRE_AGENT_MODE=${SRE_AGENT_MODE:-classic}
+      - COMMANDER_ROUTING_MODE=${COMMANDER_ROUTING_MODE:-}
+      - CASE_STORE_BACKEND=${CASE_STORE_BACKEND:-redis}
+      - CASE_TTL_SECONDS=${CASE_TTL_SECONDS:-604800}
+      - SRE_PLATFORM_URL=http://platform-agent:8080
+      - SRE_PLATFORM_ROUTING=${SRE_PLATFORM_ROUTING:-true}
 
   investigator-agent:
     container_name: sre-bot-investigator
@@ -172,6 +234,8 @@ services:
       - PROMETHEUS_URL=${PROMETHEUS_URL:-}
       - DEEP_RCA_ENABLED=${DEEP_RCA_ENABLED:-true}
       - KUBECONFIG=/tmp/kube/config
+      - SRE_AGENT_MODE=${SRE_AGENT_MODE:-classic}
+      - INVESTIGATE_GATHER_MODE=${INVESTIGATE_GATHER_MODE:-}
     volumes:
       - ~/.kube:/root/.kube:ro
       - ~/.ssh:/root/.ssh:ro
@@ -198,6 +262,10 @@ services:
       - CIRCUIT_BREAKER_LIMIT=3
       - CICD_SKILLS_DIR=/data/skills
       - KUBECONFIG=/tmp/kube/config
+      - SRE_AGENT_MODE=${SRE_AGENT_MODE:-classic}
+      - AGENTIC_LLM_TOOL_SELECT=${AGENTIC_LLM_TOOL_SELECT:-}
+      - AGENTIC_LLM_REFLECT=${AGENTIC_LLM_REFLECT:-}
+      - SKILLS_DIR=/data/skills
     volumes:
       - ~/.kube:/root/.kube:ro
       - ./skills:/data/skills:ro
@@ -215,6 +283,7 @@ services:
       - security-agent
       - cicd-agent
       - coding-agent
+      - platform-agent
     healthcheck: *agent-healthcheck
     environment:
       - PORT=8080
@@ -231,7 +300,7 @@ services:
       - AUTONOMY_MAX_ITERATIONS=5
       - DATABASE_URL=postgresql://sre:sre@postgres:5432/sre_runs
       - RUN_STORE_BACKEND=postgres
-      - USE_CAPABILITY_PLANNER=false
+      - USE_CAPABILITY_PLANNER=${USE_CAPABILITY_PLANNER:-}
       - PER_TOOL_HIL=false
       - FAILURE_ANALYSIS_ENABLED=${FAILURE_ANALYSIS_ENABLED:-true}
       - CI_CODE_FIX_ENABLED=${CI_CODE_FIX_ENABLED:-true}
@@ -239,6 +308,16 @@ services:
       - CODING_AGENT_ENABLED=${CODING_AGENT_ENABLED:-true}
       - CODING_AGENT_MAX_ITERATIONS=${CODING_AGENT_MAX_ITERATIONS:-5}
       - CONVERSATIONAL_NARRATE=${CONVERSATIONAL_NARRATE:-true}
+      - SRE_AGENT_MODE=${SRE_AGENT_MODE:-classic}
+      - ORCHESTRATOR_GRAPH_MODE=${ORCHESTRATOR_GRAPH_MODE:-}
+      - INVESTIGATE_GATHER_MODE=${INVESTIGATE_GATHER_MODE:-}
+      - AGENTIC_MAX_TURNS=${AGENTIC_MAX_TURNS:-12}
+      - AGENTIC_MAX_READ_TOOLS=${AGENTIC_MAX_READ_TOOLS:-20}
+      - AGENTIC_LLM_TOOL_SELECT=${AGENTIC_LLM_TOOL_SELECT:-}
+      - AGENTIC_LLM_REFLECT=${AGENTIC_LLM_REFLECT:-}
+      - SRE_PLATFORM_URL=http://platform-agent:8080
+      - SRE_RAG_GROUNDING=${SRE_RAG_GROUNDING:-true}
+      - SRE_RAG_LEARNING=${SRE_RAG_LEARNING:-true}
     volumes:
       - run-data:/data/runs
 
@@ -290,6 +369,7 @@ services:
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
       - SLACK_ALERT_CHANNEL=${SLACK_ALERT_CHANNEL}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ALERT_CHAT_ID=${TELEGRAM_ALERT_CHAT_ID:-}
       - ORCHESTRATOR_URL=http://orchestrator-agent:8080
       - COMMANDER_URL=http://commander-agent:8080
       - IGNORE_STORE_PATH=/data/ignored-resources.json

@@ -24,6 +24,15 @@ const TELEGRAM_ALERT_CHAT_ID = process.env['TELEGRAM_ALERT_CHAT_ID'] ?? '';
 const TELEGRAM_SEND_GAP_MS   = parseInt(process.env['TELEGRAM_SEND_GAP_MS'] ?? '350', 10);
 const TELEGRAM_SEND_RETRIES  = parseInt(process.env['TELEGRAM_SEND_RETRIES'] ?? '3', 10);
 
+/** Alert channel, or the Telegram chat that started the run (DM). */
+function resolveTelegramChatId(request: ApprovalRequest): string | null {
+  if (TELEGRAM_ALERT_CHAT_ID.trim()) return TELEGRAM_ALERT_CHAT_ID.trim();
+  if (request.platform === 'telegram' && request.channelId?.trim()) {
+    return request.channelId.trim();
+  }
+  return null;
+}
+
 /** Serialize outbound Telegram sends to avoid rate-limit / socket hang up bursts. */
 let sendChain: Promise<void> = Promise.resolve();
 
@@ -71,7 +80,7 @@ async function sendTelegramWithRetry(
 let bot: Telegraf | null = null;
 
 function getBot(): Telegraf | null {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_ALERT_CHAT_ID) return null;
+  if (!TELEGRAM_BOT_TOKEN) return null;
   if (bot) return bot;
 
   bot = new Telegraf(TELEGRAM_BOT_TOKEN);
@@ -158,14 +167,16 @@ function getBot(): Telegraf | null {
 export async function startTelegram(): Promise<void> {
   const b = getBot();
   if (!b) {
-    log('warn', AGENT, 'Telegram not configured — TELEGRAM_BOT_TOKEN or TELEGRAM_ALERT_CHAT_ID missing');
+    log('warn', AGENT, 'Telegram not configured — TELEGRAM_BOT_TOKEN missing');
     return;
   }
 
   // We do not call b.launch() here because commander-agent handles the long-polling loop
   // for the same Telegram bot token to avoid 409 Conflict error. HIL agent operates
   // in push-only mode to send alert messages.
-  log('info', AGENT, 'Telegram notifications active (push-only mode)');
+  log('info', AGENT, 'Telegram notifications active (push-only mode)', {
+    alertChatConfigured: !!TELEGRAM_ALERT_CHAT_ID.trim(),
+  });
 }
 
 /**
@@ -176,14 +187,18 @@ export async function notifyTelegram(
   opts?: { prefix?: string }
 ): Promise<void> {
   const b = getBot();
-  if (!b) {
+  const chatId = resolveTelegramChatId(request);
+  if (!b || !chatId) {
     log('warn', AGENT, 'Telegram not configured — skipping notification', {
       incidentId: request.incidentId,
+      hasBotToken: !!TELEGRAM_BOT_TOKEN,
+      alertChatId: TELEGRAM_ALERT_CHAT_ID || null,
+      originPlatform: request.platform,
+      originChannelId: request.channelId,
     });
     return;
   }
 
-  const chatId = TELEGRAM_ALERT_CHAT_ID;
   const {
     plan,
     incidentId,
@@ -275,5 +290,35 @@ export async function notifyTelegram(
       incidentId,
       error: String(err),
     });
+    // Fallback: plain text without MarkdownV2 (special chars in rootCause often break parsing).
+    try {
+      const plain =
+        `${opts?.prefix ?? ''}Approval required: ${resourceKind}/${resourceName} in ${namespace}\n` +
+        `Action: ${plan.action}\n` +
+        `${plan.rootCause.slice(0, 300)}\n\n` +
+        `Incident: ${incidentId}`;
+      await sendTelegramWithRetry(
+        () =>
+          b!.telegram.sendMessage(chatId, plain, {
+            ...Markup.inlineKeyboard([
+              [
+                Markup.button.callback('✅ Approve', `hil_approve_${incidentId}`),
+                Markup.button.callback('❌ Reject', `hil_reject_${incidentId}`),
+              ],
+              [
+                Markup.button.callback('🔕 Ignore', `hil_ignore_${incidentId}`),
+                Markup.button.callback('✏️ Suggest fix', `hil_suggest_${incidentId}`),
+              ],
+            ]),
+          }),
+        incidentId
+      );
+      log('info', AGENT, 'Telegram plain-text fallback sent', { incidentId, chatId });
+    } catch (fallbackErr) {
+      log('error', AGENT, 'Telegram plain-text fallback failed', {
+        incidentId,
+        error: String(fallbackErr),
+      });
+    }
   }
 }

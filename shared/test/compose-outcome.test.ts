@@ -28,4 +28,18 @@ const notFound = formatCommandOutcomeFallback({
 assert.match(notFound, /couldn't find/i);
 assert.match(notFound, /appache/i);
 
+const unreachableCluster = formatCommandOutcomeFallback({
+  kind: 'health',
+  data: {
+    label: 'the cluster',
+    summary: 'Cannot connect to the Kubernetes API — the cluster may be stopped.',
+    warnings: [],
+    deployments: [],
+    clusterReachable: false,
+  },
+});
+
+assert.match(unreachableCluster, /can't reach/i);
+assert.match(unreachableCluster, /cluster may be stopped/i);
+
 console.log('compose-outcome.test.ts: ok');

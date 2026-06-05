@@ -17,9 +17,13 @@ import {
   type ParsedCommand,
 } from './parser.js';
 import { commandIntentToParsed, helpIntentReply } from './intent-mapper.js';
+import { enrichInvestigateImageHint } from './investigate-image-enrich.js';
 import { tryDeployBranchFollowUp, tryNamespaceCreateFollowUp, tryStatusFollowUp } from './conversation.js';
 import { tryPrefFollowUp } from './channel-prefs.js';
 import { trySessionFollowUp } from './session-followups.js';
+import { tryResumeCaseWithHint } from './case-manager.js';
+import { tryPlatformSemanticRoute } from './semantic-platform.js';
+import { resolveAgentMode } from '../../../shared/src/agent-mode.js';
 import { isHelpQuery, HELP_MESSAGE } from './help.js';
 import { getChatTranscriptForLlm } from './chat-transcript.js';
 import { getSession } from './sessions.js';
@@ -175,10 +179,24 @@ export async function routeMessage(
     return withReply({ type: 'unknown' }, 1, { intent: 'help', userReply: HELP_MESSAGE });
   }
 
+  const platformRoute = await tryPlatformSemanticRoute(text, platform, userId);
+  if (platformRoute) {
+    return platformRoute;
+  }
+
   if (channelId) {
-    const prefReply = tryPrefFollowUp(platform, channelId, text);
-    if (prefReply) {
-      return withReply({ type: 'unknown' }, 1, { userReply: prefReply });
+    const caseResume = await tryResumeCaseWithHint(text, platform, channelId, userId);
+    if (caseResume) {
+      return withReply(caseResume.parsed, 0.93, { userReply: caseResume.reply });
+    }
+
+    const routingMode = resolveAgentMode().routingMode;
+
+    if (routingMode !== 'llm_only') {
+      const prefReply = tryPrefFollowUp(platform, channelId, text);
+      if (prefReply) {
+        return withReply({ type: 'unknown' }, 1, { userReply: prefReply });
+      }
     }
 
     const sessionFollow = await trySessionFollowUp(text, platform, channelId, userId);
@@ -189,28 +207,36 @@ export async function routeMessage(
       return withReply(sessionFollow.parsed, 0.92, { userReply: sessionFollow.reply });
     }
 
-    const nsDeploy = await tryNamespaceCreateFollowUp(platform, channelId, userId, text);
-    if (nsDeploy) {
-      return withReply(nsDeploy, 0.95, {
-        userReply: `Got it — I'll create namespace \`${nsDeploy.namespace}\` and continue the deploy.`,
-      });
-    }
-    const branchDeploy = await tryDeployBranchFollowUp(platform, channelId, userId, text);
-    if (branchDeploy) {
-      return withReply(branchDeploy, 0.95, {
-        userReply: `Got it — retrying deploy on branch \`${branchDeploy.gitRef}\`.`,
-      });
-    }
-    const statusReply = await tryStatusFollowUp(platform, channelId, userId, text);
-    if (statusReply) {
-      return withReply({ type: 'unknown' }, 0.9, { userReply: statusReply });
+    if (routingMode !== 'llm_only') {
+      const nsDeploy = await tryNamespaceCreateFollowUp(platform, channelId, userId, text);
+      if (nsDeploy) {
+        return withReply(nsDeploy, 0.95, {
+          userReply: `Got it — I'll create namespace \`${nsDeploy.namespace}\` and continue the deploy.`,
+        });
+      }
+      const branchDeploy = await tryDeployBranchFollowUp(platform, channelId, userId, text);
+      if (branchDeploy) {
+        return withReply(branchDeploy, 0.95, {
+          userReply: `Got it — retrying deploy on branch \`${branchDeploy.gitRef}\`.`,
+        });
+      }
+      const statusReply = await tryStatusFollowUp(platform, channelId, userId, text);
+      if (statusReply) {
+        return withReply({ type: 'unknown' }, 0.9, { userReply: statusReply });
+      }
     }
   }
 
   const llmAvailable = commanderLlmAvailable();
-  const fast = parseRegexFastPath(text);
+  const routingMode = resolveAgentMode().routingMode;
+  const fast = routingMode === 'llm_only' && !/^\s*\//.test(text) ? null : parseRegexFastPath(text);
   if (fast && !shouldBypassFastPath(text, fast, llmAvailable)) {
-    return withReply(fast, 0.95);
+    const transcript = channelId ? await getChatTranscriptForLlm(platform, channelId, userId) : [];
+    const enriched =
+      fast.type === 'investigate' && llmAvailable
+        ? await enrichInvestigateImageHint(fast, text, userId, { transcript })
+        : fast;
+    return withReply(enriched, 0.95);
   }
 
   const session = channelId ? await getSession(platform, channelId, userId) : undefined;
@@ -242,18 +268,22 @@ export async function routeMessage(
 
       const parsed = commandIntentToParsed(intent, text);
       if (parsed) {
+        const enriched =
+          parsed.type === 'investigate'
+            ? await enrichInvestigateImageHint(parsed, text, userId, { transcript })
+            : parsed;
         const ack =
           intent.userReply ||
-          (parsed.type === 'deploy'
-            ? `Starting deploy for ${parsed.githubRepo || parsed.appName || 'your app'}.`
-            : parsed.type === 'investigate'
-              ? `Investigating ${parsed.label}…`
-              : parsed.type === 'workload-status'
-                ? `Checking ${parsed.label}…`
-                : parsed.type === 'ci-failure'
-                  ? `Triaging CI for ${parsed.githubRepo.replace(/^github\.com\//, '')}…`
+          (enriched.type === 'deploy'
+            ? `Starting deploy for ${enriched.githubRepo || enriched.appName || 'your app'}.`
+            : enriched.type === 'investigate'
+              ? `Investigating ${enriched.label}…`
+              : enriched.type === 'workload-status'
+                ? `Checking ${enriched.label}…`
+                : enriched.type === 'ci-failure'
+                  ? `Triaging CI for ${enriched.githubRepo.replace(/^github\.com\//, '')}…`
                   : undefined);
-        return withReply(parsed, intent.confidence, { intent: intent.intent, userReply: ack });
+        return withReply(enriched, intent.confidence, { intent: intent.intent, userReply: ack });
       }
 
       if (intent.intent === 'deploy') {
@@ -336,7 +366,9 @@ const UNIFIED_INTENT_SYSTEM = `You are the intent router for an SRE chatbot. Rep
   "getResource": "namespaces|pods|deployments|nodes|services|events",
   "githubRepo": "github.com/org/repo if deploy/ci/rollback",
   "gitRef": "branch/tag if specified else empty",
-  "deployStrategy": "gitops" | "direct"
+  "deployStrategy": "gitops" | "direct",
+  "containerImage": "full OCI ref (registry/org/repo:tag) when user specifies an image, else empty",
+  "operatorSuggestion": "set image to <containerImage> when user wants an image fix, else empty"
 }
 Rules:
 - Prior conversation turns and activeTopic (if provided) are context — resolve it/that/also/the same from them
@@ -345,6 +377,10 @@ Rules:
 - delete/remove/uninstall → intent delete (never get)
 - ci-failure when user asks about failed CI/workflows/builds; set githubRepo when known
 - fix/change image on a deployment → investigate workload, not deploy
+- Names ending in -system or -operator-system (e.g. frappe-operator-system) are Kubernetes **namespaces**, not deployment names — set namespace, derive workloadHint (e.g. frappe-operator)
+- ghcr/ghcr.io image hints → investigate; set containerImage to the full expanded ref and operatorSuggestion "set image to …"
+- Expand image shorthand using workloadHint: "vyogotech ghcr latest" + frappe-operator → ghcr.io/vyogotech/frappe-operator:latest
+- Informal phrasing ("pull the newest tag from GHCR", "bump to v2.1") → still set containerImage when intent is clear
 - investigate cluster health → investigateScope cluster
 - "is app running" / "is X up in namespace Y" → intent workload-status (NOT investigate); set workloadHint + namespace
 - "is app running in any/all namespaces" → workload-status; never use "any" as namespace name — leave namespace empty or use scope words

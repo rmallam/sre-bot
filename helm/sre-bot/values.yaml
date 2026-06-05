@@ -1,5 +1,5 @@
-# Default values for sre-bot.
-# Images are built by GitHub Actions → ghcr.io/<owner>/sre-bot-<agent>:<tag>
+# Default values for sre-bot — parity with docker-compose.yml
+# Images: ghcr.io/<owner>/sre-bot-<agent>:<tag> (platform: sre-bot-platform)
 
 global:
   imageRegistry: ghcr.io
@@ -7,20 +7,21 @@ global:
   imageTag: main
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
-  # e.g. [{ name: ghcr-credentials }]
 
 namespace:
   create: true
   name: sre-bot-system
 
-# Set secrets.create=false and secrets.existingSecret when using an external Secret
 secrets:
   create: true
   existingSecret: ""
-  geminiApiKey: ""
   openrouterApiKey: ""
+  geminiApiKey: ""
+  openaiApiKey: ""
   gitopsRepoUrl: ""
   githubToken: ""
+  deployAppRepoWriteToken: ""
+  githubWebhookSecret: ""
   allowedUsers: ""
   slackBotToken: ""
   slackAppToken: ""
@@ -30,13 +31,14 @@ secrets:
   telegramAlertChatId: ""
   argocdUrl: ""
   argocdToken: ""
-  # SSH private key for git clone (investigator + gitops)
   gitSshPrivateKey: ""
   gitSshKnownHosts: |
     github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
 
 crd:
   install: true
+
+# ── Infrastructure (postgres, redis, rag-postgres) ─────────────────────────────
 
 postgres:
   enabled: true
@@ -51,23 +53,83 @@ postgres:
     storageClass: ""
 
 redis:
-  enabled: false
+  enabled: true
   image: redis:7-alpine
 
+ragPostgres:
+  enabled: true
+  image: pgvector/pgvector:pg16
+  auth:
+    username: sre
+    password: sre
+    database: sre_rag
+  persistence:
+    enabled: true
+    size: 4Gi
+    storageClass: ""
+
 runStore:
-  # postgres | redis | file
   backend: postgres
+
+session:
+  chatBackend: redis
+  chatTtlSeconds: 604800
+  caseBackend: redis
+  caseTtlSeconds: 604800
+
+# Optional ConfigMap mounted at /data/skills (brain + coding-agent)
+skills:
+  configMapName: ""
+
+# ── Agent behaviour (compose env parity) ───────────────────────────────────────
+
+llm:
+  provider: openrouter
+  openrouter:
+    brainModel: anthropic/claude-sonnet-4
+    commanderModel: google/gemini-2.5-flash
+  gemini:
+    brainModel: gemini-2.5-pro
+    commanderModel: gemini-2.5-flash
+
+agentMode:
+  sreAgentMode: classic
+  commanderRoutingMode: ""
+  orchestratorGraphMode: ""
+  investigateGatherMode: ""
+  agenticMaxTurns: "12"
+  agenticMaxReadTools: "20"
+  agenticLlmToolSelect: ""
+  agenticLlmReflect: ""
+  platformRouting: true
+  ragGrounding: true
+  ragLearning: true
+
+commander:
+  useOrchestrator: true
+  conversationalNarrate: true
+  conversationalNarrateLlm: true
+  githubWebhookNotifyPlatform: telegram
+  githubWebhookNotifyChannelId: ""
 
 orchestrator:
   autonomyMode: low_risk_only
   maxIterations: 5
-  useCapabilityPlanner: false
+  useCapabilityPlanner: ""
   perToolHil: false
   registryDryRun: "true"
+  failureAnalysisEnabled: true
+  ciCodeFixEnabled: true
+  ciClassifyLlm: true
+  codingAgentEnabled: true
+  codingAgentMaxIterations: 5
 
 investigator:
   safeMode: true
   gitSyncIntervalSeconds: 60
+  deepRcaEnabled: true
+  lokiUrl: ""
+  prometheusUrl: ""
 
 watcher:
   cooldownMinutes: 2
@@ -79,20 +141,12 @@ gitops:
   deployPushAppRepo: true
   deployPushGitops: true
   usePr: false
+  patchMode: cluster
+  directDeployDryRun: false
   persistence:
     enabled: true
     size: 2Gi
     storageClass: ""
-
-# LLM: OpenRouter multi-model (Holmes-style modelList). See docs/LLM-AND-MCP.md
-llm:
-  provider: openrouter
-  openrouter:
-    brainModel: anthropic/claude-sonnet-4
-    commanderModel: google/gemini-2.5-flash
-  gemini:
-    brainModel: gemini-2.5-pro
-    commanderModel: gemini-2.0-flash
 
 brain:
   circuitBreakerLimit: 3
@@ -104,10 +158,23 @@ security:
   blockOnFindings: true
   maxLogBytes: 16384
 
-commander:
-  useOrchestrator: true
+codingAgent:
+  enabled: true
+  maxIterations: 5
 
-# Per-agent toggles and resources
+platform:
+  ragEnabled: true
+  ragAutoMigrate: true
+  routerEncoder: openai
+  embeddingProvider: openai
+  routerScoreThreshold: "0.70"
+  openrouterBaseUrl: https://openrouter.ai/api/v1
+  openaiBaseUrl: ""
+  imageRepository: sre-bot-platform
+  ragDatabaseUrl: ""
+
+# ── Per-agent deploy toggles ─────────────────────────────────────────────────
+
 agents:
   watcher:
     enabled: true
@@ -163,22 +230,60 @@ agents:
     resources:
       requests: { cpu: 50m, memory: 128Mi }
       limits: { cpu: 200m, memory: 256Mi }
+  platform:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 100m, memory: 512Mi }
+      limits: { cpu: 1000m, memory: 1Gi }
+  console:
+    enabled: true
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 300m, memory: 256Mi }
+  cicd:
+    enabled: true
+    replicas: 1
+    imageName: cicd
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 300m, memory: 256Mi }
+  coding:
+    enabled: true
+    replicas: 1
+    imageRepository: sre-bot-coding-agent
+    resources:
+      requests: { cpu: 50m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
 
-# Optional external access (LoadBalancer / NodePort / Ingress)
+# ── Services (compose host ports in comments) ────────────────────────────────
+
 service:
   commander:
     type: ClusterIP
-    port: 8080
+    port: 8080 # compose 8081
   orchestrator:
     type: ClusterIP
-    port: 8080
+    port: 8080 # compose 8084
   hil:
     type: ClusterIP
-    port: 8080
+    port: 8080 # compose 8085
+  platform:
+    type: ClusterIP
+    port: 8080 # compose 8090
+  console:
+    type: ClusterIP
+    port: 8080 # compose 8091
 
 ingress:
   hil:
     enabled: false
     className: nginx
-    host: sre-bot.example.com
+    host: hil.example.com
+    annotations: {}
+  console:
+    enabled: false
+    className: nginx
+    host: console.example.com
     annotations: {}

@@ -11,10 +11,29 @@ const MAX_DEPLOYMENTS = 12;
 export function formatHealthInvestigationReport(
   facts: Pick<
     DiagnosisContext,
-    'currentLogs' | 'recentEvents' | 'existingDeployments' | 'namespace' | 'rcaPointers' | 'observabilitySummary'
+    | 'currentLogs'
+    | 'recentEvents'
+    | 'existingDeployments'
+    | 'namespace'
+    | 'rcaPointers'
+    | 'observabilitySummary'
+    | 'clusterReachable'
   >,
   label: string
 ): string {
+  if (facts.clusterReachable === false) {
+    const reason =
+      facts.currentLogs?.trim() ??
+      'The Kubernetes API is unreachable or returned no nodes.';
+    return [
+      `⚠️ ${label}`,
+      '',
+      reason,
+      '',
+      'Start or reconnect the cluster, then ask again.',
+    ].join('\n');
+  }
+
   const lines: string[] = [`📊 ${label}`, ''];
 
   const summary = facts.currentLogs?.trim();

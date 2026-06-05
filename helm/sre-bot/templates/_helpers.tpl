@@ -37,6 +37,12 @@ sre-bot/agent: {{ .agent }}
 {{- printf "%s/%s/sre-bot-%s:%s" $root.Values.global.imageRegistry $root.Values.global.imageOwner $agent $root.Values.global.imageTag }}
 {{- end }}
 
+{{- define "sre-bot.customImage" -}}
+{{- $repo := .repository -}}
+{{- $root := .root -}}
+{{- printf "%s/%s/%s:%s" $root.Values.global.imageRegistry $root.Values.global.imageOwner $repo $root.Values.global.imageTag }}
+{{- end }}
+
 {{- define "sre-bot.serviceUrl" -}}
 {{- printf "http://%s-agent.%s.svc.cluster.local:8080" .agent (include "sre-bot.namespace" .root) }}
 {{- end }}
@@ -63,6 +69,16 @@ imagePullSecrets:
 
 {{- define "sre-bot.redisUrl" -}}
 {{- printf "redis://redis.%s.svc.cluster.local:6379" (include "sre-bot.namespace" .) }}
+{{- end }}
+
+{{- define "sre-bot.ragDatabaseUrl" -}}
+{{- if .Values.platform.ragDatabaseUrl -}}
+{{- .Values.platform.ragDatabaseUrl -}}
+{{- else -}}
+{{- $rag := .Values.ragPostgres.auth -}}
+{{- $ns := include "sre-bot.namespace" . -}}
+{{- printf "postgresql://%s:%s@rag-postgres.%s.svc.cluster.local:5432/%s" $rag.username $rag.password $ns $rag.database -}}
+{{- end -}}
 {{- end }}
 
 {{- define "sre-bot.livenessProbe" -}}

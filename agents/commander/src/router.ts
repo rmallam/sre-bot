@@ -12,9 +12,17 @@ import { syncActiveTopicFromCommand } from './active-topic.js';
 import { getChannelPref } from './channel-prefs.js';
 import { composeUserReply } from './compose-outcome.js';
 import { formatRcaPointersForPlan } from '../../../shared/src/rca-pointers.js';
+import { subjectFromInvestigate, subjectFromDeploy } from '../../../shared/src/agent-case.js';
+import { resolveAgentMode } from '../../../shared/src/agent-mode.js';
+import {
+  openOrResumeCase,
+  bindRunToCase,
+  operatorMessageFromCase,
+} from './case-manager.js';
 
 const AGENT = 'commander-agent';
 const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
+const HIL_URL = process.env['HIL_URL'] ?? 'http://hil-agent:8080';
 const USE_ORCHESTRATOR = (process.env['USE_ORCHESTRATOR'] ?? 'true').toLowerCase() === 'true';
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 const GITOPS_URL = process.env['GITOPS_URL'] ?? 'http://gitops-agent:8080';
@@ -23,17 +31,55 @@ export interface CommandHandleResult {
   incidentId: string;
   /** Set for synchronous read-only cluster queries (no orchestrator run). */
   immediateReply?: string;
+  /** Inline Approve/Reject for Telegram when a HIL approval is still open. */
+  quickActions?: Array<{ id: string; label: string }>;
 }
 
-async function dispatchRun(payload: StartRunRequest, incidentId: string): Promise<void> {
+interface DispatchRunResult {
+  started: boolean;
+  deduplicated?: boolean;
+  existingRunId?: string;
+  existingIncidentId?: string;
+  existingStatus?: string;
+}
+
+async function dispatchRun(payload: StartRunRequest, incidentId: string): Promise<DispatchRunResult> {
   if (USE_ORCHESTRATOR) {
-    await postWithRetry({
-      url: `${ORCHESTRATOR_URL}/runs`,
-      payload,
-      incidentId,
-      callerAgent: AGENT,
+    const url = `${ORCHESTRATOR_URL}/runs`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
     });
-    return;
+    const data = (await res.json().catch(() => ({}))) as {
+      accepted?: boolean;
+      deduplicated?: boolean;
+      existingRunId?: string;
+      existingIncidentId?: string;
+      existingStatus?: string;
+      error?: string;
+    };
+    if (!res.ok) {
+      throw new Error(data.error ?? `Orchestrator rejected run (${res.status})`);
+    }
+    log('info', AGENT, data.deduplicated ? 'Run deduplicated' : 'POST OK', {
+      incidentId,
+      url,
+      deduplicated: data.deduplicated,
+      existingRunId: data.existingRunId,
+      existingStatus: data.existingStatus,
+    });
+    if (data.deduplicated) {
+      return {
+        started: false,
+        deduplicated: true,
+        existingRunId: data.existingRunId,
+        existingIncidentId: data.existingIncidentId,
+        existingStatus: data.existingStatus,
+      };
+    }
+    return { started: true };
   }
   if (payload.mode === 'pre-deploy') {
     await postWithRetry({
@@ -49,6 +95,49 @@ async function dispatchRun(payload: StartRunRequest, incidentId: string): Promis
       incidentId,
       callerAgent: AGENT,
     });
+  }
+  return { started: true };
+}
+
+function dedupeRunReply(result: DispatchRunResult, parsed: import('./parser.js').InvestigateCmd): string {
+  const runRef = result.existingRunId ?? result.existingIncidentId ?? 'existing run';
+  if (result.existingStatus === 'awaiting_human') {
+    const imageHint = parsed.operatorSuggestion ? `\nYour hint: \`${parsed.operatorSuggestion}\`.` : '';
+    return (
+      `⏸️ A fix for **${parsed.namespace}/${parsed.resourceName}** is waiting for your approval (\`${runRef}\`).` +
+      `${imageHint}\n\nUse **Approve/Reject** below, or reply **cancel run** to clear and start over.`
+    );
+  }
+  return (
+    `ℹ️ Already working on **${parsed.namespace}/${parsed.resourceName}** (\`${runRef}\`, status: ${result.existingStatus ?? 'active'}). ` +
+    `I'll update you when that run finishes.`
+  );
+}
+
+async function hilQuickActionsForRun(
+  incidentId?: string,
+  runId?: string
+): Promise<Array<{ id: string; label: string }> | undefined> {
+  if (!incidentId && !runId) return undefined;
+  try {
+    const res = await fetch(`${HIL_URL}/api/approvals`, { signal: AbortSignal.timeout(5_000) });
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as {
+      approvals?: Array<{ incidentId: string; runId?: string; status?: string }>;
+    };
+    const pending = (data.approvals ?? []).find(
+      (a) =>
+        a.status === 'PENDING' &&
+        (a.incidentId === incidentId || (runId && a.runId === runId))
+    );
+    if (!pending) return undefined;
+    return [
+      { id: `hil_approve_${pending.incidentId}`, label: '✅ Approve' },
+      { id: `hil_reject_${pending.incidentId}`, label: '❌ Reject' },
+      { id: `hil_suggest_${pending.incidentId}`, label: '✏️ Suggest fix' },
+    ];
+  } catch {
+    return undefined;
   }
 }
 
@@ -174,6 +263,7 @@ async function fetchHealthInvestigation(
       facts.observabilitySummary?.trim() ||
       formatRcaPointersForPlan(facts.rcaPointers ?? []).slice(0, 1200) ||
       undefined,
+    clusterReachable: facts.clusterReachable,
   };
 }
 
@@ -317,6 +407,18 @@ export async function handleCommand(
         parsed.appName ??
         (parsed.githubRepo ? parsed.githubRepo.split('/').pop() : undefined) ??
         'app';
+      const agentCase = await openOrResumeCase({
+        platform,
+        channelId,
+        userId,
+        subject: subjectFromDeploy({
+          namespace: parsed.namespace,
+          appName,
+          githubRepo: parsed.githubRepo || undefined,
+        }),
+        userHint: rawMessage,
+      });
+      const mode = resolveAgentMode();
       const payload: StartRunRequest = {
         incidentId,
         triggeredBy: 'commander',
@@ -335,11 +437,16 @@ export async function handleCommand(
         platform,
         channelId,
         rawMessage,
+        caseId: agentCase.caseId,
+        agentMode: mode.agentMode,
+        userHints: agentCase.evidence.userHints,
       };
       await dispatchRun(payload, incidentId);
+      await bindRunToCase(platform, channelId, userId, agentCase.caseId, incidentId);
       await setSession(platform, channelId, userId, {
         lastIncidentId: incidentId,
         lastMode: 'pre-deploy',
+        activeCaseId: agentCase.caseId,
       });
       void linkRunToSession(platform, channelId, userId, incidentId);
       await rememberDeployDraft(platform, channelId, userId, parsed);
@@ -373,6 +480,21 @@ export async function handleCommand(
         const text = await composeUserReply({ kind: 'health', data: health }, composeOpts);
         return { incidentId, immediateReply: text };
       }
+      const agentCase = await openOrResumeCase({
+        platform,
+        channelId,
+        userId,
+        subject: subjectFromInvestigate({
+          scope: parsed.scope,
+          namespace: parsed.namespace,
+          resourceName: parsed.resourceName,
+          resourceKind: parsed.resourceKind,
+          label: parsed.label,
+        }),
+        userHint: parsed.operatorSuggestion ?? rawMessage,
+      });
+      const opMsg = operatorMessageFromCase(agentCase, parsed.operatorSuggestion ?? rawMessage);
+      const mode = resolveAgentMode();
       const payload: StartRunRequest = {
         incidentId,
         triggeredBy: 'commander',
@@ -383,18 +505,34 @@ export async function handleCommand(
         mode: 'diagnose',
         podName: parsed.podName,
         eventReason: 'ManualInvestigation',
-        eventMessage: rawMessage,
+        eventMessage: opMsg,
         requestedBy: userId,
         platform,
         channelId,
-        rawMessage,
+        rawMessage: opMsg ?? rawMessage,
         investigateScope: parsed.scope,
         investigationLabel: parsed.label,
+        caseId: agentCase.caseId,
+        agentMode: mode.agentMode,
+        userHints: agentCase.evidence.userHints,
       };
-      await dispatchRun(payload, incidentId);
+      const dispatch = await dispatchRun(payload, incidentId);
+      if (dispatch.deduplicated) {
+        const quickActions = await hilQuickActionsForRun(
+          dispatch.existingIncidentId,
+          dispatch.existingRunId
+        );
+        return {
+          incidentId: dispatch.existingIncidentId ?? incidentId,
+          immediateReply: dedupeRunReply(dispatch, parsed),
+          quickActions,
+        };
+      }
+      await bindRunToCase(platform, channelId, userId, agentCase.caseId, incidentId);
       await setSession(platform, channelId, userId, {
         lastIncidentId: incidentId,
         lastMode: 'diagnose',
+        activeCaseId: agentCase.caseId,
       });
       void linkRunToSession(platform, channelId, userId, incidentId);
       break;

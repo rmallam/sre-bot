@@ -3,6 +3,7 @@ import type {
   PlanValidationRequest,
   PlanValidationResult,
 } from '../../../shared/src/types.js';
+import { assessGitPatchPreflight } from '../../../shared/src/git-patch-preflight.js';
 
 const PROD_NS = (process.env['SECURITY_PROD_NAMESPACES'] ?? 'production,prod')
   .split(',')
@@ -57,6 +58,25 @@ export async function validatePlanPreflight(
         severity: 'HIGH',
         message: 'Production data-store risk detected without backup/rollback mention',
       });
+    }
+  }
+
+  if (plan.action === 'git_patch') {
+    const patchCheck = assessGitPatchPreflight({
+      plan,
+      mode: req.mode,
+      resourceKind: req.resourceKind,
+      resourceName: req.resourceName,
+      facts: req.facts,
+    });
+    issues.push(...patchCheck.issues);
+    if (!patchCheck.allowed) {
+      return {
+        allowed: false,
+        requiresHumanApproval: true,
+        issues,
+        summary: patchCheck.summary,
+      };
     }
   }
 

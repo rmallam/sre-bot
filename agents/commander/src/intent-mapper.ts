@@ -17,13 +17,19 @@ import {
 } from './parser.js';
 import { isAllNamespacesScope, ALL_NAMESPACES } from '../../../shared/src/namespace-scope.js';
 import { HELP_MESSAGE } from './help.js';
+import {
+  extractOperatorNamespaceHint,
+  looksLikeKubernetesNamespace,
+  resolveOperatorSuggestion,
+  workloadHintFromNamespace,
+} from './investigate-target.js';
 
 export function commandIntentToParsed(intent: CommandIntent, text: string): ParsedCommand | null {
   switch (intent.intent) {
     case 'get':
       return intentGetToParsed(intent, text);
     case 'investigate':
-      return intentInvestigateToParsed(intent);
+      return intentInvestigateToParsed(intent, text);
     case 'deploy':
       return intentDeployToParsed(intent, text);
     case 'rollback': {
@@ -59,8 +65,9 @@ function intentGetToParsed(s: CommandIntent, text: string): ParsedCommand | null
   return rebuilt.type === 'get' ? rebuilt : null;
 }
 
-function intentInvestigateToParsed(s: CommandIntent): InvestigateCmd | null {
-  const scope = s.investigateScope ?? (s.workloadHint ? 'workload' : 'cluster');
+function intentInvestigateToParsed(s: CommandIntent, text: string): InvestigateCmd | null {
+  const opNs = extractOperatorNamespaceHint(text);
+  const scope = s.investigateScope ?? (s.workloadHint ? 'workload' : opNs ? 'namespace' : 'cluster');
   if (scope === 'cluster') {
     return {
       type: 'investigate',
@@ -70,23 +77,37 @@ function intentInvestigateToParsed(s: CommandIntent): InvestigateCmd | null {
       label: s.label ?? 'cluster health',
     };
   }
-  if (scope === 'namespace' && s.namespace) {
+  const ns = s.namespace?.trim() || opNs;
+  if (scope === 'namespace' && ns) {
     return {
       type: 'investigate',
       scope: 'namespace',
-      namespace: s.namespace,
+      namespace: ns,
       resourceName: '_namespace',
-      label: s.label ?? `${s.namespace} namespace`,
+      label: s.label ?? `${ns} namespace`,
     };
   }
-  if (s.workloadHint) {
+  if (s.workloadHint || opNs) {
+    let hint = s.workloadHint?.trim() ?? '';
+    if (!hint && opNs) hint = workloadHintFromNamespace(opNs);
+    if (hint && looksLikeKubernetesNamespace(hint) && opNs) {
+      hint = workloadHintFromNamespace(opNs);
+    }
+    const namespace = ns ?? (hint && looksLikeKubernetesNamespace(hint) ? hint : undefined) ?? 'default';
+    const imageSuggestion = resolveOperatorSuggestion({
+      text,
+      workloadHint: hint || undefined,
+      llmContainerImage: s.containerImage,
+      llmOperatorSuggestion: s.operatorSuggestion,
+    });
     return {
       type: 'investigate',
       scope: 'workload',
-      namespace: s.namespace ?? 'default',
-      resourceName: s.workloadHint,
-      workloadHint: s.workloadHint,
-      label: s.label ?? `${s.workloadHint} deployment`,
+      namespace: opNs ?? namespace,
+      resourceName: hint || '_unresolved',
+      workloadHint: hint || undefined,
+      label: s.label ?? (hint ? `${hint} deployment` : `${opNs} remediation`),
+      operatorSuggestion: imageSuggestion,
     };
   }
   return null;

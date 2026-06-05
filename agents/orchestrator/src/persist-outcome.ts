@@ -6,6 +6,7 @@ import type { ActionRecord, RemediationPlan, RunStatus } from '../../../shared/s
 import type { HumanDecision } from '../../../shared/src/remediation-outcome.js';
 import { buildRemediationOutcome } from '../../../shared/src/remediation-outcome.js';
 import { getRun, mergeRunMetadata } from './run-store.js';
+import { maybeSeedRagFromSuccessfulRun, type RagSeedContext } from './rag-seed-on-success.js';
 
 export async function persistRunOutcome(
   runId: string,
@@ -15,6 +16,7 @@ export async function persistRunOutcome(
     actionHistory?: ActionRecord[];
     plan?: RemediationPlan;
     humanDecision?: HumanDecision;
+    ragSeed?: RagSeedContext;
   }
 ): Promise<void> {
   const run = await getRun(runId);
@@ -39,6 +41,14 @@ export async function persistRunOutcome(
     lastError: params.lastError,
     humanDecision: params.humanDecision,
   });
+
+  if (outcome.worked === true) {
+    await maybeSeedRagFromSuccessfulRun(runId, {
+      ...params.ragSeed,
+      outcome,
+      plan,
+    }).catch(() => undefined);
+  }
 }
 
 export async function persistSuggestedPlan(

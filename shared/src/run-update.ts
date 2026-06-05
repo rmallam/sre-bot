@@ -24,6 +24,7 @@ export type RunUpdateKind =
   | 'coding_agent_handoff'
   | 'coding_agent_progress'
   | 'coding_agent_done'
+  | 'agent_step'
   | 'generic';
 
 export interface RunUpdateQuickAction {
@@ -76,7 +77,9 @@ export function defaultQuickActionsForUpdate(
     case 'hil_required':
       actions.push(
         { id: `hil_approve_${payload.incidentId}`, label: '✅ Approve' },
-        { id: `hil_reject_${payload.incidentId}`, label: '❌ Reject' }
+        { id: `hil_reject_${payload.incidentId}`, label: '❌ Reject' },
+        { id: `hil_suggest_${payload.incidentId}`, label: '✏️ Suggest fix' },
+        { id: `hil_ignore_${payload.incidentId}`, label: '🔕 Ignore' }
       );
       break;
     default:
@@ -180,6 +183,8 @@ export function formatRunUpdateFallback(payload: RunUpdatePayload): string {
       return payload.codingAgentPrUrl
         ? `PR ready: ${payload.codingAgentPrUrl}`
         : sanitizeUserFacingText(payload.technicalMessage ?? 'Code fixer finished.');
+    case 'agent_step':
+      return payload.progressStep ?? sanitizeUserFacingText(payload.technicalMessage ?? 'Investigating…');
     case 'generic':
     default:
       return sanitizeUserFacingText(payload.technicalMessage ?? 'Update from SRE bot.');
