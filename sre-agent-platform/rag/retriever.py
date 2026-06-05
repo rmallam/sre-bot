@@ -112,6 +112,47 @@ class RunbookRetriever:
         self._store = store or _default_store()
         self._embedder = embedder or _default_embedder()
 
+    def retrieve_many(
+        self,
+        *,
+        error_signature: str,
+        target_component: str,
+        query_text: str | None = None,
+        top_k: int = 3,
+    ) -> list[RunbookRecord]:
+        """Return top-k runbooks for brain prompt injection."""
+        embed_source = " ".join(
+            part
+            for part in (
+                (error_signature or "").strip(),
+                (query_text or "").strip(),
+            )
+            if part
+        )
+        if not embed_source:
+            return []
+
+        try:
+            embedding = self._embedder.embed(embed_source)
+        except Exception:
+            logger.exception("Embedding failed for query=%s", embed_source[:80])
+            return []
+
+        try:
+            return self._store.hybrid_search(
+                error_signature=error_signature,
+                target_component=target_component,
+                query_embedding=embedding,
+                top_k=top_k,
+            )
+        except Exception:
+            logger.exception(
+                "Runbook search failed component=%s signature=%s",
+                target_component,
+                error_signature,
+            )
+            return []
+
     def retrieve(
         self,
         *,

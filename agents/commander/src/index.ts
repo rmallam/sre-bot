@@ -115,6 +115,18 @@ async function start() {
           return;
         }
 
+        if (merged.kind === 'deploy_source_required' && merged.runId) {
+          const { armDeploySourceClarification } = await import('./deploy-source-followup.js');
+          await armDeploySourceClarification(platform, channelId, 'default', {
+            kind: 'deploy-source',
+            awaiting: 'deploySource',
+            prompt: text,
+            runId: merged.runId,
+            namespace: merged.namespace,
+            resourceName: merged.resourceName,
+          });
+        }
+
         await postNotify(platform, channelId, text, incidentId ?? 'N/A', actions);
         res.json({ ok: true });
         return;

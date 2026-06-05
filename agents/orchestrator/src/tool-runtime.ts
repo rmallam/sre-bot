@@ -10,6 +10,10 @@ import { getToolDefinition } from '../../../shared/src/tool-registry.js';
 import { log } from '../../../shared/src/http.js';
 import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
 import { waitForWorkloadReady } from '../../../shared/src/workload-readiness-wait.js';
+import {
+  scheduleCiPrVerifyWatch,
+  ciFixHeadBranch,
+} from '../../../shared/src/ci-pr-verify-watch.js';
 import { mergeRunMetadata } from './run-store.js';
 
 const AGENT = 'orchestrator-tool-runtime';
@@ -68,6 +72,28 @@ function idempotencyKey(incidentId: string, tool: string, attempt: number): stri
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function scheduleCiWatchAfterPr(
+  cmd: RemediateCommand,
+  result: { commitUrls?: string[]; headBranch?: string },
+  kind: 'code' | 'workflow',
+  ciRun?: import('../../../shared/src/ci-types.js').CiRunFacts
+): void {
+  const prUrl = result.commitUrls?.[0];
+  const branch = result.headBranch ?? ciFixHeadBranch(cmd.incidentId, kind);
+  const repo = cmd.plan.githubRepo ?? ciRun?.githubRepo;
+  if (!repo) return;
+  scheduleCiPrVerifyWatch({
+    githubRepo: repo,
+    branch,
+    workflowName: cmd.plan.cicd?.workflowName ?? ciRun?.workflowName,
+    incidentId: cmd.incidentId,
+    runId: cmd.runId,
+    platform: cmd.platform,
+    channelId: cmd.channelId,
+    prUrl,
+  });
 }
 
 const MUTATE_TOOLS = new Set(['gitops.apply_plan', 'executor.restart_workload']);
@@ -339,13 +365,22 @@ async function executeToolCallOnce(
         const body = await res.text();
         return { success: false, error: `cicd open-pr HTTP ${res.status}: ${body.slice(0, 400)}` };
       }
-      const result = (await res.json()) as { ok?: boolean; message?: string; prUrl?: string };
+      const result = (await res.json()) as {
+        ok?: boolean;
+        message?: string;
+        prUrl?: string;
+        headBranch?: string;
+      };
       const urls = result.prUrl ? [result.prUrl] : undefined;
-      return {
+      const toolResult = {
         success: result.ok !== false,
         summary: result.message ?? 'CI fix issue opened',
         commitUrls: urls,
       };
+      if (toolResult.success && urls?.length) {
+        scheduleCiWatchAfterPr(cmd, { commitUrls: urls, headBranch: result.headBranch }, 'workflow');
+      }
+      return toolResult;
     } catch (err) {
       return { success: false, error: String(err) };
     }
@@ -382,13 +417,22 @@ async function executeToolCallOnce(
         const body = await res.text();
         return { success: false, error: `cicd open-code-pr HTTP ${res.status}: ${body.slice(0, 400)}` };
       }
-      const result = (await res.json()) as { ok?: boolean; message?: string; prUrl?: string };
+      const result = (await res.json()) as {
+        ok?: boolean;
+        message?: string;
+        prUrl?: string;
+        headBranch?: string;
+      };
       const urls = result.prUrl ? [result.prUrl] : undefined;
-      return {
+      const toolResult = {
         success: result.ok !== false,
         summary: result.message ?? 'CI code fix PR opened',
         commitUrls: urls,
       };
+      if (toolResult.success && urls?.length) {
+        scheduleCiWatchAfterPr(cmd, { commitUrls: urls, headBranch: result.headBranch }, 'code');
+      }
+      return toolResult;
     } catch (err) {
       return { success: false, error: String(err) };
     }
@@ -452,6 +496,14 @@ async function executeToolCallOnce(
         };
         if (job.status === 'succeeded') {
           const urls = job.prUrl ? [job.prUrl] : undefined;
+          if (urls?.length) {
+            scheduleCiWatchAfterPr(
+              cmd,
+              { commitUrls: urls, headBranch: ciFixHeadBranch(cmd.incidentId, 'code') },
+              'code',
+              input.ciRun
+            );
+          }
           return {
             success: true,
             summary: job.summary ?? 'Coding agent opened fix PR',

@@ -150,8 +150,15 @@ STRICT RULES:
 9. When retrievedPlaybook is present in facts, align remediation with that official runbook; do not invent steps outside it unless action is escalate_human.
 Do not add conversational text outside the JSON object.`;
 
-function systemPrompt(): string {
-  return SYSTEM_PROMPT + skillsSystemAppendix();
+function systemPrompt(ctx?: DiagnosisContext): Promise<string> {
+  return skillsSystemAppendix({
+    mode: ctx?.mode,
+    namespace: ctx?.namespace,
+    resourceName: ctx?.resourceName,
+    errorSignature: ctx?.detectedErrorSignature,
+    rootCause: ctx?.recentEvents?.[0]?.message,
+    targetComponent: ctx?.targetComponent,
+  }).then((appendix) => SYSTEM_PROMPT + appendix);
 }
 
 // ── Prompt builder ────────────────────────────────────────────────────────────
@@ -316,7 +323,7 @@ export async function diagnose(ctx: DiagnosisContext): Promise<RemediationPlan> 
     rawText = await openRouterChat({
       model: llm.model,
       messages: [
-        { role: 'system', content: systemPrompt() },
+        { role: 'system', content: await systemPrompt(ctx) },
         { role: 'user', content: userPrompt },
       ],
       jsonMode: true,
@@ -334,7 +341,7 @@ export async function diagnose(ctx: DiagnosisContext): Promise<RemediationPlan> 
         },
       ],
       config: {
-        systemInstruction: systemPrompt(),
+        systemInstruction: await systemPrompt(ctx),
         responseMimeType: 'application/json',
         responseSchema: remediationPlanSchema,
         temperature: 0.1,

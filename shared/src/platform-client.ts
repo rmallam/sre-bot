@@ -51,6 +51,19 @@ export interface PlatformRagLearnResult {
   targetComponent: string;
 }
 
+export interface PlatformRagQueryHit {
+  errorSignature: string;
+  targetComponent: string;
+  playbookMarkdown: string;
+  similarity: number;
+}
+
+export interface PlatformRagQueryResult {
+  hits: PlatformRagQueryHit[];
+  combinedMarkdown: string;
+  found: boolean;
+}
+
 async function postJson<T>(path: string, body: unknown, incidentId: string): Promise<T | null> {
   if (!PLATFORM_URL) return null;
   const url = `${PLATFORM_URL}${path}`;
@@ -126,6 +139,49 @@ export async function platformRagGround(opts: {
     errorSignature: data.error_signature ?? opts.detectedError,
     targetComponent: data.target_component ?? opts.targetComponent,
     similarity: data.similarity ?? 0,
+    found: Boolean(data.found),
+  };
+}
+
+export async function platformRagQuery(opts: {
+  queryText: string;
+  targetComponent?: string;
+  errorSignature?: string;
+  topK?: number;
+  maxChars?: number;
+  incidentId?: string;
+}): Promise<PlatformRagQueryResult | null> {
+  if (!ragGroundingEnabled()) return null;
+  const data = await postJson<{
+    hits?: Array<{
+      error_signature?: string;
+      target_component?: string;
+      playbook_markdown?: string;
+      similarity?: number;
+    }>;
+    combined_markdown?: string;
+    found?: boolean;
+  }>(
+    '/rag/query',
+    {
+      query_text: opts.queryText,
+      target_component: opts.targetComponent ?? 'compute',
+      error_signature: opts.errorSignature ?? '',
+      top_k: opts.topK ?? 3,
+      max_chars: opts.maxChars ?? 4000,
+    },
+    opts.incidentId ?? 'rag-query'
+  );
+  if (!data) return null;
+  const hits = (data.hits ?? []).map((h) => ({
+    errorSignature: h.error_signature ?? '',
+    targetComponent: h.target_component ?? 'compute',
+    playbookMarkdown: h.playbook_markdown ?? '',
+    similarity: h.similarity ?? 0,
+  }));
+  return {
+    hits,
+    combinedMarkdown: data.combined_markdown ?? '',
     found: Boolean(data.found),
   };
 }

@@ -118,7 +118,7 @@ sequenceDiagram
 
 ### Coding agent responsibilities
 
-1. **Input:** `CiRunFacts`, repo slug, branch, optional `CICD_SKILLS_DIR` runbooks
+1. **Input:** `CiRunFacts`, repo slug, branch, ranked runbooks from platform RAG (`POST /rag/query`)
 2. **Workspace:** ephemeral clone (same pattern as investigator git-clone)
 3. **Loop:** plan → edit → `npm test` / `pytest` / workflow-defined command → read output
 4. **Output:** PR URL + short transcript for commander
@@ -139,13 +139,16 @@ sequenceDiagram
 
 ---
 
-## Phase 3 — Verify after fix
+## Phase 3 — Verify after fix ✅
 
-After PR merge or on same branch:
+After a code or workflow fix PR is opened:
 
-1. `cicd-agent` triggers `workflow_dispatch` or waits for push CI
-2. Poll run status
-3. Commander notifies: ✅ green or ❌ still failing
+1. `cicd-agent` watches the PR head branch (`POST /watch-pr-ci`)
+2. Polls GitHub Actions until success, failure, or timeout
+3. Commander notifies: ✅ CI passed or ❌ still failing
+4. On success, orchestrator records outcome + triggers skills auto-write + RAG learn
+
+**Env:** `CI_VERIFY_AFTER_PR=true`, `CI_VERIFY_INITIAL_DELAY_MS=45000`, `CI_VERIFY_POLL_MS=20000`, `CI_VERIFY_TIMEOUT_MS=1200000`
 
 ---
 
@@ -153,7 +156,7 @@ After PR merge or on same branch:
 
 For repos that build **custom agents** (Docker images, monorepos):
 
-- **Skills:** `skills/<repo>-agent.md` — layout, build command, test command
+- **Skills:** pgvector runbooks — bootstrap via `sre-agent-platform/scripts/bootstrap_rag.py` or learn loop on verified CI fixes
 - **Repo signals** in investigator: detect `agents/`, `Dockerfile`, `docker-compose` in workflow
 - Coding agent uses skill as system appendix (already pattern in `skills-loader.ts`)
 
@@ -176,7 +179,8 @@ Already partially shipped (`POST /webhooks/github`). Extend to:
 | `CODING_AGENT_URL` | Phase 2 worker base URL |
 | `CODING_AGENT_MAX_ITERATIONS` | Loop cap (default 5) |
 | `CODING_AGENT_AUTO` | Auto-handoff without extra chat confirm (default false) |
-| `CICD_SKILLS_DIR` | Team runbooks for brain + coding agent |
+| `SRE_RAG_GROUNDING` | Brain retrieves runbooks from pgvector before planning |
+| `SRE_RAG_LEARNING` | Orchestrator upserts verified fixes into pgvector |
 | `GITHUB_TOKEN` | Actions read + contents write + PRs |
 
 ---
@@ -187,7 +191,7 @@ Tracked in [PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md) Track C:
 
 - [x] **CI-1** Phase 1: `dependency_env`, `/repo-context`, `/plan-ci-fix`, `cicd_code_pr`
 - [x] **CI-2** Phase 2: `coding-agent` service + orchestrator handoff + console live panel + chat progress
-- [ ] **CI-3** Phase 3: post-PR CI verify + notify
+- [x] **CI-3** Phase 3: post-PR CI verify + notify (`/watch-pr-ci`, polls PR branch CI)
 - [ ] **CI-4** Phase 4: custom-agent skills templates
 - [ ] **CI-5** Phase 5: webhook + proactive expansion
 - [ ] **CI-6** Expand regex + LLM classifier for `go mod`, `cargo`, `pnpm`, Docker `RUN` failures

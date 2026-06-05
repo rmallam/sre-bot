@@ -39,7 +39,7 @@ Security allow-list includes `cicd_rerun` and `cicd_open_pr`.
 | Webhook | `POST /webhooks/github` on commander |
 | Signature | `GITHUB_WEBHOOK_SECRET` |
 | Notify channel | `GITHUB_WEBHOOK_NOTIFY_CHANNEL_ID` or `TELEGRAM_ALERT_CHAT_ID` |
-| Skills | `CICD_SKILLS_DIR` → `*.md` appended to brain system prompt |
+| Skills | Platform RAG (`POST /rag/query`) — verified runbooks injected into brain system prompt |
 | Auto skill export | Console **Export skills** (**PLAT-8a** done); auto-write pending (**PLAT-8b**) |
 
 GitHub repo → Settings → Webhooks → `workflow_run` events → payload URL above.
@@ -96,7 +96,8 @@ GITHUB_TOKEN=
 GITHUB_WEBHOOK_SECRET=
 LOKI_URL=
 PROMETHEUS_URL=
-CICD_SKILLS_DIR=./skills
+SRE_RAG_GROUNDING=true
+SRE_RAG_LEARNING=true
 CICD_URL=http://cicd-agent:8080
 GEMINI_COMMANDER_MODEL=gemini-2.5-flash
 ```

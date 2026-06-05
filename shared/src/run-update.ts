@@ -24,7 +24,11 @@ export type RunUpdateKind =
   | 'coding_agent_handoff'
   | 'coding_agent_progress'
   | 'coding_agent_done'
+  | 'ci_pr_verify_started'
+  | 'ci_pr_verify_succeeded'
+  | 'ci_pr_verify_failed'
   | 'agent_step'
+  | 'deploy_source_required'
   | 'generic';
 
 export interface RunUpdateQuickAction {
@@ -55,6 +59,8 @@ export interface RunUpdatePayload {
   codingAgentAttempt?: number;
   codingAgentMaxAttempts?: number;
   codingAgentPrUrl?: string;
+  ciPrUrl?: string;
+  ciBranch?: string;
   /** Inline keyboard actions (UX-2). `id` is Telegram callback_data. */
   quickActions?: RunUpdateQuickAction[];
 }
@@ -80,6 +86,12 @@ export function defaultQuickActionsForUpdate(
         { id: `hil_reject_${payload.incidentId}`, label: '❌ Reject' },
         { id: `hil_suggest_${payload.incidentId}`, label: '✏️ Suggest fix' },
         { id: `hil_ignore_${payload.incidentId}`, label: '🔕 Ignore' }
+      );
+      break;
+    case 'deploy_source_required':
+      actions.push(
+        { id: `deploy_source_hotfix_${payload.incidentId}`, label: '⚡ Hot-fix cluster' },
+        { id: `deploy_source_cancel_${payload.incidentId}`, label: '❌ Cancel' }
       );
       break;
     default:
@@ -146,6 +158,11 @@ export function formatRunUpdateFallback(payload: RunUpdatePayload): string {
         '.\n' +
         sanitizeUserFacingText(payload.technicalMessage?.slice(0, 400) ?? '')
       );
+    case 'deploy_source_required':
+      return (
+        payload.technicalMessage ??
+        'I need deploy source details (repo, chart path, or Argo app) before I can fix via Git.'
+      );
     case 'hil_required':
       return (
         `I need your approval before I ${actionOutcomeLabel(payload.pendingAction ?? 'noop')}.` +
@@ -183,6 +200,14 @@ export function formatRunUpdateFallback(payload: RunUpdatePayload): string {
       return payload.codingAgentPrUrl
         ? `PR ready: ${payload.codingAgentPrUrl}`
         : sanitizeUserFacingText(payload.technicalMessage ?? 'Code fixer finished.');
+    case 'ci_pr_verify_started':
+      return sanitizeUserFacingText(
+        payload.technicalMessage ?? 'Watching CI on the fix PR branch…'
+      );
+    case 'ci_pr_verify_succeeded':
+      return sanitizeUserFacingText(payload.technicalMessage ?? '✅ CI passed after the fix PR.');
+    case 'ci_pr_verify_failed':
+      return sanitizeUserFacingText(payload.technicalMessage ?? '❌ CI still failing after the fix PR.');
     case 'agent_step':
       return payload.progressStep ?? sanitizeUserFacingText(payload.technicalMessage ?? 'Investigating…');
     case 'generic':

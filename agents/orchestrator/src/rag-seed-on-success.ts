@@ -34,7 +34,7 @@ export async function maybeSeedRagFromSuccessfulRun(
     ctx.mode ??
     (run.metadata?.mode as string | undefined) ??
     ((run.metadata?.request as Record<string, unknown> | undefined)?.mode as string | undefined);
-  if (mode !== 'diagnose') return;
+  if (mode !== 'diagnose' && mode !== 'ci-failure') return;
 
   const plan = ctx.plan ?? (run.metadata?.remediationPlan as RemediationPlan | undefined);
 
@@ -55,15 +55,21 @@ export async function maybeSeedRagFromSuccessfulRun(
     | { detectedError?: string; targetComponent?: string }
     | undefined;
 
+  const ciMeta = run.metadata?.ciRun as { diagnosis?: { category?: string } } | undefined;
+
   const errorSignature =
     (ctx.detectedError ?? ragMeta?.detectedError ?? '').trim() ||
-    inferErrorFromPlan(plan);
+    inferErrorFromPlan(plan) ||
+    (mode === 'ci-failure' ? ciMeta?.diagnosis?.category ?? 'ci_failure' : '');
   if (!errorSignature) {
     log('info', AGENT, 'Skip RAG seed — no error signature', { runId, incidentId: run.incidentId });
     return;
   }
 
-  const targetComponent = ctx.targetComponent ?? ragMeta?.targetComponent ?? 'compute';
+  const targetComponent =
+    ctx.targetComponent ??
+    ragMeta?.targetComponent ??
+    (mode === 'ci-failure' ? 'gitops' : 'compute');
 
   const req = run.metadata?.request as Record<string, unknown> | undefined;
   const payload = buildRagLearnPayload({

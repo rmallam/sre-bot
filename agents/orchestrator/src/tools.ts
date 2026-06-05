@@ -215,6 +215,10 @@ export async function gatherFacts(req: StartRunRequest): Promise<DiagnosisContex
   if (req.gitRef) params.set('gitRef', req.gitRef);
   if (req.investigateScope) params.set('investigateScope', req.investigateScope);
   if (req.rawMessage) params.set('rawMessage', req.rawMessage);
+  if (req.deployProvenance) {
+    params.set('deployProvenance', JSON.stringify(req.deployProvenance));
+  }
+  if (req.allowClusterHotFix) params.set('allowClusterHotFix', 'true');
 
   const url = `${INVESTIGATOR_URL}/facts?${params}`;
   let res: Response;

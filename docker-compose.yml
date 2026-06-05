@@ -245,6 +245,8 @@ services:
       context: .
       dockerfile: agents/brain/Dockerfile
     networks: [sre-net]
+    depends_on:
+      - platform-agent
     entrypoint: ["/app/scripts/container-entrypoint.sh"]
     ports:
       - "8083:8080"
@@ -260,15 +262,14 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_BRAIN_MODEL=${GEMINI_BRAIN_MODEL:-gemini-2.5-pro}
       - CIRCUIT_BREAKER_LIMIT=3
-      - CICD_SKILLS_DIR=/data/skills
       - KUBECONFIG=/tmp/kube/config
       - SRE_AGENT_MODE=${SRE_AGENT_MODE:-classic}
       - AGENTIC_LLM_TOOL_SELECT=${AGENTIC_LLM_TOOL_SELECT:-}
       - AGENTIC_LLM_REFLECT=${AGENTIC_LLM_REFLECT:-}
-      - SKILLS_DIR=/data/skills
+      - SRE_PLATFORM_URL=http://platform-agent:8080
+      - SRE_RAG_GROUNDING=${SRE_RAG_GROUNDING:-true}
     volumes:
       - ~/.kube:/root/.kube:ro
-      - ./skills:/data/skills:ro
 
   orchestrator-agent:
     build:
@@ -318,6 +319,7 @@ services:
       - SRE_PLATFORM_URL=http://platform-agent:8080
       - SRE_RAG_GROUNDING=${SRE_RAG_GROUNDING:-true}
       - SRE_RAG_LEARNING=${SRE_RAG_LEARNING:-true}
+      - CI_VERIFY_AFTER_PR=${CI_VERIFY_AFTER_PR:-true}
     volumes:
       - run-data:/data/runs
 
@@ -444,6 +446,11 @@ services:
       - PORT=8080
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - DEPLOY_APP_REPO_WRITE_TOKEN=${DEPLOY_APP_REPO_WRITE_TOKEN:-}
+      - COMMANDER_URL=http://commander-agent:8080
+      - ORCHESTRATOR_URL=http://orchestrator-agent:8080
+      - CI_VERIFY_INITIAL_DELAY_MS=${CI_VERIFY_INITIAL_DELAY_MS:-45000}
+      - CI_VERIFY_POLL_MS=${CI_VERIFY_POLL_MS:-20000}
+      - CI_VERIFY_TIMEOUT_MS=${CI_VERIFY_TIMEOUT_MS:-1200000}
 
   coding-agent:
     container_name: sre-bot-coding-agent
@@ -467,9 +474,6 @@ services:
       - DEPLOY_APP_REPO_WRITE_TOKEN=${DEPLOY_APP_REPO_WRITE_TOKEN:-}
       - CODING_AGENT_ENABLED=${CODING_AGENT_ENABLED:-true}
       - CODING_AGENT_MAX_ITERATIONS=${CODING_AGENT_MAX_ITERATIONS:-5}
-      - CICD_SKILLS_DIR=/data/skills
-    volumes:
-      - ./skills:/data/skills:ro
 
   # v2: optional AI gateway (enable AI_GATEWAY_URL in orchestrator/brain)
   ai-gateway:

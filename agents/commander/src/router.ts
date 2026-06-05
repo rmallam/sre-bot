@@ -515,6 +515,8 @@ export async function handleCommand(
         caseId: agentCase.caseId,
         agentMode: mode.agentMode,
         userHints: agentCase.evidence.userHints,
+        deployProvenance: parsed.deployProvenance,
+        allowClusterHotFix: parsed.allowClusterHotFix,
       };
       const dispatch = await dispatchRun(payload, incidentId);
       if (dispatch.deduplicated) {

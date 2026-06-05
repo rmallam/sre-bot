@@ -285,14 +285,6 @@ spec:
               value: {{ .Values.codingAgent.enabled | quote }}
             - name: CODING_AGENT_MAX_ITERATIONS
               value: {{ .Values.codingAgent.maxIterations | quote }}
-            - name: CICD_SKILLS_DIR
-              value: /data/skills
-          {{- if .Values.skills.configMapName }}
-          volumeMounts:
-            - name: skills
-              mountPath: /data/skills
-              readOnly: true
-          {{- end }}
           livenessProbe:
             httpGet:
               path: /health
@@ -301,12 +293,6 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.agents.coding.resources | nindent 12 }}
-      {{- if .Values.skills.configMapName }}
-      volumes:
-        - name: skills
-          configMap:
-            name: {{ .Values.skills.configMapName | quote }}
-      {{- end }}
 ---
 apiVersion: v1
 kind: Service

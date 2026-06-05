@@ -13,7 +13,7 @@ import {
 import { formatRunSummaryForUser } from '../../../shared/src/run-summary.js';
 import { createRunStore, closeRunStore } from './stores/index.js';
 import { findActiveDuplicateRun } from './run-dedupe.js';
-import { reconcileStaleAwaitingHuman } from './stale-run-reconcile.js';
+import { persistCiVerifyOutcome } from './persist-outcome.js';
 
 const AGENT = 'orchestrator-agent';
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
@@ -234,6 +234,22 @@ app.get('/runs/:runId', async (req: Request, res: Response) => {
     outcome: deriveOutcomeFromStoredRun(entry),
     remediationPlan: entry.metadata?.remediationPlan,
   });
+});
+
+app.post('/runs/:runId/ci-verify', async (req: Request, res: Response) => {
+  const runId = req.params.runId ?? '';
+  const body = req.body as { worked?: boolean; message?: string };
+  if (typeof body.worked !== 'boolean') {
+    res.status(400).json({ error: 'worked (boolean) required' });
+    return;
+  }
+  const entry = await getRun(runId);
+  if (!entry) {
+    res.status(404).json({ error: 'Run not found' });
+    return;
+  }
+  await persistCiVerifyOutcome(runId, body.worked, body.message);
+  res.json({ ok: true, runId, worked: body.worked });
 });
 
 app.post('/resume-run', async (req: Request, res: Response) => {

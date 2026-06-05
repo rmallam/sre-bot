@@ -4,6 +4,7 @@
 
 import type { RcaPointer } from './rca-pointers.js';
 import type { RolloutPhase } from './rollout-phase.js';
+import type { DeployProvenance } from './deploy-provenance.js';
 export type { RcaPointer, RcaPointerSource } from './rca-pointers.js';
 export type { RolloutPhase } from './rollout-phase.js';
 
@@ -177,6 +178,8 @@ export interface DiagnosisContext extends IncidentEnvelope {
   clusterReachable?: boolean;
   /** Populated in ci-failure mode from cicd-agent. */
   ciRun?: CiRunFacts;
+  /** How this workload was deployed — drives fix routing. */
+  deployProvenance?: DeployProvenance;
 }
 
 export interface SpecialistDiagnostic {
@@ -420,6 +423,10 @@ export interface StartRunRequest extends IncidentEnvelope {
   agentMode?: 'classic' | 'agentic';
   /** Merged user hints from case evidence. */
   userHints?: string[];
+  /** User- or registry-provided deploy provenance for fix routing. */
+  deployProvenance?: Partial<DeployProvenance>;
+  /** Allow temporary cluster-only patch when Git source is unknown. */
+  allowClusterHotFix?: boolean;
 }
 
 export interface StartRunResponse {

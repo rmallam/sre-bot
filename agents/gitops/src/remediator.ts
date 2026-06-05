@@ -349,6 +349,30 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
 
     if (success) {
       await resetAttemptCount(incidentId, namespace, resourceName);
+      if (runId) {
+        const { stampWorkloadProvenance } = await import('./stamp-provenance.js');
+        await stampWorkloadProvenance({
+          incidentId,
+          runId,
+          namespace,
+          resourceKind,
+          resourceName,
+          planAction: plan.action,
+          provenance: {
+            method:
+              plan.action === 'helm_deploy'
+                ? 'helm'
+                : plan.action === 'repo_apply'
+                  ? 'direct-apply'
+                  : 'plain-yaml',
+            sourceRepo: plan.githubRepo,
+            chartPath: plan.targetManifestPath?.replace(/\/Chart\.yaml$/i, ''),
+            manifestPath: plan.targetManifestPath,
+            gitRef: plan.gitRef,
+            argoApp: `${namespace}-${resourceName}`,
+          },
+        }).catch(() => undefined);
+      }
     }
   } catch (err: unknown) {
     error = String(err);

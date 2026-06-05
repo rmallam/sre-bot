@@ -18,6 +18,7 @@ import type {
   DiagnosisContext,
   IncidentEnvelope,
 } from '../../../shared/src/types.js';
+import type { DeployProvenance } from '../../../shared/src/deploy-provenance.js';
 import { postWithRetry, log } from '../../../shared/src/http.js';
 import { gatherPodFacts } from './k8s-facts.js';
 import { gatherPreDeployFacts, checkNamespaceExists } from './pre-deploy.js';
@@ -131,6 +132,14 @@ app.get('/facts', async (req: Request, res: Response) => {
     ? (String(req.query.investigateScope) as import('../../../shared/src/types.js').InvestigateScope)
     : undefined;
   const rawMessage = req.query.rawMessage ? String(req.query.rawMessage) : undefined;
+  let deployProvenance: Partial<DeployProvenance> | undefined;
+  if (req.query.deployProvenance) {
+    try {
+      deployProvenance = JSON.parse(String(req.query.deployProvenance)) as Partial<DeployProvenance>;
+    } catch {
+      deployProvenance = undefined;
+    }
+  }
 
   if (!resourceName) {
     res.status(400).json({ error: 'resourceName required' });
@@ -150,6 +159,7 @@ app.get('/facts', async (req: Request, res: Response) => {
       gitRef,
       investigateScope,
       rawMessage,
+      deployProvenance,
     });
     res.json(facts);
   } catch (err) {

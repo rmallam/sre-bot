@@ -11,6 +11,7 @@ import { routeMessage } from './llm-router.js';
 import { recordUserMessage, recordAssistantMessage, getChatTranscriptForLlm } from './chat-transcript.js';
 import { syncActiveTopicFromCommand } from './active-topic.js';
 import { tryResolvePendingClarification } from './clarification.js';
+import { tryDeploySourceFollowUp, maybeArmDeploySourceFromRun } from './deploy-source-followup.js';
 import { tryPendingRunFollowUp } from './pending-run-followup.js';
 import { tryResolvePendingDeleteChoice } from './delete-choice.js';
 import {
@@ -138,6 +139,32 @@ export async function processChatMessage(opts: {
         incidentId: result.incidentId,
         executed: true,
         commandType: 'delete',
+      };
+    } catch (err) {
+      const reply = `⚠️ ${String(err)}`;
+      await recordAssistantMessage(platform, channelId, userId, reply);
+      return { reply, executed: false };
+    }
+  }
+
+  const deploySource = await tryDeploySourceFollowUp(platform, channelId, userId, text);
+  if (deploySource) {
+    if (deploySource.type === 'reply') {
+      await recordAssistantMessage(platform, channelId, userId, deploySource.text);
+      return { reply: deploySource.text, executed: false };
+    }
+    try {
+      if (platform === 'web') await webThinking(channelId, 'Retrying with deploy source…');
+      const result = await handleCommand(deploySource.parsed, userId, platform, channelId, text);
+      const reply = deploySource.reply ?? result.immediateReply ?? ackMessage(result.incidentId, 'investigate');
+      await recordAssistantMessage(platform, channelId, userId, reply);
+      if (platform === 'web') await markWebRunWaiting(channelId, result.incidentId);
+      return {
+        reply,
+        incidentId: result.incidentId,
+        executed: true,
+        commandType: 'investigate',
+        waitingForRun: true,
       };
     } catch (err) {
       const reply = `⚠️ ${String(err)}`;

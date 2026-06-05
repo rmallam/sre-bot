@@ -339,17 +339,10 @@ spec:
                   key: gemini_api_key
                   optional: true
             {{- include "sre-bot.llmEnv" . | nindent 12 }}
-            - name: SKILLS_DIR
-              value: /data/skills
-            - name: CICD_SKILLS_DIR
-              value: /data/skills
+            {{- include "sre-bot.platformEnv" . | nindent 12 }}
+            - name: SRE_RAG_GROUNDING
+              value: {{ .Values.agentMode.ragGrounding | quote }}
             {{- include "sre-bot.agentModeEnv" . | nindent 12 }}
-          {{- if .Values.skills.configMapName }}
-          volumeMounts:
-            - name: skills
-              mountPath: /data/skills
-              readOnly: true
-          {{- end }}
           livenessProbe:
             httpGet:
               path: /health
@@ -358,12 +351,6 @@ spec:
             periodSeconds: 30
           resources:
             {{- toYaml .Values.agents.brain.resources | nindent 12 }}
-      {{- if .Values.skills.configMapName }}
-      volumes:
-        - name: skills
-          configMap:
-            name: {{ .Values.skills.configMapName | quote }}
-      {{- end }}
 ---
 apiVersion: v1
 kind: Service

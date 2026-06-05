@@ -11,6 +11,7 @@ Related:
 - [OPERATIONS-CONSOLE.md](./OPERATIONS-CONSOLE.md)
 - [LLM-AND-MCP.md](./LLM-AND-MCP.md)
 - [PLATFORM-LAYERS.md](./PLATFORM-LAYERS.md)
+- [AGENT-MODE-DESIGN.md](./AGENT-MODE-DESIGN.md)
 
 ---
 
@@ -36,19 +37,19 @@ Do **not** replatform on Holmes-style LLM MCP writes. Adopt Holmes **investigati
 | 2 | **PLAT-2** | Run deduplication (skip if resource already in-flight) | Less noise in console |
 | 3 | **PLAT-3** | Watcher cooldown key normalization (Pod → workload) | Fewer duplicate runs |
 | 4 | **CI-2** | Coding agent service (Phase 2) | Application-code CI failures |
-| 5 | **AGENT-1–2** | Case model + commander case bind ([AGENT-MODE-DESIGN.md](./AGENT-MODE-DESIGN.md) Phase A) | Follow-up continuity; removes handler sprawl |
-| 6 | **PLAT-4** | Observability investigator plugins (Prom / Loki) | Holmes-style RCA, our security model |
-| 7 | **PLAT-5** | Console auth (SSO or basic) | Production console exposure |
-| 8 | **AGENT-3–5** | Investigator tool loop + ReAct graph + `SRE_AGENT_MODE` ([AGENT-MODE-DESIGN.md](./AGENT-MODE-DESIGN.md) Phase B–C) | Full LLM-driven flow (opt-in) |
-| 9 | **PLAT-6** | Operator-style scheduled health checks | Proactive beyond K8s events |
-| 10 | **PLAT-7** | Alert ingress (AlertManager → commander) | Alert-driven runs |
-| 11 | **PLAT-8** | Auto-sync skills to `skills/` on successful outcomes | Learning loop |
-| 12 | **CI-3** | Post-PR CI verify + notify | Close CI remediation loop |
+| 5 | **AGENT-1–2** | Case model + commander case bind | Follow-up continuity |
+| 6 | **PLAT-4** | Observability investigator plugins (Prom / Loki) | Holmes-style RCA |
+| 7 | **CON-2** | Console auth (SSO or basic) | Production console — **deferred (POC)** |
+| 8 | **AGENT-3–5** | Investigator tool loop + ReAct graph + `SRE_AGENT_MODE` | Full LLM-driven flow (opt-in) |
+| 9 | **CI-3** | Post-PR CI verify + notify | Close CI remediation loop |
+| 10 | **PLAT-8** | Auto-sync skills + ranked brain injection | Learning loop |
+| 11 | **PLAT-6** | Operator-style scheduled health checks | Proactive beyond K8s events |
+| 12 | **PLAT-7** | Alert ingress (AlertManager → commander) | Alert-driven runs |
 | 13 | **PLAT-9** | Large log/metric payload filtering | Scale investigator/cicd |
 | 14 | **PLAT-10** | Additional backends (Datadog, Tempo) | Optional breadth |
 | 15 | **PLAT-11** | Read-only debug MCP profile (human-only) | Optional power-user |
 | 16 | **PLAT-12** | Hybrid RCA handoff (external summary → orchestrator) | [Design ready](./RCA-HANDOFF-SCHEMA.md) |
-| 17 | **DEPLOY-2** | Source-to-image / buildpack deploy pipeline | [SOURCE-TO-IMAGE-DEPLOY.md](./SOURCE-TO-IMAGE-DEPLOY.md) Phase 1 |
+| 17 | **DEPLOY-2** | Source-to-image / buildpack deploy pipeline | [Phase 2 pending](./SOURCE-TO-IMAGE-DEPLOY.md) |
 
 ---
 
@@ -56,19 +57,12 @@ Do **not** replatform on Holmes-style LLM MCP writes. Adopt Holmes **investigati
 
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
-| **PLAT-1** | **Natural language routing** — `GEMINI_COMMANDER_MODEL=gemini-2.5-flash`, compose default, `/health` LLM summary | **Done** | `gemini-2.0-flash` returned 404; broke LLM intent. Rebuild `commander-agent`. |
-| **PLAT-2** | **Run deduplication** — reject/skip `POST /runs` if same `namespace/resource` has `running` or `awaiting_human` | **Done** | `orchestrator /runs` now returns `deduplicated=true` with existing run info |
-| **PLAT-3** | **Watcher cooldown normalization** — resolve Pod → owner Deployment for single cooldown key; dedupe event watch vs pod poll | **Done** | Watcher cooldown now keys by normalized workload name |
-| **PLAT-13** | **Orchestrator “active run” index** — optional Redis/Postgres lookup by resource key | Pending | Supports PLAT-2 at scale |
-
-**Env (PLAT-1):**
-
-```bash
-LLM_PROVIDER=gemini          # or openrouter
-GEMINI_API_KEY=...
-GEMINI_COMMANDER_MODEL=gemini-2.5-flash
-OPENROUTER_COMMANDER_MODEL=google/gemini-2.5-flash  # if using OpenRouter
-```
+| **PLAT-1** | **Natural language routing** — `GEMINI_COMMANDER_MODEL=gemini-2.5-flash` | **Done** | |
+| **PLAT-2** | **Run deduplication** | **Done** | |
+| **PLAT-3** | **Watcher cooldown normalization** | **Done** | |
+| **PLAT-13** | **Orchestrator “active run” index** — Redis/Postgres lookup by resource key | Pending | Supports PLAT-2 at scale |
+| **PLAT-14** | Stale HIL run reconcile | **Done** | Orphan `awaiting_human` auto-cancel |
+| **PLAT-15** | Smart rollout wait (pod phase–aware verify) | **Done** | Post-remediation, not blind timers |
 
 ---
 
@@ -76,11 +70,11 @@ OPENROUTER_COMMANDER_MODEL=google/gemini-2.5-flash  # if using OpenRouter
 
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
-| **CON-1** | Grouped resources + remediation outcomes + skill export | **Done** | `/resources`, `remediationOutcome` persistence |
-| **CON-2** | Console auth (OAuth / basic / SSO proxy) | Pending | BFF currently open on `:8091` |
-| **CON-3** | Keyboard shortcuts (approve/reject on focus) | Pending | Power users |
-| **CON-4** | Unified activity feed (Telegram + web + HIL) | Pending | Single timeline per resource |
-| **CON-5** | “Latest only” default filter on Resources page | Pending | UX polish (partially via “Show attempt history” toggle) |
+| **CON-1** | Grouped resources + remediation outcomes + skill export | **Done** | |
+| **CON-2** | Console auth (OAuth / basic / SSO proxy) | **Deferred** | POC — open `:8091` acceptable for now |
+| **CON-3** | Keyboard shortcuts (approve/reject on focus) | Pending | |
+| **CON-4** | Unified activity feed (Telegram + web + HIL) | Pending | |
+| **CON-5** | “Latest only” default filter on Resources page | Pending | |
 
 Details: [OPERATIONS-CONSOLE.md](./OPERATIONS-CONSOLE.md)
 
@@ -91,40 +85,26 @@ Details: [OPERATIONS-CONSOLE.md](./OPERATIONS-CONSOLE.md)
 | ID | Item | Status | Doc |
 |----|------|--------|-----|
 | **CI-1** | Dependency/env code PR + HIL | **Done** | Phase 1 |
-| **CI-2** | Coding agent worker + orchestrator handoff + console live panel | **Done** | [CI Phase 2](./CI-CODE-REMEDIATION-ROADMAP.md#phase-2--coding-agent-recommended-design) |
-| **CI-3** | Post-PR CI verify + notify | Pending | Phase 3 |
+| **CI-2** | Coding agent worker + orchestrator handoff + console live panel | **Done** | Phase 2 |
+| **CI-3** | Post-PR CI verify + notify | **Done** | Polls GitHub Actions on PR branch; notifies ✅/❌ |
 | **CI-4** | Custom/composite agent skills templates | Pending | Phase 4 |
 | **CI-5** | Proactive webhook + auto-triage expansion | Pending | Phase 5 |
 | **CI-6** | Expand classifiers (`go mod`, `cargo`, `pnpm`, Docker `RUN`) | Pending | Backlog |
 | **CI-7** | Per-repo allowlist + rate limits for auto-PR | Pending | Backlog |
 
-Also: **UX-10** coding agent persona — narration templates **done**; service = **CI-2** **done**.
+**CI-3 env:** `CI_VERIFY_AFTER_PR`, `CI_VERIFY_INITIAL_DELAY_MS`, `CI_VERIFY_POLL_MS`, `CI_VERIFY_TIMEOUT_MS`
 
 Details: [CI-CODE-REMEDIATION-ROADMAP.md](./CI-CODE-REMEDIATION-ROADMAP.md)
 
 ---
 
-## Track D — Observability & investigation (Holmes-inspired)
-
-Adopt Holmes **data access patterns** without LLM MCP. Facts flow: **investigator (code) → sanitize → brain (plan)**.
+## Track D — Observability & investigation
 
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
-| **PLAT-4a** | `POST /observability/logs` — Loki + pod log fallback | **Done** | [DEEP-RCA.md](./DEEP-RCA.md) |
-| **PLAT-4b** | `POST /observability/metrics` — PromQL workload bundle | **Done** | Wired in `rca-enrich.ts` |
-| **PLAT-4c** | Wire observe node + brain `rcaPointers` | **Done** | Progress message in orchestrator |
-| **PLAT-9** | Server-side log excerpt limits (`log-excerpt.ts`) | **Partial** | Loki merge + signal line pick |
-| **PLAT-10a** | Datadog logs/metrics plugin (optional) | Pending | Later breadth |
-| **PLAT-10b** | Grafana Tempo traces plugin (optional) | Pending | Later breadth |
-
-**Env:**
-
-```bash
-LOKI_URL=
-PROMETHEUS_URL=
-```
-
-Do **not** expose these as MCP tools to the LLM. See [LLM-AND-MCP.md](./LLM-AND-MCP.md).
+| **PLAT-4a–c** | Loki + PromQL + observe wiring | **Done** | |
+| **PLAT-9** | Server-side log excerpt limits | **Partial** | |
+| **PLAT-10a/b** | Datadog / Tempo plugins | Pending | |
 
 ---
 
@@ -132,13 +112,9 @@ Do **not** expose these as MCP tools to the LLM. See [LLM-AND-MCP.md](./LLM-AND-
 
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
-| **PLAT-6a** | Scheduled health check CRD or cron → `POST /runs` | Pending | Holmes operator-style; any datasource after Phase D |
-| **PLAT-6b** | Post-deploy verification hook (Helm release → check run) | Pending | Pair with pre-deploy mode |
-| **PLAT-7a** | AlertManager webhook → commander → orchestrator | Pending | Holmes alert ingress pattern |
-| **PLAT-7b** | PagerDuty / OpsGenie webhook (optional) | Pending | Lower priority |
-| **WATCH-1** | Watcher: configurable `COOLDOWN_MINUTES`, ignore list sync | **Done** | Compose default 2 min |
-
-Holmes comparison: [HOLMES-COMPARISON-AND-ADOPTION.md](./HOLMES-COMPARISON-AND-ADOPTION.md)
+| **PLAT-6a/b** | Scheduled health checks + post-deploy hook | Pending | |
+| **PLAT-7a/b** | AlertManager / PagerDuty webhooks | Pending | |
+| **WATCH-1** | Watcher cooldown + ignore list | **Done** | |
 
 ---
 
@@ -146,43 +122,31 @@ Holmes comparison: [HOLMES-COMPARISON-AND-ADOPTION.md](./HOLMES-COMPARISON-AND-A
 
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
-| **PLAT-8a** | Manual skill export from console | **Done** | Copy snippet / Export skills |
-| **PLAT-8b** | Auto-write `skills/*.md` on `worked: true` outcomes | Pending | Filesystem or git commit bot |
-| **PLAT-8c** | Brain prompt injection ranking — prefer skills matching resource/mode | Pending | After 8b |
-| **SKILL-1** | `CICD_SKILLS_DIR` team runbooks | **Done** | Manual `*.md` in `skills/` |
+| **PLAT-8a** | Manual skill export from console | **Done** | Copy markdown for manual `/rag/learn` |
+| **PLAT-8b** | Auto-learn runbooks on `worked: true` | **Done** | pgvector via `SRE_RAG_LEARNING` (no filesystem) |
+| **PLAT-8c** | Brain ranked runbook injection | **Done** | `POST /rag/query` by mode/resource/repo/error |
+| **PLAT-8d** | Platform RAG learn on verified outcomes | **Done** | `sre_runbooks` upsert |
+| **SKILL-1** | Team runbooks in vector store | **Done** | Bootstrap script + learn loop |
 
 ---
 
 ## Track G — Conversational UX
 
-| ID | Item | Status | Doc |
-|----|------|--------|-----|
-| UX-1–UX-9 | Narration, buttons, LLM routing, disclosure, sessions, CI classify, outcomes, streaming, prefs | **Done** | [CONVERSATIONAL-UX-ROADMAP.md](./CONVERSATIONAL-UX-ROADMAP.md) |
-| UX-10 | Coding agent persona templates | **Done** (templates) | Service = CI-2 |
-| UX-11 | LLM startup self-test | **Done** | `llm-probe.ts`, `/health` shows `commanderLlmProbe` |
-| UX-12 | Built-in help intent | **Done** | `help.ts`, LLM `help` intent |
-| UX-13 | Chat transcript memory | **Done** | `chat-transcript.ts`, LLM context |
-| UX-14 | Active topic session | **Done** | `active-topic.ts` |
-| UX-15 | Clarification loop | **Done** | `clarification.ts` |
-| UX-16 | Console chat panel | **Done** | `/chat`, Operations Console **Assistant** |
-| UX-17 | LLM workload-status intent | **Done** | `workload-status` in unified router |
+| ID | Item | Status |
+|----|------|--------|
+| UX-1–UX-17 | Narration, buttons, LLM routing, streaming, console chat, etc. | **Done** |
 
 ---
 
 ## Track I — Agent modes (classic vs LLM-driven)
 
-Dual-mode runtime: **`SRE_AGENT_MODE=classic`** (default, today’s pipeline) or **`agentic`** (LLM tool loop + case continuity).
+| ID | Item | Status |
+|----|------|--------|
+| **AGENT-1–7** | Case model, tool loop, ReAct graph, progress, LLM routing | **Done** |
+| **AGENT-8** | Per-channel / per-run mode override | Partial |
+| **AGENT-D1–D3** | Skill inject, evidence cache, case dedup | Partial — D1 via PLAT-8c; D2/D3 pending |
 
-| ID | Item | Status | Doc |
-|----|------|--------|-----|
-| **AGENT-1** | Case model + Redis store | **Done** | Phase A |
-| **AGENT-2** | Commander case bind + user hint merge | **Done** | Phase A |
-| **AGENT-3** | Investigator read tool loop (`POST /agent-step`) | **Done** | Phase B |
-| **AGENT-4** | Orchestrator ReAct graph + reflect node | **Done** | Phase C |
-| **AGENT-5** | `SRE_AGENT_MODE` config + `/health` exposure | **Done** | §4 |
-| **AGENT-6** | LLM-only commander routing when agentic | **Done** | §7.1 |
-| **AGENT-7** | Agent step progress in chat (`agent_step` kind) | **Done** | §7.5 |
-| **AGENT-8** | Per-channel / per-run mode override | Partial | `StartRunRequest.agentMode` |
+Enable agentic: `SRE_AGENT_MODE=agentic` — see [AGENT-MODE-DESIGN.md](./AGENT-MODE-DESIGN.md)
 
 ---
 
@@ -190,35 +154,36 @@ Dual-mode runtime: **`SRE_AGENT_MODE=classic`** (default, today’s pipeline) or
 
 | ID | Item | Status |
 |----|------|--------|
-| **PLAT-11** | Read-only debug MCP sidecar for investigator only (human-triggered) | Pending |
-| **PLAT-12** | External RCA handoff — schema + merge API | **Design** | [RCA-HANDOFF-SCHEMA.md](./RCA-HANDOFF-SCHEMA.md) |
-| **PLAT-14** | Platform layers — packages + RCA plugin SDK | **Design** | [PLATFORM-LAYERS.md](./PLATFORM-LAYERS.md) |
-| **ENT-1** | SIEM export for remediation outcomes | Pending |
-| **ENT-2** | Per-namespace autonomy policy in console | Pending |
+| **PLAT-11** | Read-only debug MCP sidecar | Pending |
+| **PLAT-12** | External RCA handoff schema + merge API | **Design** |
+| **PLAT-14** | Platform layers / package extraction | **Design** |
+| **ENT-1/2** | SIEM export, per-namespace autonomy in console | Pending |
 
 ---
 
-## What we are not doing
+## What we are not doing (POC phase)
 
 | Item | Reason |
 |------|--------|
-| Replace sre-bot with HolmesGPT | Loses remediation loop, HIL, GitOps path |
-| LLM kubernetes-remediation MCP | LLM-initiated writes bypass security model |
-| Open agentic loop in orchestrator | Cost, non-determinism, audit gaps |
+| **CON-2 Console auth** | Deferred until production exposure |
+| Replace sre-bot with HolmesGPT | Loses remediation loop, HIL, GitOps |
+| LLM kubernetes-remediation MCP | Bypasses security model |
 | Auto-merge CI PRs without HIL | Enterprise safety |
 
 ---
 
-## Status summary
+## Status summary (2026-06-05)
 
 | Area | Shipped | Next up |
 |------|---------|---------|
-| Conversational UX | UX-1–17 (UX-10 templates only; CI-2 for coding agent service) | — |
-| Operations Console | Grouped resources, outcomes, export | CON-2 auth |
-| CI remediation | Phase 1 | Phase 2 coding agent |
-| Observability | K8s facts + **deep RCA** | PLAT-10 Datadog/Tempo |
+| Conversational UX | UX-1–17 | — |
+| Operations Console | Grouped resources, outcomes, export | CON-3–5 (auth deferred) |
+| CI remediation | Phases 1–3 (incl. post-PR verify) | CI-4 custom agent templates |
+| Cluster investigate | Agentic mode, smart rollout wait, git-patch gates | AGENT-D2/D3 |
+| Observability | K8s facts + deep RCA | PLAT-10 Datadog/Tempo |
+| Learning loop | RAG learn + ranked `/rag/query` injection | — |
 | Proactive | Watcher + ignore | PLAT-6 operator, PLAT-7 alerts |
-| Platform hygiene | PLAT-1 NL fix, PLAT-2 dedupe, PLAT-3 watcher keys, outcome persistence | PLAT-13 active run index |
+| Platform | Dedupe, stale HIL reconcile, sre-agent-platform sidecar | PLAT-13 active run index |
 
 ---
 
@@ -226,7 +191,7 @@ Dual-mode runtime: **`SRE_AGENT_MODE=classic`** (default, today’s pipeline) or
 
 | Date | Change |
 |------|--------|
-| 2026-06-02 | PLAT-2 done: orchestrator run dedupe on active `running`/`awaiting_human` runs |
-| 2026-06-02 | PLAT-3 done: watcher cooldown key normalized from pod names to workload names |
-| 2026-05-29 | Initial consolidated roadmap; Holmes adoption items; PLAT/CON/CI tracks |
-| 2026-05-29 | PLAT-1 marked done (Gemini commander model); CON-1 done (grouped resources) |
+| 2026-06-05 | **CI-3** done: post-PR CI verify watch + notify; **PLAT-8b/c/d** learning loop complete |
+| 2026-06-05 | **AGENT-1–7**, smart rollout wait, git-patch preflight, platform sidecar shipped |
+| 2026-06-02 | PLAT-2/3 done: run dedupe + watcher cooldown normalization |
+| 2026-05-29 | Initial consolidated roadmap |

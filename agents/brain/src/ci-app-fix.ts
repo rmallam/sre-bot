@@ -39,8 +39,17 @@ RULES:
 4. Prefer fixing source/tests over disabling checks.
 5. If a test snapshot is wrong, update the test or snapshot intentionally.
 6. Suggest a local testCommand when obvious (e.g. npm test, pytest, go test ./...).
-7. If you cannot fix safely, return empty patches.
-${skillsSystemAppendix()}`;
+7. If you cannot fix safely, return empty patches.`;
+
+function buildSystem(req: CiAppFixPlanRequest): Promise<string> {
+  return skillsSystemAppendix({
+    mode: 'ci-failure',
+    githubRepo: req.ciRun.githubRepo,
+    errorSignature: req.ciRun.diagnosis?.category,
+    rootCause: req.ciRun.diagnosis?.summary,
+    targetComponent: 'gitops',
+  }).then((appendix) => SYSTEM + appendix);
+}
 
 function buildUserPrompt(req: CiAppFixPlanRequest): string {
   const d = req.ciRun.diagnosis;
@@ -110,7 +119,7 @@ export async function planCiAppFix(req: CiAppFixPlanRequest): Promise<CiAppFixPl
   const rawText = await openRouterChat({
     model: llm.model,
     messages: [
-      { role: 'system', content: SYSTEM },
+      { role: 'system', content: await buildSystem(req) },
       { role: 'user', content: buildUserPrompt(req) },
     ],
     jsonMode: true,

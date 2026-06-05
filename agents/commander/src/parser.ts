@@ -51,6 +51,8 @@ export interface InvestigateCmd {
   workloadConfirmed?: boolean;
   /** Normalized fix hint when user replies after an escalation (e.g. "set image to …"). */
   operatorSuggestion?: string;
+  deployProvenance?: import('../../../shared/src/deploy-provenance.js').DeployProvenance;
+  allowClusterHotFix?: boolean;
 }
 
 export interface RollbackCmd {

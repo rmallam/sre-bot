@@ -17,10 +17,13 @@ const TERMINAL_KINDS = new Set<RunUpdateKind>([
   'deploy_failed',
   'ci_diagnosis',
   'coding_agent_done',
+  'ci_pr_verify_succeeded',
+  'ci_pr_verify_failed',
 ]);
 
 const STILL_WAITING_KINDS = new Set<RunUpdateKind>([
   'hil_required',
+  'deploy_source_required',
   'ci_approval_rerun',
   'ci_approval_workflow_pr',
   'ci_approval_code_pr',
@@ -111,7 +114,20 @@ export async function deliverWebChatUpdate(opts: {
     lastIncidentId: incidentId,
     lastRunId: runId,
     lastMode: update?.mode ?? session?.lastMode,
+    pendingQuestion: kind === 'deploy_source_required' ? body : session?.pendingQuestion,
   });
+
+  if (kind === 'deploy_source_required' && runId) {
+    const { armDeploySourceClarification } = await import('./deploy-source-followup.js');
+    await armDeploySourceClarification('web', channelId, userId, {
+      kind: 'deploy-source',
+      awaiting: 'deploySource',
+      prompt: body,
+      runId,
+      namespace: update?.namespace,
+      resourceName: update?.resourceName,
+    });
+  }
 }
 
 export async function appendWebStatusStep(

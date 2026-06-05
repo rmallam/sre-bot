@@ -179,6 +179,53 @@ class PgVectorStore:
             for row in rows
         ]
 
+    def get_by_exact_signature(
+        self,
+        *,
+        error_signature: str,
+        target_component: str = "gitops",
+    ) -> RunbookRecord | None:
+        """Exact lookup for deploy-source registry keys."""
+        signature = (error_signature or "").strip()
+        component = (target_component or "gitops").strip()
+        if not signature:
+            return None
+
+        table = self._table
+        sql = f"""
+            SELECT
+                id::text AS id,
+                error_signature,
+                target_component,
+                playbook_markdown,
+                1.0 AS similarity
+            FROM {table}
+            WHERE error_signature = %(error_signature)s
+              AND target_component = %(target_component)s
+            LIMIT 1
+        """
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    sql,
+                    {"error_signature": signature, "target_component": component},
+                ).fetchone()
+        except psycopg.Error:
+            logger.exception(
+                "Exact runbook lookup failed signature=%s", signature
+            )
+            raise
+
+        if not row:
+            return None
+        return RunbookRecord(
+            id=str(row["id"]),
+            error_signature=str(row["error_signature"]),
+            target_component=str(row["target_component"]),
+            playbook_markdown=str(row["playbook_markdown"]),
+            similarity=1.0,
+        )
+
     def health_check(self) -> bool:
         try:
             with self._connection() as conn:

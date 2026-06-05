@@ -1,5 +1,5 @@
 /**
- * Persist structured remediation outcomes for console + future skills.
+ * Persist structured remediation outcomes for console + RAG learning loop.
  */
 
 import type { ActionRecord, RemediationPlan, RunStatus } from '../../../shared/src/types.js';
@@ -59,5 +59,28 @@ export async function persistSuggestedPlan(
   await mergeRunMetadata(runId, {
     remediationPlan: plan,
     planSource: meta?.planSource ?? 'bot',
+  });
+}
+
+/** CI-3: post-PR verify completed — update outcome and RAG learn. */
+export async function persistCiVerifyOutcome(
+  runId: string,
+  worked: boolean,
+  message?: string
+): Promise<void> {
+  const run = await getRun(runId);
+  if (!run) return;
+
+  await mergeRunMetadata(runId, {
+    ciVerifyAt: new Date().toISOString(),
+    ciVerifyWorked: worked,
+    ciVerifyMessage: message,
+  });
+
+  await persistRunOutcome(runId, {
+    status: worked ? 'succeeded' : 'failed',
+    lastError: worked ? undefined : message,
+    humanDecision: 'approved',
+    ragSeed: { mode: 'ci-failure' },
   });
 }

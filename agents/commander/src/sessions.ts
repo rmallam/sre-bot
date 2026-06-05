@@ -44,13 +44,15 @@ export interface ActiveTopic {
 }
 
 export interface PendingClarification {
-  kind: 'workload-status' | 'investigate' | 'deploy';
-  awaiting: 'namespace' | 'workload' | 'githubRepo';
+  kind: 'workload-status' | 'investigate' | 'deploy' | 'deploy-source';
+  awaiting: 'namespace' | 'workload' | 'githubRepo' | 'deploySource';
   resourceName?: string;
   resourceKind?: ResourceKind;
   namespace?: string;
   prompt: string;
   askedAt: string;
+  runId?: string;
+  provenance?: import('../../../shared/src/deploy-provenance.js').DeployProvenance;
 }
 
 export interface ChatSession {

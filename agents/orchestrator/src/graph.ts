@@ -19,6 +19,7 @@ import type {
   FailureAnalysisResult,
   SpecialistDiagnostic,
 } from '../../../shared/src/types.js';
+import { provenanceGateNode } from './deploy-source-gate.js';
 import { buildHelmDeployPlan } from '../../../shared/src/helm-generator.js';
 import { evaluatePolicyGate, getAutonomyMode } from '../../../shared/src/policy.js';
 import { evaluateCombinedPolicy, evaluateCompiledToolPolicy } from '../../../shared/src/tool-policy.js';
@@ -1486,12 +1487,27 @@ async function verifyNode(state: GraphState): Promise<Partial<GraphState>> {
 function routeAfterSanitize(state: GraphState): string {
   if (state.status === 'escalated' || state.status === 'failed') return END;
   if (state.mode === 'diagnose' && ragGroundingEnabled()) return 'ragGrounding';
+  if (state.mode === 'diagnose') return 'provenanceGate';
   return 'plan';
 }
 
 function routeAfterRagGrounding(state: GraphState): string {
-  if (state.status === 'escalated' || state.status === 'failed') return END;
+  if (state.status === 'escalated' || state.status === 'failed' || state.status === 'awaiting_human') {
+    return END;
+  }
+  if (state.mode === 'diagnose') return 'provenanceGate';
   return 'plan';
+}
+
+function routeAfterProvenanceGate(state: GraphState): string {
+  if (state.status === 'awaiting_human' || state.status === 'failed' || state.status === 'escalated') {
+    return END;
+  }
+  return 'plan';
+}
+
+async function provenanceGateGraphNode(state: GraphState): Promise<Partial<GraphState>> {
+  return provenanceGateNode(state);
 }
 
 function routeAfterPreflight(state: GraphState): string {
@@ -1570,6 +1586,7 @@ export function buildGraph() {
     .addNode('agentFinalize', agentFinalizeGraphNode)
     .addNode('sanitize', sanitizeNode)
     .addNode('ragGrounding', ragGroundingNode)
+    .addNode('provenanceGate', provenanceGateGraphNode)
     .addNode('plan', planNode)
     .addNode('preflight', preflightNode)
     .addNode('authorize', authorizeNode)
@@ -1594,7 +1611,12 @@ export function buildGraph() {
       plan: 'plan',
       [END]: END,
     })
-    .addConditionalEdges('ragGrounding', routeAfterRagGrounding, { plan: 'plan', [END]: END })
+    .addConditionalEdges('ragGrounding', routeAfterRagGrounding, {
+      provenanceGate: 'provenanceGate',
+      plan: 'plan',
+      [END]: END,
+    })
+    .addConditionalEdges('provenanceGate', routeAfterProvenanceGate, { plan: 'plan', [END]: END })
     .addEdge('plan', 'preflight')
     .addConditionalEdges('preflight', routeAfterPreflight, { authorize: 'authorize', [END]: END })
     .addEdge('authorize', 'policy')

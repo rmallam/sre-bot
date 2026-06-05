@@ -89,14 +89,20 @@ Set in `my-values.yaml` under `secrets:` (or use `secrets.existingSecret`):
 | `githubWebhookSecret` | commander GitHub webhooks (optional) |
 | `gitSshPrivateKey` | investigator, gitops (Git SSH clone) |
 
-## Skills volume (brain + coding-agent)
+## Runbook knowledge (pgvector)
 
-Mount a ConfigMap of skills at `/data/skills`:
+Verified and team runbooks live in platform RAG (`sre_runbooks`), not filesystem mounts. Enable:
 
 ```yaml
-skills:
-  configMapName: sre-bot-skills
+agents:
+  platform:
+    enabled: true
+agentMode:
+  ragGrounding: true
+  ragLearning: true
 ```
+
+Seed runbooks with `sre-agent-platform/scripts/bootstrap_rag.py` or `POST /rag/learn`.
 
 ## Useful values
 

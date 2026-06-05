@@ -77,7 +77,7 @@ session:
   caseBackend: redis
   caseTtlSeconds: 604800
 
-# Optional ConfigMap mounted at /data/skills (brain + coding-agent)
+# Deprecated: filesystem skills removed — use platform RAG (see skills/README.md).
 skills:
   configMapName: ""
 

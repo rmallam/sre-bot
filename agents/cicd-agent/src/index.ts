@@ -25,6 +25,7 @@ import {
   rerunWorkflow,
 } from './github.js';
 import { gatherCiRepoContext } from './repo-context.js';
+import { watchCiAfterPr } from './ci-verify-watch.js';
 
 const AGENT = 'cicd-agent';
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
@@ -195,6 +196,34 @@ app.post('/open-code-pr', async (req: Request, res: Response) => {
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
+});
+
+app.post('/watch-pr-ci', (req: Request, res: Response) => {
+  const body = req.body as {
+    githubRepo?: string;
+    branch?: string;
+    workflowName?: string;
+    incidentId?: string;
+    runId?: string;
+    platform?: string;
+    channelId?: string;
+    prUrl?: string;
+  };
+  if (!body.githubRepo || !body.branch || !body.incidentId) {
+    res.status(400).json({ error: 'githubRepo, branch, incidentId required' });
+    return;
+  }
+  watchCiAfterPr({
+    githubRepo: body.githubRepo,
+    branch: body.branch,
+    workflowName: body.workflowName,
+    incidentId: body.incidentId,
+    runId: body.runId,
+    platform: body.platform as import('../../../shared/src/types.js').Platform | undefined,
+    channelId: body.channelId,
+    prUrl: body.prUrl,
+  });
+  res.status(202).json({ accepted: true });
 });
 
 app.listen(PORT, () => {

@@ -22,7 +22,7 @@ The **Operations Console** is the primary web UI for managing SRE Bot incidents,
 
 ### Skill compilation
 
-Each remediation attempt records a structured **outcome** (root cause, suggested fix, actions taken, whether it worked). Use **Copy skill snippet** on an attempt or **Export skills** to copy markdown suitable for `skills/` runbooks (loaded by brain via `CICD_SKILLS_DIR`).
+Each remediation attempt records a structured **outcome** (root cause, suggested fix, actions taken, whether it worked). Use **Copy skill snippet** or **Export skills** to copy markdown — add to the vector store via platform `POST /rag/learn` or the bootstrap script (see `skills/README.md`).
 
 Older runs without persisted outcomes show best-effort data derived from tool transcripts.
 

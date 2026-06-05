@@ -135,7 +135,7 @@ The bot fetches the failed workflow run, classifies the log (tests, lint, auth, 
 
 **Webhook (optional):** point GitHub `workflow_run` events to `POST http://<commander>:8081/webhooks/github` with `GITHUB_WEBHOOK_SECRET` set. Failed runs auto-start a `ci-failure` orchestrator run and notify `TELEGRAM_ALERT_CHAT_ID`.
 
-Set `GITHUB_TOKEN` (repo + Actions read, contents write, issues write) and mount team runbooks under `./skills/*.md` for brain prompt context.
+Set `GITHUB_TOKEN` (repo + Actions read, contents write, issues write). Verified runbooks are stored in platform pgvector (`SRE_RAG_LEARNING`); seed with `sre-agent-platform/scripts/bootstrap_rag.py`.
 
 **Dependency / missing-package failures (Phase 1):** the bot can propose a **code/deps PR** via brain + HIL — see [docs/CI-CODE-REMEDIATION-ROADMAP.md](docs/CI-CODE-REMEDIATION-ROADMAP.md).
 

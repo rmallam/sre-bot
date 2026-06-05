@@ -34,8 +34,17 @@ RULES:
 3. You may add a workflow step ONLY if no dependency file exists and the log clearly requires an install command.
 4. Maximum 3 files. Each file must be COMPLETE file content after your edit (not a diff).
 5. Do not invent packages not implied by the error logs.
-6. If you cannot propose a safe fix, return empty patches array.
-${skillsSystemAppendix()}`;
+6. If you cannot propose a safe fix, return empty patches array.`;
+
+function buildSystem(req: CiCodeFixPlanRequest): Promise<string> {
+  return skillsSystemAppendix({
+    mode: 'ci-failure',
+    githubRepo: req.ciRun.githubRepo,
+    errorSignature: req.ciRun.diagnosis?.category,
+    rootCause: req.ciRun.diagnosis?.summary,
+    targetComponent: 'gitops',
+  }).then((appendix) => SYSTEM + appendix);
+}
 
 function buildUserPrompt(req: CiCodeFixPlanRequest): string {
   const d = req.ciRun.diagnosis;
@@ -106,7 +115,7 @@ export async function planCiCodeFix(req: CiCodeFixPlanRequest): Promise<CiCodeFi
     rawText = await openRouterChat({
       model: llm.model,
       messages: [
-        { role: 'system', content: SYSTEM },
+        { role: 'system', content: await buildSystem(req) },
         { role: 'user', content: userPrompt },
       ],
       jsonMode: true,

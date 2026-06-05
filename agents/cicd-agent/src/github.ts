@@ -345,6 +345,8 @@ export async function openCiFixPr(opts: {
   return {
     ok: true,
     prUrl: pr.html_url,
+    headBranch,
+    prNumber: pr.number,
     message: `Opened PR #${pr.number} to update \`${workflowPath}\`: ${pr.html_url}`,
   };
 }
@@ -442,8 +444,27 @@ export async function openCiCodeFixPr(opts: {
   return {
     ok: true,
     prUrl: pr.html_url,
+    headBranch,
+    prNumber: pr.number,
     message: `Opened PR #${pr.number} with ${changed.length} file(s): ${pr.html_url}`,
   };
+}
+
+/** Latest workflow run on a branch (any status). */
+export async function fetchLatestRunOnBranch(
+  githubRepo: string,
+  opts: { branch: string; workflowName?: string }
+): Promise<CiRunFacts | null> {
+  const { owner, repo } = parseOwnerRepo(githubRepo);
+  let url = `/repos/${owner}/${repo}/actions/runs?branch=${encodeURIComponent(opts.branch)}&per_page=10`;
+  const data = await ghGet<{ workflow_runs: GhWorkflowRun[] }>(url);
+  let runs = data.workflow_runs ?? [];
+  if (opts.workflowName) {
+    runs = runs.filter((r) => r.name.toLowerCase() === opts.workflowName!.toLowerCase());
+  }
+  const run = runs[0];
+  if (!run) return null;
+  return fetchRunById(githubRepo, run.id);
 }
 
 export function githubConfigured(): boolean {

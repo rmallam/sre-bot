@@ -18,6 +18,8 @@ import {
 } from './cluster-facts.js';
 import { resolvePodForWorkload } from './workload-resolve.js';
 import { enrichWithDeepRca } from './rca-enrich.js';
+import { resolveDeployProvenance } from './deploy-provenance-resolve.js';
+import type { DeployProvenance } from '../../../shared/src/deploy-provenance.js';
 
 const GITOPS_REPO_URL = process.env['GITOPS_REPO_URL'] ?? '';
 
@@ -90,6 +92,7 @@ export async function gatherFactsSync(opts: {
   containerImage?: string;
   investigateScope?: InvestigateScope;
   rawMessage?: string;
+  deployProvenance?: Partial<DeployProvenance>;
 }): Promise<DiagnosisContext> {
   if (opts.mode === 'pre-deploy' && (opts.githubRepo || opts.containerImage)) {
     const pre = await gatherPreDeployFacts({
@@ -193,6 +196,16 @@ export async function gatherFactsSync(opts: {
     specialistDiagnostics,
   });
 
+  const deployProvenance = await resolveDeployProvenance({
+    incidentId: opts.incidentId,
+    namespace,
+    resourceKind,
+    resourceName,
+    gitManifestPath: manifestResult?.path,
+    gitRepoUrl: GITOPS_REPO_URL || undefined,
+    requestProvenance: opts.deployProvenance,
+  });
+
   return {
     incidentId: opts.incidentId,
     triggeredBy: 'commander',
@@ -215,6 +228,7 @@ export async function gatherFactsSync(opts: {
     rcaPointers: deepRca.rcaPointers,
     observabilitySummary: deepRca.observabilitySummary,
     safeMode: true,
+    deployProvenance,
   };
 }
 
