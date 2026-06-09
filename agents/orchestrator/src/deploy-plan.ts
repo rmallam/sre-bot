@@ -2,10 +2,35 @@ import type { DiagnosisContext, RemediationPlan, StartRunRequest } from '../../.
 import { buildHelmDeployPlan, defaultChartPath } from '../../../shared/src/helm-generator.js';
 import { buildDeployPlanWithSourceBuild } from '../../../shared/src/deploy/build-plan.js';
 import { isHelmChartPath } from '../../../shared/src/deploy/entry-point.js';
+import {
+  applyEnterpriseProfile,
+  classifyEnterpriseDeployScenario,
+  tagHelmDependencyScenario,
+} from '../../../shared/src/deploy/enterprise-scenarios.js';
+import { parseReadmeInstallHints } from '../../../shared/src/deploy/readme-install-hints.js';
 import { callPlanLlm } from './tools.js';
 
 function chartPathFromManifest(manifestPath: string): string {
   return manifestPath.replace(/\/Chart\.yaml$/i, '');
+}
+
+async function finalizeEnterprisePlan(
+  base: RemediationPlan,
+  ctx: DiagnosisContext,
+  request: StartRunRequest,
+  opts: { githubRepo: string; gitRef: string }
+): Promise<RemediationPlan> {
+  const readmeHints = ctx.gitReadmeContent
+    ? parseReadmeInstallHints(ctx.gitReadmeContent)
+    : null;
+  let profile = classifyEnterpriseDeployScenario({ ctx, request, readmeHints });
+  const manifestForDeps =
+    profile.manifestPath ?? ctx.gitManifestPath ?? base.targetManifestPath;
+  if (manifestForDeps && isHelmChartPath(manifestForDeps)) {
+    profile = await tagHelmDependencyScenario(profile, manifestForDeps);
+  }
+  const plan = applyEnterpriseProfile(profile, base, opts);
+  return { ...plan, enterpriseScenario: profile.scenario };
 }
 
 /**
@@ -22,6 +47,8 @@ export async function buildDeployPlan(
   const namespace = request.namespace;
   const deployStrategy = request.deployStrategy ?? 'gitops';
   const containerImage = request.containerImage;
+  const finalize = (plan: RemediationPlan) =>
+    finalizeEnterprisePlan(plan, ctx, request, { githubRepo, gitRef });
 
   if (containerImage) {
     const generatedPlan = buildHelmDeployPlan({
@@ -32,7 +59,7 @@ export async function buildDeployPlan(
       existingManifest: false,
       image: containerImage,
     });
-    return {
+    return finalize({
       ...generatedPlan,
       action: 'repo_apply',
       targetRepo: 'app',
@@ -40,7 +67,7 @@ export async function buildDeployPlan(
       rootCause: `Deploy container image ${containerImage}`,
       reasoning: `Catalog image deploy (${containerImage}) — apply generated Helm chart without cloning Git.`,
       commitMessage: `feat(deploy): deploy ${appName} from ${containerImage}`,
-    };
+    });
   }
 
   const mustGenerate = ctx.needsHelmGeneration === true;
@@ -55,7 +82,7 @@ export async function buildDeployPlan(
         gitRef,
         deployStrategy,
       });
-      return plan;
+      return finalize(plan);
     }
     const generatedPlan = buildHelmDeployPlan({
       appName,
@@ -66,21 +93,21 @@ export async function buildDeployPlan(
       existingManifest: false,
     });
     if (deployStrategy === 'direct') {
-      return {
+      return finalize({
         ...generatedPlan,
         action: 'repo_apply',
         targetRepo: 'app',
         commitMessage: `feat(deploy): direct deploy generated Helm chart for ${appName}`,
-      };
+      });
     }
-    return generatedPlan;
+    return finalize(generatedPlan);
   }
 
   if (githubRepo && isHelmChartPath(ctx.gitManifestPath)) {
     const chartManifestPath = ctx.gitManifestPath!;
     const chartPath = chartPathFromManifest(chartManifestPath);
     if (deployStrategy === 'direct') {
-      return {
+      return finalize({
         action: 'repo_apply',
         rootCause: 'Repository already contains a Helm chart',
         reasoning: `Deploying directly from source chart path ${chartPath}/ without writing to app/GitOps repos.`,
@@ -92,9 +119,9 @@ export async function buildDeployPlan(
         targetRepo: 'app',
         githubRepo,
         gitRef,
-      };
+      });
     }
-    return {
+    return finalize({
       action: 'helm_deploy',
       rootCause: 'Repository already contains a Helm chart',
       reasoning: `Registering Argo CD Application for existing chart at ${chartPath}/ (no chart regeneration).`,
@@ -106,11 +133,11 @@ export async function buildDeployPlan(
       targetRepo: 'gitops',
       githubRepo,
       gitRef,
-    };
+    });
   }
 
   if (deployStrategy === 'direct' && githubRepo && ctx.gitManifestPath) {
-    return {
+    return finalize({
       action: 'repo_apply',
       rootCause: `Repository provides ${ctx.repoEntryPointKind ?? 'manifest'} deployment assets`,
       reasoning: `Applying source manifests directly from ${ctx.gitManifestPath} without Git push.`,
@@ -122,7 +149,7 @@ export async function buildDeployPlan(
       targetRepo: 'app',
       githubRepo,
       gitRef,
-    };
+    });
   }
 
   const plan = await callPlanLlm(ctx, []);
@@ -132,7 +159,7 @@ export async function buildDeployPlan(
     const chartManifestPath = manifestPath!;
     const direct = deployStrategy === 'direct';
     if (direct) {
-      return {
+      return finalize({
         ...plan,
         action: 'repo_apply',
         rootCause: plan.rootCause || 'Repository contains a Helm chart',
@@ -144,10 +171,10 @@ export async function buildDeployPlan(
         targetRepo: 'app',
         githubRepo: plan.githubRepo ?? githubRepo,
         gitRef: plan.gitRef ?? gitRef,
-      };
+      });
     }
     if (plan.action === 'git_patch') {
-      return {
+      return finalize({
         ...plan,
         action: 'helm_deploy',
         rootCause: plan.rootCause || 'Repository contains a Helm chart',
@@ -159,12 +186,12 @@ export async function buildDeployPlan(
         targetRepo: 'gitops',
         githubRepo: plan.githubRepo ?? githubRepo,
         gitRef: plan.gitRef ?? gitRef,
-      };
+      });
     }
   }
 
   if (request.mode === 'pre-deploy' && ctx.repoEntryPointKind === 'operator-install' && ctx.gitManifestPath) {
-    return {
+    return finalize({
       ...plan,
       action: deployStrategy === 'direct' ? 'repo_apply' : plan.action,
       targetManifestPath: ctx.gitManifestPath,
@@ -174,11 +201,11 @@ export async function buildDeployPlan(
       reasoning:
         plan.reasoning ||
         `Apply official operator install manifest from ${ctx.gitManifestPath}.`,
-    };
+    });
   }
 
   if (request.mode === 'pre-deploy' && githubRepo && !plan.githubRepo) {
-    return {
+    return finalize({
       ...plan,
       githubRepo,
       gitRef,
@@ -186,13 +213,13 @@ export async function buildDeployPlan(
       action: plan.action === 'git_patch' && mustGenerate ? 'helm_deploy' : plan.action,
       targetManifestPath:
         plan.targetManifestPath || `${defaultChartPath(appName)}/Chart.yaml`,
-    };
+    });
   }
 
-  return {
+  return finalize({
     ...plan,
     githubRepo: plan.githubRepo ?? githubRepo,
     gitRef: plan.gitRef ?? gitRef,
     targetRepo: plan.targetRepo ?? 'both',
-  };
+  });
 }

@@ -160,6 +160,10 @@ export interface DiagnosisContext extends IncidentEnvelope {
   resolvedGitRef?: string;
   /** Set when repo clone failed after all ref fallbacks. */
   cloneError?: string;
+  /** README.md content from cloned deploy repo (pre-deploy). */
+  gitReadmeContent?: string;
+  /** Enterprise scenario selected by deploy planner (audit). */
+  enterpriseScenario?: string;
   /** Optional analysis for multi-repo deploy runs. */
   stackDeploy?: StackDeployAnalysis;
   /** Parallel specialist summaries (workload/network/database). */
@@ -256,6 +260,8 @@ export interface RemediationPlan {
   githubRepo?: string;
   gitRef?: string;
   cicd?: RemediationPlanCicdMeta;
+  /** Enterprise deploy scenario selected by planner (audit). */
+  enterpriseScenario?: string;
 }
 
 export interface ToolTranscriptEntry {

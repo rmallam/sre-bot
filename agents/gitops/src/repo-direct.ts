@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
@@ -21,6 +21,11 @@ import { log } from '../../../shared/src/http.js';
 import { toHttpsCloneUrl } from './app-repo.js';
 import { applyHelmChartWithFallbacks } from './chart-apply.js';
 import { ensureNamespace } from './ensure-namespace.js';
+import {
+  isClusterScopedDocument,
+  orderDocumentsForApply,
+  splitKubernetesDocuments,
+} from '../../../shared/src/deploy/k8s-manifest-order.js';
 
 const execFile = promisify(execFileCb);
 const DIRECT_DRY_RUN = (process.env['DIRECT_DEPLOY_DRY_RUN'] ?? 'false').toLowerCase() === 'true';
@@ -180,19 +185,69 @@ export async function applyRepoDirect(opts: {
     if (!existsSync(absPath)) {
       throw new Error(`target manifest path not found in repository: ${relPath}`);
     }
-    await sendDeployProgress(notify, `Applying manifest ${relPath} to namespace ${opts.namespace}…`);
-    if (useDryRun) {
-      await run(
-        'kubectl',
-        ['apply', '-f', absPath, '--namespace', opts.namespace, '--dry-run=server'],
-        opts.incidentId
-      );
-    }
-    await run('kubectl', ['apply', '-f', absPath, '--namespace', opts.namespace], opts.incidentId);
+    await applyManifestFile({
+      absPath,
+      relPath,
+      namespace: opts.namespace,
+      incidentId: opts.incidentId,
+      dryRun: useDryRun,
+      notify,
+    });
     await promiseDeployProgress();
   } finally {
     await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+async function applyManifestFile(opts: {
+  absPath: string;
+  relPath: string;
+  namespace: string;
+  incidentId: string;
+  dryRun: boolean;
+  notify: DeployNotifyTarget;
+}): Promise<void> {
+  const content = await readFile(opts.absPath, 'utf-8');
+  const docs = orderDocumentsForApply(splitKubernetesDocuments(content));
+
+  if (docs.length <= 1) {
+    await sendDeployProgress(
+      opts.notify,
+      `Applying manifest ${opts.relPath} to namespace ${opts.namespace}…`
+    );
+    await kubectlApply(opts.absPath, opts.namespace, opts.incidentId, opts.dryRun);
+    return;
+  }
+
+  await sendDeployProgress(
+    opts.notify,
+    `Applying ${docs.length} documents from ${opts.relPath} (CRDs first)…`
+  );
+  const docDir = await mkdtemp(join(tmpdir(), `sre-manifest-${opts.incidentId}-`));
+  try {
+    for (let i = 0; i < docs.length; i++) {
+      const docPath = join(docDir, `doc-${i}.yaml`);
+      await writeFile(docPath, docs[i]!, 'utf-8');
+      await kubectlApply(docPath, opts.namespace, opts.incidentId, opts.dryRun, {
+        clusterScoped: isClusterScopedDocument(docs[i]!),
+      });
+    }
+  } finally {
+    await rm(docDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function kubectlApply(
+  filePath: string,
+  namespace: string,
+  incidentId: string,
+  dryRun: boolean,
+  opts?: { clusterScoped?: boolean }
+): Promise<void> {
+  const args = ['apply', '-f', filePath];
+  if (!opts?.clusterScoped) args.push('--namespace', namespace);
+  if (dryRun) args.push('--dry-run=server');
+  await run('kubectl', args, incidentId);
 }
 
 async function run(cmd: string, args: string[], incidentId: string): Promise<void> {

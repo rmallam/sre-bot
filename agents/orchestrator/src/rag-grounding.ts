@@ -5,20 +5,23 @@
 import type { DiagnosisContext, SanitizedFacts } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
 import { platformRagGround, ragGroundingEnabled } from '../../../shared/src/platform-client.js';
+import { SRE_RAG_ERROR_SIGNATURES } from '../../../shared/src/sre/sre-task-scenarios.js';
 
 const AGENT = 'orchestrator-rag';
 
-const ERROR_SIGNATURES = [
-  'CrashLoopBackOff',
-  'OOMKilled',
-  'ImagePullBackOff',
-  'ErrImagePull',
-  'CreateContainerConfigError',
-  'FailedMount',
-  'FailedScheduling',
-  'Evicted',
-  'ContainerCannotRun',
-] as const;
+const ERROR_SIGNATURES = SRE_RAG_ERROR_SIGNATURES.length
+  ? SRE_RAG_ERROR_SIGNATURES
+  : ([
+      'CrashLoopBackOff',
+      'OOMKilled',
+      'ImagePullBackOff',
+      'ErrImagePull',
+      'CreateContainerConfigError',
+      'FailedMount',
+      'FailedScheduling',
+      'Evicted',
+      'ContainerCannotRun',
+    ] as const);
 
 const COMPONENT_HINTS: Record<string, string[]> = {
   storage: ['FailedMount', 'PersistentVolume', 'volume', 'PVC', 'mount'],

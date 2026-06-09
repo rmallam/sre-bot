@@ -3,54 +3,35 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
 logger = logging.getLogger("bootstrap_rag")
 
-SAMPLE_RUNBOOKS: list[dict] = [
+_FALLBACK_RUNBOOKS: list[dict] = [
     {
         "error_signature": "OOMKilled",
         "target_component": "compute",
-        "playbook_markdown": """# OOMKilled Runbook
-
-1. Confirm container exit reason is OOMKilled via `kubectl describe pod`.
-2. Compare memory limits vs working set in metrics.
-3. Remediation order:
-   - Increase memory limits in deployment manifest (git_patch).
-   - If transient spike, rollout restart after limit bump.
-4. Verify: pod Running, restart count stable, no OOM events in 5m.
-5. Rollback: revert manifest commit if latency/regression detected.
-""",
-    },
-    {
-        "error_signature": "ImagePullBackOff",
-        "target_component": "gitops",
-        "playbook_markdown": """# ImagePullBackOff Runbook
-
-1. Verify image tag exists in registry (`crane digest` or registry UI).
-2. Check imagePullSecrets on ServiceAccount.
-3. Remediation:
-   - git_patch: correct image repository/tag in deployment.
-   - If operator supplies alternate registry, apply that tag.
-4. Verify: pod reaches Running, no ErrImagePull events.
-""",
-    },
-    {
-        "error_signature": "CrashLoopBackOff",
-        "target_component": "compute",
-        "playbook_markdown": """# CrashLoopBackOff Runbook
-
-1. Fetch current and previous container logs.
-2. Classify: config error vs dependency vs probe failure.
-3. Remediation order:
-   - restart once if no prior restart_failed in action history.
-   - git_patch for config/env fixes.
-   - escalate_human if logs show unrecoverable app bug.
-4. Verify: readiness probe passing, restart count stable.
-""",
+        "playbook_markdown": "# OOMKilled Runbook\n\nSee shared/data/sre-rag-runbooks.json",
     },
 ]
+
+
+def _load_runbook_seed() -> list[dict]:
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "..", "shared", "data", "sre-rag-runbooks.json"),
+        os.path.join("/app", "shared", "data", "sre-rag-runbooks.json"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list) and data:
+                logger.info("Loaded %s runbooks from %s", len(data), path)
+                return data
+    logger.warning("No sre-rag-runbooks.json found — using fallback seed")
+    return _FALLBACK_RUNBOOKS
 
 
 def _expected_vector_type(dimensions: int) -> str:
@@ -134,7 +115,9 @@ def bootstrap() -> None:
     table = store._table  # noqa: SLF001
     from pgvector.psycopg import register_vector
 
-    for row in SAMPLE_RUNBOOKS:
+    sample_runbooks = _load_runbook_seed()
+
+    for row in sample_runbooks:
         text = f"{row['error_signature']} {row['playbook_markdown'][:200]}"
         vector = embedder.embed(text)
         with store._connection() as conn:  # noqa: SLF001

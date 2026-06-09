@@ -28,6 +28,8 @@ import type { DeployRoutingSource } from '../../../shared/src/deploy-confidence.
 import { resolveAgentMode } from '../../../shared/src/agent-mode.js';
 import { isHelpQuery, HELP_MESSAGE } from './help.js';
 import { getChatTranscriptForLlm } from './chat-transcript.js';
+import { classifySreTaskText } from '../../../shared/src/sre/sre-task-classifier.js';
+import { trySreRagAdvisoryReply } from './sre-task-handler.js';
 import { getSession } from './sessions.js';
 import { setPendingClarification } from './clarification.js';
 
@@ -368,6 +370,18 @@ export async function routeMessage(
       return withReply(regexParsed, 0.55, { userReply });
     }
     return withReply(regexParsed, llmAvailable ? 0.75 : 0.9, { routingSource: 'regex' });
+  }
+
+  const sreAdvisory = classifySreTaskText(text);
+  if (sreAdvisory?.advisoryOnly) {
+    const ragReply = await trySreRagAdvisoryReply({
+      text,
+      classification: sreAdvisory,
+      incidentId: `chat-${platform}-${userId}`,
+    });
+    if (ragReply) {
+      return withReply({ type: 'unknown' }, sreAdvisory.confidence, { userReply: ragReply });
+    }
   }
 
   if (!llmAvailable) {

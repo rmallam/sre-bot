@@ -215,11 +215,22 @@ type EntryPointKind = 'kustomize' | 'helm' | 'plain-yaml' | 'operator-install' |
 interface EntryPointResult {
   gitManifestPath?: string;
   gitManifestContent?: string;
+  gitReadmeContent?: string;
   repoEntryPointKind?: EntryPointKind;
   repoSignals?: import('../../../shared/src/types.js').RepoSignals;
   needsHelmGeneration?: boolean;
   resolvedGitRef?: string;
   cloneError?: string;
+}
+
+async function readRepoReadme(repoDir: string): Promise<string | undefined> {
+  for (const name of ['README.md', 'Readme.md', 'readme.md']) {
+    const path = join(repoDir, name);
+    if (existsSync(path)) {
+      return readFile(path, 'utf-8');
+    }
+  }
+  return undefined;
 }
 
 function detectRepoSignals(repoDir: string): import('../../../shared/src/types.js').RepoSignals {
@@ -245,6 +256,7 @@ async function cloneAndLocateEntryPoint(
       };
     }
 
+    const gitReadmeContent = await readRepoReadme(tmpDir);
     const result = await detectEntryPoint(tmpDir, incidentId, appHint);
     const repoSignals = detectRepoSignals(tmpDir);
     if (result.gitManifestPath) {
@@ -252,6 +264,7 @@ async function cloneAndLocateEntryPoint(
     }
     return {
       ...result,
+      gitReadmeContent,
       repoSignals,
       repoEntryPointKind: result.repoEntryPointKind ?? 'unknown',
       needsHelmGeneration: !result.gitManifestPath,

@@ -10,6 +10,7 @@ COPY sre-agent-platform/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt uvicorn[standard] fastapi
 
 COPY sre-agent-platform/ ./
+COPY shared/data/ /app/shared/data/
 
 RUN chmod +x entrypoint.sh
 

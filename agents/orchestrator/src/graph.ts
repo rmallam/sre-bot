@@ -76,6 +76,7 @@ import {
 import { persistRunOutcome, persistSuggestedPlan } from './persist-outcome.js';
 import type { HumanDecision } from '../../../shared/src/remediation-outcome.js';
 import { buildDeployPlan } from './deploy-plan.js';
+import { assessDeployCollision } from '../../../shared/src/deploy/collision-policy.js';
 import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
 import { modeOutcomeLabel, runStatusOutcomeLabel } from '../../../shared/src/user-outcomes.js';
 import { deployHeader, sendDeployProgress } from '../../../shared/src/deploy-notify.js';
@@ -734,18 +735,24 @@ async function planNode(state: GraphState): Promise<Partial<GraphState>> {
         );
 
   if (state.mode === 'pre-deploy' && state.request.platform && state.request.channelId) {
-    const existing = state.factsSanitized?.existingDeployments ?? [];
-    if (existing.length > 0) {
-      const preview = existing.slice(0, 6).join(', ');
-      const suffix = existing.length > 6 ? ` (+${existing.length - 6} more)` : '';
+    const collision = assessDeployCollision({
+      namespace: state.namespace,
+      appName: state.request.resourceName,
+      existingDeployments: state.factsSanitized?.existingDeployments,
+      userHint: state.request.rawMessage ?? state.request.userHints?.join(' '),
+    });
+    if (collision.warning) {
+      const confirm =
+        collision.requireReinstallConfirm
+          ? ' Confirm in the approval step if this is an intentional upgrade or reinstall — otherwise cancel.'
+          : '';
       await sendDeployProgress(
         {
           incidentId: state.incidentId,
           platform: state.request.platform,
           channelId: state.request.channelId,
         },
-        `Namespace \`${state.namespace}\` already has deployment(s): ${preview}${suffix}. ` +
-          `If this is a reinstall, confirm in the approval step — otherwise cancel the run.`
+        `${collision.warning}${confirm}`
       );
     }
 
@@ -755,13 +762,14 @@ async function planNode(state: GraphState): Promise<Partial<GraphState>> {
         : plan.action === 'helm_deploy'
           ? 'GitOps via Helm + Argo CD'
           : plan.action;
+    const scenarioHint = plan.enterpriseScenario ? ` [${plan.enterpriseScenario}]` : '';
     await sendDeployProgress(
       {
         incidentId: state.incidentId,
         platform: state.request.platform,
         channelId: state.request.channelId,
       },
-      `Plan ready: ${actionLabel}.`
+      `Plan ready: ${actionLabel}${scenarioHint}.`
     );
   }
 
