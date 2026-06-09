@@ -16,8 +16,37 @@ export function isGitCloneTarget(repo: string | undefined | null): boolean {
   return true;
 }
 
+/** Non-interactive env for git subprocesses in containers (no TTY, no editor). */
+export function gitNonInteractiveEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: 'echo',
+  };
+}
+
+/** Shallow clone a single ref via native git (avoids simple-git editor restrictions). */
+export async function execShallowGitClone(
+  cloneUrl: string,
+  ref: string,
+  dest: string
+): Promise<void> {
+  await execFileAsync(
+    'git',
+    ['clone', '--depth', '1', '--branch', ref, cloneUrl, dest],
+    {
+      env: gitNonInteractiveEnv(),
+      timeout: 120_000,
+      maxBuffer: 4 * 1024 * 1024,
+    }
+  );
+}
+
 export function gitAuthOrMissingRepoError(err: unknown): string | null {
   const msg = String(err);
+  if (/allowUnsafeEditor|EDITOR.*not permitted/i.test(msg)) {
+    return null;
+  }
   if (/remote branch .+ not found|couldn't find remote ref/i.test(msg)) {
     return (
       'Could not find that Git branch or tag. Try specifying a branch, e.g. `@main` or `on branch develop`.'

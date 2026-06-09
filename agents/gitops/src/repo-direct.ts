@@ -8,6 +8,7 @@ import type { Platform } from '../../../shared/src/types.js';
 import type { RemediationPlan } from '../../../shared/src/types.js';
 import {
   cloneWithRefFallback,
+  execShallowGitClone,
   gitAuthOrMissingRepoError,
   isGitCloneTarget,
 } from '../../../shared/src/git-ref.js';
@@ -100,23 +101,13 @@ export async function applyRepoDirect(opts: {
       }
     } else {
       const cloneUrl = toHttpsCloneUrl(repoUrl!, token || undefined);
-      const publicCloneUrl = cloneUrl.replace(/\/\/[^@]+@/, '//');
-      const gitEnv = {
-        ...process.env,
-        GIT_TERMINAL_PROMPT: '0',
-        GIT_ASKPASS: 'echo',
-      };
 
       await sendDeployProgress(notify, `Cloning ${repoUrl} (ref: ${gitRef})…`);
 
       const cloneResult = await cloneWithRefFallback(
-        publicCloneUrl,
+        cloneUrl.replace(/\/\/[^@]+@/, '//'),
         gitRef,
-        async (ref, dest) => {
-          const simpleGit = (await import('simple-git')).default;
-          const git = simpleGit().env(gitEnv);
-          await git.clone(cloneUrl, dest, ['--depth', '1', '--branch', ref]);
-        },
+        (ref, dest) => execShallowGitClone(cloneUrl, ref, dest),
         tmpDir
       );
       if (!cloneResult.ok) {

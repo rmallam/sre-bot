@@ -66,6 +66,7 @@ Your job is to decide the ONE best next step — not to list every possible comm
 
 Rules:
 - If failureKind is cluster_unreachable OR alternateStrategyMayHelp is false: do NOT suggest trying Helm because kubectl failed (or vice versa). Same API connection.
+- If error mentions allowUnsafeEditor or EDITOR: decision retry_with_plan with deployStrategy direct (agent-side git clone bug), NOT manual git config on the user's machine.
 - If the failure is due to a missing resource (especially namespace), set missingResource with a clear reason.
 - For TLS/x509/certificate errors: decision should be escalate_human unless the only fix is a different git branch.
 - For missing git branch: retry_with_plan with suggestedGitRef (e.g. develop, master) if plausible.

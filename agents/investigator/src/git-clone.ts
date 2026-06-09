@@ -1,7 +1,6 @@
-import { execFile as execFileCb } from 'node:child_process';
-import { promisify } from 'node:util';
 import {
   cloneWithRefFallback,
+  execShallowGitClone,
   gitAuthOrMissingRepoError,
   isGitCloneTarget,
   normalizeGithubRepoSlug,
@@ -10,7 +9,6 @@ import {
 } from '../../../shared/src/git-ref.js';
 import { log } from '../../../shared/src/http.js';
 
-const execFile = promisify(execFileCb);
 const AGENT = 'investigator';
 
 export interface ShallowCloneResult {
@@ -42,13 +40,6 @@ export async function shallowCloneRepo(
 
   const cloneUrl = toHttpsCloneUrl(normalizedRepo);
   const gitRef = normalizeRequestedGitRef(requestedRef) ?? requestedRef;
-  const gitEnv = {
-    ...process.env,
-    GIT_TERMINAL_PROMPT: '0',
-    GIT_ASKPASS: 'echo',
-    EDITOR: 'true',
-    GIT_EDITOR: 'true',
-  };
 
   log('info', AGENT, 'Cloning deploy target repo', {
     incidentId,
@@ -60,17 +51,7 @@ export async function shallowCloneRepo(
   const result = await cloneWithRefFallback(
     cloneUrl,
     gitRef,
-    async (ref, dest) => {
-      await execFile(
-        'git',
-        ['clone', '--depth', '1', '--branch', ref, cloneUrl, dest],
-        {
-          env: gitEnv,
-          timeout: 120_000,
-          maxBuffer: 4 * 1024 * 1024,
-        }
-      );
-    },
+    (ref, dest) => execShallowGitClone(cloneUrl, ref, dest),
     tmpDir
   );
 
