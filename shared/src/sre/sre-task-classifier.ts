@@ -31,7 +31,7 @@ export interface SreTaskClassification {
 }
 
 const ADVISORY_PATTERNS: Array<{ scenario: SreTaskScenario; re: RegExp }> = [
-  { scenario: 'rag-disaster-recovery', re: /\b(disaster\s+recover|dr\s+plan|failover\s+procedure)\b/i },
+  { scenario: 'rag-disaster-recovery', re: /\b(disaster\s+recover(?:y|)|dr\s+plan|failover\s+procedure)\b/i },
   { scenario: 'rag-capacity-planning', re: /\b(capacity\s+plan|right\s*siz|autoscaling\s+review)\b/i },
   { scenario: 'rag-security-incident', re: /\b(security\s+incident|breach\s+response|compromised)\b/i },
   { scenario: 'rag-certificate-rotation', re: /\b(cert(ificate)?\s+(rotat|expir|renew)|tls\s+renew)\b/i },
