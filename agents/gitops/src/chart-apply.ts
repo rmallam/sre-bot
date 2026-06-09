@@ -19,6 +19,10 @@ import {
   type DeployFailureAnalysis,
 } from '../../../shared/src/deploy-failure.js';
 import {
+  inspectHelmDependencies,
+  isHelmDependencyError,
+} from '../../../shared/src/helm-dependencies.js';
+import {
   probeClusterConnectivity,
   remediateKubeconfigInsecureTls,
   isInClusterKube,
@@ -128,10 +132,11 @@ async function handleDeployError(
   });
 
   if (!analysis.alternateStrategyMayHelp) {
-    await progress(
-      opts,
-      `Stopping deploy: ${analysis.summary} (not retrying Helm — same cluster connection).`
-    );
+    const hint =
+      analysis.kind === 'cluster_unreachable'
+        ? '(not retrying Helm — same cluster connection).'
+        : '(no alternate deploy path available).';
+    await progress(opts, `Stopping deploy: ${analysis.summary} ${hint}`);
     throw enrichError(err, analysis);
   }
 
@@ -260,38 +265,82 @@ function appLabels(name: string): Record<string, string> {
   };
 }
 
+async function ensureHelmDependencies(opts: ChartApplyOpts): Promise<void> {
+  const info = await inspectHelmDependencies(opts.chartDir);
+  if (!info.hasDependencies || info.vendored) return;
+
+  const names = info.names.length ? info.names.join(', ') : 'subcharts';
+  await progress(opts, `Fetching Helm chart dependencies (${names})…`);
+
+  try {
+    await runCmd('helm', ['dependency', 'update', opts.chartDir], opts.incidentId);
+    await progress(opts, 'Helm dependencies downloaded.');
+    return;
+  } catch (updateErr) {
+    log('warn', 'gitops-agent', 'helm dependency update failed — trying build', {
+      incidentId: opts.incidentId,
+      error: String(updateErr).slice(0, 300),
+    });
+  }
+
+  await runCmd('helm', ['dependency', 'build', opts.chartDir], opts.incidentId);
+  await progress(opts, 'Helm dependencies built.');
+}
+
+async function runHelmWithDependencyRetry(
+  opts: ChartApplyOpts,
+  fn: () => Promise<void>,
+  context: string
+): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    if (!isHelmDependencyError(err)) {
+      throw err;
+    }
+    log('info', 'gitops-agent', 'Helm dependency error — fetching subcharts and retrying', {
+      incidentId: opts.incidentId,
+      context,
+    });
+    await ensureHelmDependencies(opts);
+    await fn();
+  }
+}
+
 async function applyHelmTemplate(opts: ChartApplyOpts): Promise<void> {
   await progress(opts, 'Rendering chart with helm template, then kubectl apply…');
-  const { stdout } = await runCmd(
-    'helm',
-    [
-      'template',
-      opts.releaseName,
-      opts.chartDir,
-      '--namespace',
-      opts.namespace,
-      '--create-namespace',
-    ],
-    opts.incidentId
-  );
-  const renderedDir = await mkdtemp(join(tmpdir(), 'sre-helm-render-'));
-  const renderedPath = join(renderedDir, 'manifest.yaml');
-  await writeFile(renderedPath, stdout, 'utf-8');
-
-  if (opts.dryRun) {
-    await runCmd(
-      'kubectl',
-      ['apply', '-f', renderedPath, '--dry-run=server', '-n', opts.namespace],
+  await runHelmWithDependencyRetry(opts, async () => {
+    const { stdout } = await runCmd(
+      'helm',
+      [
+        'template',
+        opts.releaseName,
+        opts.chartDir,
+        '--namespace',
+        opts.namespace,
+        '--create-namespace',
+      ],
       opts.incidentId
     );
-  }
-  await progress(opts, `Applying rendered chart to namespace ${opts.namespace}…`);
-  await runCmd(
-    'kubectl',
-    ['apply', '-f', renderedPath, '-n', opts.namespace],
-    opts.incidentId
-  );
-  await progress(opts, `Helm template + kubectl apply finished for ${opts.namespace}.`);
+    const renderedDir = await mkdtemp(join(tmpdir(), 'sre-helm-render-'));
+    const renderedPath = join(renderedDir, 'manifest.yaml');
+    await writeFile(renderedPath, stdout, 'utf-8');
+
+    if (opts.dryRun) {
+      await runCmd(
+        'kubectl',
+        ['apply', '-f', renderedPath, '--dry-run=server', '-n', opts.namespace],
+        opts.incidentId
+      );
+    }
+    await progress(opts, `Applying rendered chart to namespace ${opts.namespace}…`);
+    await runCmd(
+      'kubectl',
+      ['apply', '-f', renderedPath, '-n', opts.namespace],
+      opts.incidentId
+    );
+    await progress(opts, `Helm template + kubectl apply finished for ${opts.namespace}.`);
+  }, 'helm-template');
 }
 
 async function applyHelmUpgrade(opts: ChartApplyOpts): Promise<void> {
@@ -305,11 +354,13 @@ async function applyHelmUpgrade(opts: ChartApplyOpts): Promise<void> {
     opts.namespace,
     '--create-namespace',
   ];
-  if (opts.dryRun) {
-    await runCmd('helm', [...base, '--dry-run'], opts.incidentId);
-  }
-  await runCmd('helm', base, opts.incidentId);
-  await progress(opts, `Helm release ${opts.releaseName} installed in ${opts.namespace}.`);
+  await runHelmWithDependencyRetry(opts, async () => {
+    if (opts.dryRun) {
+      await runCmd('helm', [...base, '--dry-run'], opts.incidentId);
+    }
+    await runCmd('helm', base, opts.incidentId);
+    await progress(opts, `Helm release ${opts.releaseName} installed in ${opts.namespace}.`);
+  }, 'helm-upgrade');
 }
 
 export async function applyHelmChartWithFallbacks(opts: ChartApplyOpts): Promise<string> {
@@ -345,6 +396,8 @@ export async function applyHelmChartWithFallbacks(opts: ChartApplyOpts): Promise
   }
 
   if (helmOk) {
+    await ensureHelmDependencies(opts);
+
     try {
       await applyHelmTemplate(opts);
       return 'helm-template-kubectl';

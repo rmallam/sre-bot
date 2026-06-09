@@ -104,6 +104,20 @@ export function classifyDeployFailure(err: unknown): DeployFailureAnalysis {
     };
   }
 
+  if (
+    /missing in charts\/ directory/i.test(msg) ||
+    /found in chart\.yaml, but missing/i.test(msg) ||
+    /helm dependency build/i.test(msg) ||
+    /an error occurred while checking for chart dependencies/i.test(msg)
+  ) {
+    return {
+      kind: 'helm_tooling',
+      summary: 'Helm chart dependencies were not vendored in the cloned repository.',
+      alternateStrategyMayHelp: true,
+      autoRemediations: [],
+    };
+  }
+
   if (/invalid|failed to parse|error validating|admission webhook/i.test(msg)) {
     return {
       kind: 'manifest',
