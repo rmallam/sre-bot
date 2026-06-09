@@ -25,6 +25,7 @@ import { tryResumeCaseWithHint } from './case-manager.js';
 import { tryPlatformSemanticRoute } from './semantic-platform.js';
 import { normalizeDeployCommand } from '../../../shared/src/deploy-command.js';
 import type { DeployRoutingSource } from '../../../shared/src/deploy-confidence.js';
+import { resolveAgentMode } from '../../../shared/src/agent-mode.js';
 import { isHelpQuery, HELP_MESSAGE } from './help.js';
 import { getChatTranscriptForLlm } from './chat-transcript.js';
 import { getSession } from './sessions.js';
