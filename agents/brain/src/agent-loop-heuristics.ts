@@ -3,14 +3,12 @@
  */
 
 import type { DiagnosisContext } from '../../../shared/src/types.js';
+import { extractPrimaryFailure } from '../../../shared/src/investigation-diagnosis.js';
 import type { AgentNextReadRequest, AgentNextReadResponse } from './agent-loop.js';
 
-function hasImagePullBackOff(evidence: Partial<DiagnosisContext>): boolean {
-  const statuses = evidence.containerStatuses ?? [];
-  return statuses.some((s) => {
-    const w = (s as { state?: { waiting?: { reason?: string } } }).state?.waiting;
-    return w?.reason === 'ImagePullBackOff' || w?.reason === 'ErrImagePull';
-  });
+function hasTerminalFailure(evidence: Partial<DiagnosisContext>): boolean {
+  const primary = extractPrimaryFailure(evidence);
+  return primary?.terminal === true;
 }
 
 export function heuristicAgentNextRead(req: AgentNextReadRequest): AgentNextReadResponse {
@@ -29,6 +27,16 @@ export function heuristicAgentNextRead(req: AgentNextReadRequest): AgentNextRead
     };
   }
 
+  const primaryAfterWorkload = extractPrimaryFailure(evidence);
+  if (primaryAfterWorkload?.terminal && !fetchedTools.includes('investigator.get_events')) {
+    return {
+      done: false,
+      toolCall: { name: 'investigator.get_events' },
+      summary: `${primaryAfterWorkload.summary} — confirming from events…`,
+      reasoning: 'heuristic_events_after_terminal',
+    };
+  }
+
   if (!fetchedTools.includes('investigator.get_events')) {
     return {
       done: false,
@@ -38,31 +46,49 @@ export function heuristicAgentNextRead(req: AgentNextReadRequest): AgentNextRead
     };
   }
 
-  if (hasImagePullBackOff(evidence) && !userHints?.length) {
+  const primary = extractPrimaryFailure(evidence);
+  if (primary?.suggestedAction === 'ask_image' && !userHints?.length) {
     return {
       done: true,
-      summary:
-        'Image pull failure detected — need correct image registry/tag or pull secret from you.',
+      summary: `${primary.summary}. Reply with the correct image tag or pull secret.`,
       reasoning: 'heuristic_image_pull',
     };
   }
 
-  if (!fetchedTools.includes('investigator.logs_query') && priorSteps.length < 5) {
+  if (hasTerminalFailure(evidence)) {
     return {
-      done: false,
-      toolCall: { name: 'investigator.logs_query', input: { sinceMinutes: 30 } },
-      summary: 'Fetching container logs…',
-      reasoning: 'heuristic_logs',
+      done: true,
+      summary: primary?.summary ?? 'Terminal failure identified — ready to plan fix',
+      reasoning: 'heuristic_terminal_failure',
     };
   }
 
+  if (!fetchedTools.includes('investigator.logs_query') && priorSteps.length < 5) {
+    const sig = extractPrimaryFailure(evidence);
+    if (
+      sig?.suggestedAction !== 'ask_image' &&
+      sig?.signature !== 'ImagePullBackOff' &&
+      !hasTerminalFailure(evidence)
+    ) {
+      return {
+        done: false,
+        toolCall: { name: 'investigator.logs_query', input: { sinceMinutes: 30 } },
+        summary: 'Fetching container logs…',
+        reasoning: 'heuristic_logs',
+      };
+    }
+  }
+
   if (!fetchedTools.includes('investigator.metrics_query') && priorSteps.length < 7) {
-    return {
-      done: false,
-      toolCall: { name: 'investigator.metrics_query' },
-      summary: 'Checking workload metrics…',
-      reasoning: 'heuristic_metrics',
-    };
+    const sig = extractPrimaryFailure(evidence);
+    if (sig?.suggestedAction !== 'ask_image' && !hasTerminalFailure(evidence)) {
+      return {
+        done: false,
+        toolCall: { name: 'investigator.metrics_query' },
+        summary: 'Checking workload metrics…',
+        reasoning: 'heuristic_metrics',
+      };
+    }
   }
 
   return {

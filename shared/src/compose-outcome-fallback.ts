@@ -191,28 +191,64 @@ function formatWorkloadStatus(facts: WorkloadStatusFacts, verbose: boolean): str
   return lines.join('\n');
 }
 
-function stripCodeFences(text: string): string {
-  return text.replace(/```[\s\S]*?```/g, '').trim();
+function extractListingBlock(text: string): string {
+  const m = text.match(/```\n?([\s\S]*?)```/);
+  if (m) return m[1]!.trim();
+  return text.trim();
 }
 
 function formatClusterGet(data: ClusterGetOutcome, verbose: boolean): string {
-  const where = data.namespace ? ` in **${data.namespace}**` : '';
-  const headline = `Here are **${data.resource}**${where} (${data.shown} of ${data.total} shown).`;
-
-  if (!verbose) {
-    const stripped = stripCodeFences(data.text);
-    const rows = stripped
+  const titleLine =
+    data.text
       .split('\n')
       .map((l) => l.trim())
-      .filter((l) => l && !l.startsWith('Showing') && !l.includes('```'));
-    const preview = rows.slice(0, 4).join('\n');
-    if (preview.length > 20) {
-      return joinParagraphs([headline, preview, 'Say **more detail** for the full table.']);
+      .find((l) => l && !l.startsWith('```')) ?? `📋 ${data.resource}`;
+  const listing = extractListingBlock(data.text);
+  const lines = listing.split('\n').filter((l) => l.trim().length > 0);
+  const header = lines[0] ?? '';
+  const rows = lines.slice(1);
+  const maxRows = verbose ? rows.length : 20;
+  const body = [header, ...rows.slice(0, maxRows)].join('\n');
+  const suffix =
+    !verbose && rows.length > maxRows
+      ? `\n… and ${rows.length - maxRows} more. Say **more detail** for the full list.`
+      : '';
+
+  return joinParagraphs([titleLine, '```', `${body}${suffix}`, '```']);
+}
+
+function formatEventInvestigation(data: import('./k8s-event-investigation.js').EventInvestigationOutcome): string {
+  const statusLine = data.clusterHealthy
+    ? '**Cluster is healthy right now** — nodes Ready, no failing workloads detected.'
+    : '**Cluster has active problems** — see current state below.';
+
+  const severityLabel =
+    data.severity === 'benign'
+      ? 'Low impact'
+      : data.severity === 'warning'
+        ? 'Warning'
+        : 'Needs attention';
+
+  const lines = [
+    `**${data.title}** (${severityLabel})`,
+    '',
+    statusLine,
+    '',
+    `**Event:** \`${data.reason}\`${data.message ? ` — ${data.message.slice(0, 200)}` : ''}`,
+    '',
+    data.explanation,
+    '',
+    `**Recommendation:** ${data.recommendation}`,
+  ];
+
+  if (data.currentNotes.length > 0) {
+    lines.push('', '**Current cluster state (just checked):**');
+    for (const n of data.currentNotes) {
+      lines.push(`• ${n}`);
     }
-    return joinParagraphs([headline, data.text.slice(0, 800)]);
   }
 
-  return joinParagraphs([headline, data.text]);
+  return lines.join('\n').slice(0, 3900);
 }
 
 function formatHealth(data: HealthOutcome, verbose: boolean): string {
@@ -261,6 +297,48 @@ function formatHealth(data: HealthOutcome, verbose: boolean): string {
   return lines.join('\n').slice(0, 3900);
 }
 
+function formatAppReview(data: import('./command-outcome.js').AppReviewOutcome, verbose: boolean): string {
+  if (data.clusterReachable === false) {
+    return joinParagraphs([
+      `⚠️ I can't reach the Kubernetes cluster to review app **${data.appId}**.`,
+      data.error ?? 'Check that the cluster is running and investigator can access the API.',
+    ]);
+  }
+
+  if (!data.reachable) {
+    return joinParagraphs([
+      `I couldn't find app **${data.appId}** in namespace **${data.namespace}**.`,
+      'Check the app name or add `sre.bot/app-id` on the Deployment.',
+    ]);
+  }
+
+  const statusEmoji =
+    data.overallStatus === 'ok' ? '✅' : data.overallStatus === 'degraded' ? '⚠️' : '❌';
+
+  const lines = [
+    `${statusEmoji} **App ${data.appId}** (${data.namespace}) — **${data.overallStatus}**`,
+    '',
+    data.narrative.replace(/\*\*/g, ''),
+  ];
+
+  if (data.frontierName && data.overallStatus !== 'ok') {
+    lines.push('');
+    lines.push(
+      `Likely root cause: **${data.frontierKind ?? 'component'}** \`${data.frontierName}\`${data.frontierDetail ? ` — ${data.frontierDetail}` : ''}`
+    );
+  }
+
+  if (verbose && data.nodeCount > 0) {
+    lines.push('', `Tracked ${data.nodeCount} component(s) in the app graph.`);
+  }
+
+  if (!verbose && data.overallStatus !== 'ok') {
+    lines.push('', 'Say *fix it* or *investigate* with the component name to start remediation.');
+  }
+
+  return lines.join('\n').slice(0, 3900);
+}
+
 function formatChoicePrompt(data: ChoicePromptOutcome): string {
   const lines = data.options.map((o, i) => `${i + 1}. ${o.label}`);
   return joinParagraphs([
@@ -293,6 +371,10 @@ export function formatCommandOutcomeFallback(
       return formatClusterGet(outcome.data, verbose);
     case 'health':
       return formatHealth(outcome.data, verbose);
+    case 'event_investigation':
+      return formatEventInvestigation(outcome.data);
+    case 'app_review':
+      return formatAppReview(outcome.data, verbose);
     case 'not_found':
       return formatNotFound(outcome.subject, outcome.namespace, outcome.context);
     case 'choice_prompt':

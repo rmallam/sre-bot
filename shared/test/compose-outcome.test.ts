@@ -42,4 +42,27 @@ const unreachableCluster = formatCommandOutcomeFallback({
 assert.match(unreachableCluster, /can't reach/i);
 assert.match(unreachableCluster, /cluster may be stopped/i);
 
+const clusterGetPods = formatCommandOutcomeFallback({
+  kind: 'cluster_get',
+  data: {
+    resource: 'pods',
+    namespace: 'sre-bot-system',
+    total: 2,
+    shown: 2,
+    text: [
+      '📋 Pods in sre-bot-system (2)',
+      '',
+      '```',
+      'NAME                                 READY    STATUS',
+      'console-agent-abc                    1/1      Running',
+      'commander-agent-def                  1/1      Running',
+      '```',
+    ].join('\n'),
+  },
+});
+
+assert.match(clusterGetPods, /console-agent-abc/);
+assert.match(clusterGetPods, /commander-agent-def/);
+assert.doesNotMatch(clusterGetPods, /Say \*\*more detail\*\* for the full table/i);
+
 console.log('compose-outcome.test.ts: ok');

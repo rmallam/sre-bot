@@ -1,12 +1,16 @@
-import simpleGit from 'simple-git';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   cloneWithRefFallback,
   gitAuthOrMissingRepoError,
   isGitCloneTarget,
+  normalizeGithubRepoSlug,
+  normalizeRequestedGitRef,
   toHttpsCloneUrl,
 } from '../../../shared/src/git-ref.js';
 import { log } from '../../../shared/src/http.js';
 
+const execFile = promisify(execFileCb);
 const AGENT = 'investigator';
 
 export interface ShallowCloneResult {
@@ -27,7 +31,8 @@ export async function shallowCloneRepo(
   | { ok: true; resolvedRef: string; attemptedRefs: string[] }
   | { ok: false; error: string; attemptedRefs: string[] }
 > {
-  if (!isGitCloneTarget(repoUrl)) {
+  const normalizedRepo = normalizeGithubRepoSlug(repoUrl);
+  if (!isGitCloneTarget(normalizedRepo)) {
     return {
       ok: false,
       error: 'No Git repository to clone for this deploy',
@@ -35,26 +40,36 @@ export async function shallowCloneRepo(
     };
   }
 
-  const cloneUrl = toHttpsCloneUrl(repoUrl);
+  const cloneUrl = toHttpsCloneUrl(normalizedRepo);
+  const gitRef = normalizeRequestedGitRef(requestedRef) ?? requestedRef;
   const gitEnv = {
     ...process.env,
     GIT_TERMINAL_PROMPT: '0',
     GIT_ASKPASS: 'echo',
+    EDITOR: 'true',
+    GIT_EDITOR: 'true',
   };
 
   log('info', AGENT, 'Cloning deploy target repo', {
     incidentId,
     repoUrl: cloneUrl,
-    gitRef: requestedRef,
+    gitRef: gitRef,
     tmpDir,
   });
 
   const result = await cloneWithRefFallback(
     cloneUrl,
-    requestedRef,
+    gitRef,
     async (ref, dest) => {
-      const git = simpleGit().env(gitEnv);
-      await git.clone(cloneUrl, dest, ['--depth', '1', '--branch', ref]);
+      await execFile(
+        'git',
+        ['clone', '--depth', '1', '--branch', ref, cloneUrl, dest],
+        {
+          env: gitEnv,
+          timeout: 120_000,
+          maxBuffer: 4 * 1024 * 1024,
+        }
+      );
     },
     tmpDir
   );

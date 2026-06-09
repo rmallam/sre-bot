@@ -54,6 +54,7 @@ import {
 import { fetchRunDetailsText } from './run-details.js';
 import { getChannelPref } from './channel-prefs.js';
 import { tryPendingRunFollowUp } from './pending-run-followup.js';
+import { editMessageFormatted, replyFormatted } from './telegram-send.js';
 
 const AGENT = 'commander-agent';
 const PLATFORM = 'telegram' as const;
@@ -130,19 +131,18 @@ function ackMessage(incidentId: string, type: string, parsed?: import('./parser.
   return `Got it! I'm on it — I'll message you when done.`;
 }
 
-/** Send a safe reply — optionally with inline HIL action buttons. */
+/** Send a formatted reply — HTML (bold/code/pre) with plain fallback. */
 async function safeReply(
   ctx: Context,
   text: string,
   quickActions?: Array<{ id: string; label: string }>
 ): Promise<void> {
   try {
-    if (quickActions?.length) {
-      const rows = quickActions.map((a) => [Markup.button.callback(a.label, a.id)]);
-      await ctx.reply(text, Markup.inlineKeyboard(rows));
-    } else {
-      await ctx.reply(text);
-    }
+    const replyMarkup = quickActions?.length
+      ? Markup.inlineKeyboard(quickActions.map((a) => [Markup.button.callback(a.label, a.id)]))
+          .reply_markup
+      : undefined;
+    await replyFormatted(ctx, text, replyMarkup);
     const uid = userId(ctx);
     const cid = channelId(ctx);
     void recordChatReply(PLATFORM, cid, uid, text);
@@ -154,10 +154,10 @@ async function safeReply(
   }
 }
 
-/** Replace an HIL approval card — plain text, strip buttons (original is MarkdownV2). */
+/** Replace an HIL approval card — strip buttons after action. */
 async function editHilApprovalCard(ctx: Context, text: string, incidentId: string): Promise<void> {
   try {
-    await ctx.editMessageText(text, { reply_markup: { inline_keyboard: [] } });
+    await editMessageFormatted(ctx, text);
   } catch (err) {
     log('warn', AGENT, 'editMessageText failed for HIL approval card', {
       incidentId,
@@ -170,7 +170,7 @@ async function editHilApprovalCard(ctx: Context, text: string, incidentId: strin
 /** Edit the choice prompt in place; fall back to a new message if Telegram rejects the edit. */
 async function editOrReply(ctx: Context, text: string): Promise<void> {
   try {
-    await ctx.editMessageText(text, { reply_markup: { inline_keyboard: [] } });
+    await editMessageFormatted(ctx, text);
     const uid = userId(ctx);
     const cid = channelId(ctx);
     void recordChatReply(PLATFORM, cid, uid, text);
@@ -266,13 +266,14 @@ async function submitOperatorSuggestion(
       return;
     }
     const sourceLabel = body.source === 'rules' ? 'quick parse' : 'AI parse';
-    await ctx.reply(
+    await replyFormatted(
+      ctx,
       `Your suggested fix (${sourceLabel}):\n\n${body.summary ?? 'Plan updated.'}\n\n` +
         `Tap **Apply my fix** to run it, or **Approve** if you are happy with the updated plan.`,
       Markup.inlineKeyboard([
         [Markup.button.callback('Apply my fix', `hil_approve_${incidentId}`)],
         [Markup.button.callback('Reject', `hil_reject_${incidentId}`)],
-      ])
+      ]).reply_markup
     );
   } catch (err) {
     log('error', AGENT, 'Failed to submit operator suggestion', { incidentId, error: String(err) });
@@ -286,12 +287,13 @@ async function launchDeploy(ctx: Context, deploy: import('./parser.js').DeployCm
 
   if (!deploy.createNamespace && (await needsNamespaceCreatePrompt(deploy))) {
     storeNamespaceCreatePrompt(PLATFORM, cid, uid, deploy);
-    await ctx.reply(
+    await replyFormatted(
+      ctx,
       buildNamespaceCreatePrompt(deploy),
       Markup.inlineKeyboard([
         [Markup.button.callback('Yes, create namespace', 'namespace_create_yes')],
         [Markup.button.callback('Cancel', 'namespace_create_cancel')],
-      ])
+      ]).reply_markup
     );
     return;
   }
@@ -418,7 +420,8 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
   try {
     if (parsed.type === 'deploy' && !parsed.deployStrategyExplicit) {
       const prompt = await buildDeployChoicePrompt(PLATFORM, cid, uid, parsed);
-      await ctx.reply(
+      await replyFormatted(
+        ctx,
         prompt,
         Markup.inlineKeyboard([
           [
@@ -426,7 +429,7 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
             Markup.button.callback('Direct (No Git Push)', 'deploy_choice_direct'),
           ],
           [Markup.button.callback('Cancel', 'deploy_choice_cancel')],
-        ])
+        ]).reply_markup
       );
       return;
     }
@@ -450,7 +453,7 @@ async function processText(ctx: Context, rawText: string): Promise<void> {
           rows.push(choiceButtons.slice(i, i + 2));
         }
         rows.push([Markup.button.callback('Cancel', 'investigate_choice_cancel')]);
-        await ctx.reply(flow.prompt, Markup.inlineKeyboard(rows));
+        await replyFormatted(ctx, flow.prompt, Markup.inlineKeyboard(rows).reply_markup);
         return;
       }
       if (flow.kind === 'ready') {

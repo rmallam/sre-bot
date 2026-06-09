@@ -105,6 +105,9 @@ kind: Deployment
 metadata:
   name: console-agent
   namespace: {{ $ns }}
+  annotations:
+    sre.bot/app-id: console
+    sre.bot/depends-on: commander-agent,investigator-agent,orchestrator-agent,hil-agent
 spec:
   replicas: {{ .Values.agents.console.replicas }}
   selector:

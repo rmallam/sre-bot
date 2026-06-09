@@ -84,6 +84,9 @@ kind: Deployment
 metadata:
   name: commander-agent
   namespace: {{ $ns }}
+  annotations:
+    sre.bot/app-id: commander
+    sre.bot/depends-on: orchestrator-agent,investigator-agent,redis-agent
 spec:
   replicas: {{ .Values.agents.commander.replicas }}
   selector:
@@ -211,6 +214,9 @@ kind: Deployment
 metadata:
   name: investigator-agent
   namespace: {{ $ns }}
+  annotations:
+    sre.bot/app-id: investigator
+    sre.bot/depends-on: brain-agent,orchestrator-agent
 spec:
   replicas: {{ .Values.agents.investigator.replicas }}
   selector:
@@ -478,6 +484,9 @@ kind: Deployment
 metadata:
   name: orchestrator-agent
   namespace: {{ $ns }}
+  annotations:
+    sre.bot/app-id: orchestrator
+    sre.bot/depends-on: investigator-agent,brain-agent,hil-agent,gitops-agent
 spec:
   replicas: {{ .Values.agents.orchestrator.replicas }}
   selector:

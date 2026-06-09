@@ -128,6 +128,13 @@ export async function gatherClusterHealthFacts(incidentId: string): Promise<Part
 
   const summaryLines = [
     `Cluster overview: ${nodes.length} node(s), ${notReadyNodes.length} not Ready`,
+    'Nodes:',
+    ...nodes.slice(0, 12).map((n) => {
+      const name = n.metadata?.name ?? '?';
+      const ready = (n.status?.conditions ?? []).find((c) => c.type === 'Ready');
+      const status = ready?.status === 'True' ? 'Ready' : 'NotReady';
+      return `  - ${name}: ${status}`;
+    }),
     `Deployments not fully ready: ${unhealthy.length}`,
     ...unhealthy.map((u) => `  - ${u.ns}/${u.name}: ${u.ready}/${u.desired} ready`),
   ];

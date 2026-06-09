@@ -12,6 +12,7 @@ export function OutcomeBadge({ worked }: Props) {
   return <span className="outcome-badge pending">Pending</span>;
 }
 
-export function formatAction(action: string): string {
+export function formatAction(action: string | undefined): string {
+  if (!action) return '—';
   return action.replace(/_/g, ' ');
 }

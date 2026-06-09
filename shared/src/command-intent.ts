@@ -14,7 +14,7 @@ export type CommandIntentName =
   | 'help'
   | 'chat';
 
-export type CommandInvestigateScope = 'cluster' | 'namespace' | 'workload';
+export type CommandInvestigateScope = 'cluster' | 'namespace' | 'workload' | 'app';
 
 export interface CommandIntent {
   intent: CommandIntentName;

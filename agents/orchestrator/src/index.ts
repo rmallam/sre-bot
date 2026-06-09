@@ -3,7 +3,7 @@ import type { ResumeRunRequest, StartRunRequest } from '../../../shared/src/type
 import { log } from '../../../shared/src/http.js';
 import { startRun, resumeRunAfterApproval } from './graph.js';
 import { listToolDefinitions } from '../../../shared/src/tool-registry.js';
-import { getRun, listRuns, setRunStatus } from './run-store.js';
+import { getRun, listRuns, resolveRun, setRunStatus, findActiveRunByResourceKey } from './run-store.js';
 import {
   enrichStoredRun,
   groupRunsByResource,
@@ -13,6 +13,7 @@ import {
 import { formatRunSummaryForUser } from '../../../shared/src/run-summary.js';
 import { createRunStore, closeRunStore } from './stores/index.js';
 import { findActiveDuplicateRun } from './run-dedupe.js';
+import { reconcileStaleActiveRun } from './stale-run-reconcile.js';
 import { persistCiVerifyOutcome } from './persist-outcome.js';
 
 const AGENT = 'orchestrator-agent';
@@ -52,18 +53,40 @@ app.get('/tools', (_req, res) => {
 
 app.post('/runs', async (req: Request, res: Response) => {
   const body = req.body as StartRunRequest;
-  if (!body?.incidentId || !body.namespace || !body.resourceName) {
-    res.status(400).json({ error: 'incidentId, namespace, resourceName required' });
+  const missing: string[] = [];
+  if (!body?.incidentId?.trim()) missing.push('incidentId');
+  if (!body?.namespace?.trim()) missing.push('namespace');
+  if (!body?.resourceName?.trim()) missing.push('resourceName');
+  if (missing.length > 0) {
+    res.status(400).json({
+      error: 'incidentId, namespace, resourceName required',
+      missing,
+      hint:
+        'Deploy requests need a target namespace and app name. ' +
+        'Example: namespace=frappe-operator-system, resourceName=frappe-operator',
+    });
     return;
   }
 
   const dedupeLimit = parseInt(process.env['ORCHESTRATOR_DEDUPE_SCAN_LIMIT'] ?? '200', 10);
-  const recent = await listRuns({ limit: dedupeLimit });
-  const duplicate = findActiveDuplicateRun(body, recent);
+  const indexed = await findActiveRunByResourceKey(body);
+  const duplicate =
+    indexed &&
+    (indexed.status === 'running' || indexed.status === 'awaiting_human')
+      ? {
+          runId: indexed.runId,
+          incidentId: indexed.incidentId,
+          status: indexed.status,
+        }
+      : findActiveDuplicateRun(body, await listRuns({ limit: dedupeLimit }));
   if (duplicate) {
-    const reconciled = await reconcileStaleAwaitingHuman(duplicate, async (runId) => {
-      await setRunStatus(runId, 'cancelled');
-    });
+    const reconciled = await reconcileStaleActiveRun(
+      duplicate,
+      getRun,
+      async (runId) => {
+        await setRunStatus(runId, 'cancelled');
+      }
+    );
     if (reconciled !== 'cancelled_stale') {
       log('info', AGENT, 'Skipped duplicate run request', {
         incidentId: body.incidentId,
@@ -182,7 +205,7 @@ app.get('/runs/skills-export', async (req: Request, res: Response) => {
 });
 
 app.get('/runs/:runId/summary', async (req: Request, res: Response) => {
-  const entry = await getRun(req.params.runId ?? '');
+  const entry = await resolveRun(req.params.runId ?? '');
   if (!entry) {
     res.status(404).json({ error: 'Run not found' });
     return;
@@ -197,29 +220,30 @@ app.get('/runs/:runId/summary', async (req: Request, res: Response) => {
 });
 
 app.post('/runs/:runId/cancel', async (req: Request, res: Response) => {
-  const runId = req.params.runId ?? '';
-  const entry = await getRun(runId);
+  const rawId = req.params.runId ?? '';
+  const entry = await resolveRun(rawId);
   if (!entry) {
     res.status(404).json({ error: 'Run not found' });
     return;
   }
-  await setRunStatus(runId, 'cancelled');
+  await setRunStatus(entry.runId, 'cancelled');
   log('info', AGENT, 'Run cancelled', {
-    runId,
+    runId: entry.runId,
     incidentId: entry.incidentId,
     reason: (req.body as { reason?: string })?.reason,
   });
-  res.json({ ok: true, runId, status: 'cancelled' });
+  res.json({ ok: true, runId: entry.runId, status: 'cancelled' });
 });
 
 app.get('/runs/:runId', async (req: Request, res: Response) => {
-  const entry = await getRun(req.params.runId ?? '');
+  const entry = await resolveRun(req.params.runId ?? '');
   if (!entry) {
     res.status(404).json({ error: 'Run not found' });
     return;
   }
   res.json({
     runId: entry.runId,
+    resolvedFrom: entry.runId !== req.params.runId ? req.params.runId : undefined,
     incidentId: entry.incidentId,
     status: entry.status,
     startedAt: entry.startedAt,

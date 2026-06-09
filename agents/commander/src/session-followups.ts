@@ -52,6 +52,34 @@ export async function trySessionFollowUp(
   }
 
   if (
+    session?.lastAppReview &&
+    /\b(fix( it)?|remediate|repair|patch it|make it work)\b/i.test(t) &&
+    !/\b(fix|remediate)\s+(the\s+)?(cluster|namespace)\b/i.test(t)
+  ) {
+    const ar = session.lastAppReview;
+    const targetNs = ar.frontierNamespace ?? ar.namespace;
+    const targetName =
+      ar.frontierKind === 'pod' || ar.frontierKind === 'deployment'
+        ? (ar.frontierName ?? ar.appId)
+        : ar.appId;
+    const targetKind = ar.frontierKind === 'pod' ? ('Pod' as const) : ('Deployment' as const);
+    const parsed: ParsedCommand = {
+      type: 'investigate',
+      scope: 'app',
+      namespace: targetNs,
+      resourceName: ar.appId,
+      resourceKind: targetKind,
+      label: `app ${ar.appId}`,
+      operatorSuggestion: `remediate frontier ${targetNs}/${targetName}`,
+    };
+    return {
+      type: 'parsed',
+      parsed,
+      reply: `On it — remediating **${targetNs}/${targetName}** (frontier from app **${ar.appId}** review).`,
+    };
+  }
+
+  if (
     session?.activeTopic?.kind === 'investigate' &&
     session.activeTopic.resourceName &&
     session.activeTopic.namespace &&
@@ -83,6 +111,21 @@ export async function trySessionFollowUp(
         reply: `Got it — I'll update the image to \`${imageRef}\` on **${topic.namespace}/${topic.resourceName}** and retry the fix.`,
       };
     }
+  }
+
+  if (/\b(what'?s happening|show progress|run status|what are you doing|status update)\b/i.test(t)) {
+    if (session?.lastRunId) {
+      const details = await fetchRunDetailsText(session.lastRunId, { verbose: true });
+      return { type: 'reply', text: details };
+    }
+    if (session?.lastIncidentId) {
+      const details = await fetchLatestRunSummaryByIncident(session.lastIncidentId, { verbose: true });
+      if (details) return { type: 'reply', text: details };
+    }
+    return {
+      type: 'reply',
+      text: "I don't have an active run to report on. Start an investigation or deploy first.",
+    };
   }
 
   if (/\b(show logs|show details|log excerpt|more logs)\b/i.test(t)) {

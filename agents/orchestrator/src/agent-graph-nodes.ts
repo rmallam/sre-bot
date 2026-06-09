@@ -14,6 +14,11 @@ import {
   buildAgentGoal,
   mergeAgentEvidence,
 } from '../../../shared/src/agent-evidence.js';
+import {
+  enrichFactsWithPrimaryFailure,
+  extractPrimaryFailure,
+  formatPrimaryFailureMessage,
+} from '../../../shared/src/investigation-diagnosis.js';
 import { resolveRunAgentMode } from '../../../shared/src/agent-mode.js';
 import { log } from '../../../shared/src/http.js';
 import {
@@ -88,6 +93,15 @@ export async function agentDecideNode(
         lastError: next.summary ?? 'awaiting_user_input',
         pendingReadTool: undefined,
         agentGoal: goal,
+        agentInvestigateComplete: true,
+      };
+    }
+    if (next.reasoning === 'heuristic_terminal_failure') {
+      await notify.user(`🔍 ${next.summary ?? 'Identified workload failure — planning fix.'}`);
+      return {
+        pendingReadTool: undefined,
+        agentGoal: goal,
+        agentInvestigateComplete: true,
       };
     }
     if (next.reasoning === 'llm_escalate') {
@@ -123,7 +137,7 @@ export async function agentDecideNode(
 /** Execute one read tool (ReAct "act" node for reads). */
 export async function agentReadNode(
   state: AgentInvestigateSlice,
-  notify: { progress: (summary: string) => Promise<void> }
+  notify: { progress: (summary: string) => Promise<void>; user?: (message: string) => Promise<void> }
 ): Promise<Partial<AgentInvestigateSlice>> {
   const tool = state.pendingReadTool;
   if (!tool?.name) {
@@ -156,7 +170,13 @@ export async function agentReadNode(
 
   await notify.progress(stepResult.summary);
 
-  const merged = mergeAgentEvidence(state.agentEvidence ?? {}, stepResult.data);
+  const enrichedData = enrichFactsWithPrimaryFailure(stepResult.data);
+  const primary = extractPrimaryFailure(enrichedData);
+  if (primary && notify.user && !(state.agentEvidence?.detectedErrorSignature)) {
+    await notify.user(formatPrimaryFailureMessage(primary));
+  }
+
+  const merged = mergeAgentEvidence(state.agentEvidence ?? {}, enrichedData);
   const step: AgentStepRecord = {
     tool: toolName,
     summary: stepResult.summary,
@@ -181,7 +201,9 @@ export async function agentFinalizeNode(
   const evidence = state.agentEvidence ?? {};
   const steps = state.agentSteps ?? [];
 
-  let facts = agentEvidenceToDiagnosisContext(state.request, evidence, steps);
+  let facts = enrichFactsWithPrimaryFailure(
+    agentEvidenceToDiagnosisContext(state.request, evidence, steps)
+  );
   const sparse =
     !facts.recentEvents?.length &&
     !facts.currentLogs?.trim() &&

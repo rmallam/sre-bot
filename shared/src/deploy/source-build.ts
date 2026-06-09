@@ -3,6 +3,27 @@
  */
 
 import type { DetectedRuntime, SourceBuildStrategy } from './runtime-detect.js';
+import { sourceBuildEnabled } from './source-build-gate.js';
+
+const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
+const SOURCE_BUILD_FETCH_TIMEOUT_MS = parseInt(
+  process.env['SOURCE_BUILD_FETCH_TIMEOUT_MS'] ?? '900000',
+  10
+);
+
+async function postInvestigatorBuild<T>(url: string, body: unknown, incidentId: string): Promise<T> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(SOURCE_BUILD_FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Investigator build failed: HTTP ${res.status} ${text.slice(0, 400)}`);
+  }
+  return res.json() as Promise<T>;
+}
 
 export interface SourceBuildContext {
   incidentId: string;
@@ -56,8 +77,7 @@ export async function planSourceBuild(ctx: SourceBuildContext): Promise<SourceBu
     };
   }
 
-  const buildEnabled = (process.env['SOURCE_BUILD_ENABLED'] ?? 'false').toLowerCase() === 'true';
-  if (!buildEnabled) {
+  if (!sourceBuildEnabled()) {
     return {
       success: true,
       image,
@@ -81,43 +101,77 @@ export async function planSourceBuild(ctx: SourceBuildContext): Promise<SourceBu
 }
 
 export function createSourceBuildPlugins(): SourceBuildPlugin[] {
-  return [new BuildpacksPlugin(), new S2iPluginStub()];
+  return [new DockerfileKanikoPlugin(), new BuildpacksPlugin(), new S2iPlugin()];
 }
 
-class BuildpacksPlugin implements SourceBuildPlugin {
-  id = 'buildpacks';
-  strategy = 'buildpacks' as const;
+/** Call investigator POST /build/from-source (DEPLOY-2b). */
+export async function executeSourceBuildViaInvestigator(
+  ctx: SourceBuildContext
+): Promise<SourceBuildResult> {
+  return postInvestigatorBuild<SourceBuildResult>(
+    `${INVESTIGATOR_URL}/build/from-source`,
+    {
+      incidentId: ctx.incidentId,
+      appName: ctx.appName,
+      namespace: ctx.namespace,
+      githubRepo: ctx.githubRepo,
+      gitRef: ctx.gitRef,
+      runtime: ctx.runtime,
+      strategy: ctx.strategy,
+    },
+    ctx.incidentId
+  );
+}
+
+class InvestigatorBuildPlugin implements SourceBuildPlugin {
+  id: string;
+  strategy: SourceBuildStrategy;
+
+  constructor(id: string, strategy: SourceBuildStrategy) {
+    this.id = id;
+    this.strategy = strategy;
+  }
 
   isAvailable(): boolean {
-    return (process.env['PACK_CLI_PATH'] ?? '').length > 0;
+    return sourceBuildEnabled();
   }
 
   async build(ctx: SourceBuildContext): Promise<SourceBuildResult> {
-    const image = defaultBuiltImageRef({ appName: ctx.appName, githubRepo: ctx.githubRepo });
-    return {
-      success: false,
-      image,
-      summary: 'Buildpack CLI configured but in-cluster pack build not wired yet (DEPLOY-2b).',
-      error: 'not_implemented',
-    };
+    return executeSourceBuildViaInvestigator(ctx);
   }
 }
 
-class S2iPluginStub implements SourceBuildPlugin {
-  id = 's2i-openshift';
-  strategy = 's2i' as const;
+function createInvestigatorPlugin(
+  id: string,
+  strategy: SourceBuildStrategy
+): SourceBuildPlugin {
+  return new InvestigatorBuildPlugin(id, strategy);
+}
 
-  isAvailable(): boolean {
-    return (process.env['OPENSHIFT_API_URL'] ?? '').length > 0;
+class BuildpacksPlugin extends InvestigatorBuildPlugin {
+  constructor() {
+    super('buildpacks', 'buildpacks');
   }
 
-  async build(ctx: SourceBuildContext): Promise<SourceBuildResult> {
-    const image = defaultBuiltImageRef({ appName: ctx.appName, githubRepo: ctx.githubRepo });
-    return {
-      success: false,
-      image,
-      summary: 'OpenShift S2I BuildConfig integration pending (DEPLOY-2c).',
-      error: 'not_implemented',
-    };
+  isAvailable(): boolean {
+    return sourceBuildEnabled();
+  }
+}
+
+class DockerfileKanikoPlugin extends InvestigatorBuildPlugin {
+  constructor() {
+    super('kaniko-dockerfile', 'existing-dockerfile');
+  }
+}
+
+class S2iPlugin extends InvestigatorBuildPlugin {
+  constructor() {
+    super('s2i-openshift', 's2i');
+  }
+
+  isAvailable(): boolean {
+    return (
+      sourceBuildEnabled() && (process.env['OPENSHIFT_API_URL'] ?? '').length > 0
+    );
   }
 }

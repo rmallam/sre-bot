@@ -10,7 +10,7 @@ import type {
 } from './types.js';
 import type { RcaPointer } from './rca-pointers.js';
 
-export type AgentCaseSubjectKind = 'workload' | 'namespace' | 'cluster' | 'ci' | 'deploy';
+export type AgentCaseSubjectKind = 'workload' | 'namespace' | 'cluster' | 'ci' | 'deploy' | 'app';
 
 export type AgentCaseStatus =
   | 'open'
@@ -68,7 +68,7 @@ export function subjectDedupeKey(subject: AgentCaseSubject): string {
 }
 
 export function subjectFromInvestigate(opts: {
-  scope: 'workload' | 'namespace' | 'cluster';
+  scope: 'workload' | 'namespace' | 'cluster' | 'app';
   namespace: string;
   resourceName: string;
   resourceKind?: ResourceKind;
@@ -79,6 +79,14 @@ export function subjectFromInvestigate(opts: {
   }
   if (opts.scope === 'namespace') {
     return { kind: 'namespace', namespace: opts.namespace, label: opts.label || opts.namespace };
+  }
+  if (opts.scope === 'app') {
+    return {
+      kind: 'app',
+      namespace: opts.namespace,
+      resourceName: opts.resourceName,
+      label: opts.label || `app ${opts.resourceName}`,
+    };
   }
   return {
     kind: 'workload',

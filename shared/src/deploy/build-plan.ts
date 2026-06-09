@@ -31,6 +31,31 @@ export async function buildDeployPlanWithSourceBuild(opts: {
     }) };
   }
 
+  // Image already built by orchestrator build node (DEPLOY-2d).
+  if (signals.suggestedImage) {
+    const generatedPlan = buildHelmDeployPlan({
+      appName: opts.appName,
+      namespace: opts.namespace,
+      githubRepo: opts.githubRepo,
+      gitRef: opts.gitRef,
+      repoSignals: signals,
+      existingManifest: false,
+      image: signals.suggestedImage,
+    });
+    const reasoning = `${generatedPlan.reasoning}\n\nSource build: using ${signals.suggestedImage}`;
+    const plan =
+      opts.deployStrategy === 'direct'
+        ? {
+            ...generatedPlan,
+            action: 'repo_apply' as const,
+            targetRepo: 'app' as const,
+            reasoning,
+            commitMessage: `feat(deploy): direct deploy ${opts.appName} with built image`,
+          }
+        : { ...generatedPlan, reasoning };
+    return { plan, buildSummary: `Built image ${signals.suggestedImage}` };
+  }
+
   const build = await planSourceBuild({
     incidentId: opts.ctx.incidentId,
     appName: opts.appName,

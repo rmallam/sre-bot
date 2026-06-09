@@ -23,6 +23,7 @@ export function mergeAgentEvidence(
     specialistDiagnostics: c.specialistDiagnostics?.length
       ? c.specialistDiagnostics
       : base.specialistDiagnostics,
+    detectedErrorSignature: c.detectedErrorSignature ?? base.detectedErrorSignature,
   };
 }
 
@@ -101,5 +102,6 @@ export function agentEvidenceToDiagnosisContext(
       steps.length > 0
         ? `agent_react_steps=${steps.map((s) => `${s.tool}:${s.summary.slice(0, 40)}`).join('|')}`
         : undefined,
+    detectedErrorSignature: evidence.detectedErrorSignature,
   };
 }

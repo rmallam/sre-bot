@@ -6,12 +6,8 @@ import type { Platform } from '../../../shared/src/types.js';
 import type { ParsedCommand } from './parser.js';
 import { parseDeploySourceReply } from '../../../shared/src/deploy-source-parse.js';
 import { mergeDeployProvenance } from '../../../shared/src/deploy-provenance.js';
-import {
-  clearPendingClarification,
-  getSession,
-  setPendingClarification,
-  type PendingClarification,
-} from './sessions.js';
+import { clearPendingClarification, setPendingClarification } from './clarification.js';
+import { getSession } from './sessions.js';
 import { cancelRun } from './deploy-source-run.js';
 
 const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
@@ -20,7 +16,7 @@ export async function armDeploySourceClarification(
   platform: Platform,
   channelId: string,
   userId: string,
-  pending: Omit<PendingClarification, 'askedAt'>
+  pending: Omit<import('./sessions.js').PendingClarification, 'askedAt'>
 ): Promise<void> {
   await setPendingClarification(platform, channelId, userId, {
     ...pending,

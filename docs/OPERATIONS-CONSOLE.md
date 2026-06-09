@@ -9,8 +9,10 @@ The **Operations Console** is the primary web UI for managing SRE Bot incidents,
 | Area | What you can do |
 |------|-----------------|
 | **Overview** | At-a-glance stats, agent health, recent runs, pending approvals |
+| **Applications** | App dependency graph, component health, investigate/fix links |
+| **Activity** | Unified timeline of runs + HIL approvals (all channels) |
 | **Approvals** | Approve, reject, ignore, or suggest your own fix for each incident |
-| **Resources** | Grouped by workload — suggested fix, worked?, actions taken, skill export |
+| **Runs** | Grouped by workload — suggested fix, worked?, actions taken, skill export |
 | **Run detail** | Full remediation outcome, tool timeline, cancel in-flight runs |
 | **Ignored** | View suppressed resources; unignore when ready to remediate again |
 
@@ -26,6 +28,14 @@ Each remediation attempt records a structured **outcome** (root cause, suggested
 
 Older runs without persisted outcomes show best-effort data derived from tool transcripts.
 
+### Shipped (console)
+
+| ID | Feature |
+|----|---------|
+| **CON-3** | Keyboard shortcuts on Approvals — **A** approve, **R** reject, **I** ignore, **J/K** navigate |
+| **CON-4** | **Activity** tab — unified run + approval timeline |
+| **CON-5** | Runs page shows **latest attempt only** by default |
+
 ### Roadmap (pending)
 
 See [PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md) Track B:
@@ -33,9 +43,6 @@ See [PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md) Track B:
 | ID | Feature |
 |----|---------|
 | **CON-2** | Auth (OAuth / basic / SSO proxy) |
-| **CON-3** | Keyboard shortcuts for approve/reject |
-| **CON-4** | Unified activity feed (Telegram + web + HIL) |
-| **CON-5** | Default “latest attempt only” on Resources page |
 
 Toggle **Live** in the top bar for 5-second polling. Pause to reduce API load (30s background refresh on overview pages).
 

@@ -55,6 +55,17 @@ export interface PendingClarification {
   provenance?: import('../../../shared/src/deploy-provenance.js').DeployProvenance;
 }
 
+export interface LastAppReview {
+  appId: string;
+  namespace: string;
+  overallStatus: string;
+  frontierNodeId?: string;
+  frontierName?: string;
+  frontierKind?: string;
+  frontierNamespace?: string;
+  reviewedAt: string;
+}
+
 export interface ChatSession {
   activeRunId?: string;
   pendingQuestion?: string;
@@ -67,6 +78,7 @@ export interface ChatSession {
   lastPrUrl?: string;
   lastDeployDraft?: import('./parser.js').DeployCmd;
   lastStatusSubject?: StatusSubject;
+  lastAppReview?: LastAppReview;
   activeTopic?: ActiveTopic;
   transcript?: ChatTurn[];
   /** Console: orchestrator run still in progress — UI should poll for updates. */

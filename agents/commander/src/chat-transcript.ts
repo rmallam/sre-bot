@@ -49,12 +49,20 @@ export async function recordAssistantMessage(
   platform: string,
   channelId: string,
   userId: string,
-  content: string
+  content: string,
+  meta?: {
+    incidentId?: string;
+    runId?: string;
+    quickActions?: Array<{ id: string; label: string }>;
+  }
 ): Promise<void> {
   await appendChatTurn(platform, channelId, userId, {
     role: 'assistant',
     content: content.trim().slice(0, 4000),
     at: new Date().toISOString(),
+    incidentId: meta?.incidentId,
+    runId: meta?.runId,
+    quickActions: meta?.quickActions,
   });
 }
 

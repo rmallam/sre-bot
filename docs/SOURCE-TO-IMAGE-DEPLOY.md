@@ -4,7 +4,7 @@ Deploy **bare application repos** (no Dockerfile, no K8s manifests) by detecting
 
 Related: [PLATFORM-LAYERS.md](./PLATFORM-LAYERS.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md)
 
-**Status:** Phase 1 coded — runtime detect + build plan; cluster build execution pending.
+**Status:** Phase 2 coded — in-cluster builds (Kaniko/pack/S2I), orchestrator build node, HIL gate.
 
 ---
 
@@ -50,14 +50,22 @@ Result: `ImagePullBackOff`.
 
 ---
 
-## Phase 2 (next)
+## Phase 2 (shipped in code)
+
+| Item | Module |
+|------|--------|
+| **DEPLOY-2b** | `investigator/source-build-runner.ts` + `POST /build/from-source` — Kaniko (Dockerfile), pack Job (buildpacks) |
+| **DEPLOY-2c** | OpenShift `BuildConfig` + S2I builder images in `source-build-runner.ts` |
+| **DEPLOY-2d** | Orchestrator `sourceBuild` node before `plan` on pre-deploy (`source-build-node.ts`) |
+| **DEPLOY-2e** | HIL gate via `SOURCE_BUILD_REQUIRE_HIL` + `SOURCE_BUILD_TRUSTED_REPOS` |
+
+---
+
+## Future
 
 | Item | Description |
 |------|-------------|
-| **DEPLOY-2b** | `build-agent` or investigator `POST /build/from-source` — Kaniko / `pack build` |
-| **DEPLOY-2c** | OpenShift `BuildConfig` + S2I builder images |
-| **DEPLOY-2d** | Orchestrator `build` node before `plan` on pre-deploy |
-| **DEPLOY-2e** | HIL gate for untrusted repo builds |
+| — | Image scan before deploy; build cache; private registry bootstrap for kind |
 
 ---
 
@@ -66,6 +74,10 @@ Result: `ImagePullBackOff`.
 ```bash
 # Enable actual builds (default false — plan-only)
 SOURCE_BUILD_ENABLED=false
+
+# Require HIL before building from Git (default true)
+SOURCE_BUILD_REQUIRE_HIL=true
+# SOURCE_BUILD_TRUSTED_REPOS=github.com/my-org/apps
 
 # buildpacks | s2i | skip
 SOURCE_BUILD_STRATEGY=buildpacks
@@ -76,7 +88,10 @@ IMAGE_REGISTRY=ghcr.io/my-org
 # Optional builder overrides
 BUILDPACK_NODE_BUILDER=paketobuildpacks/builder-jammy-base
 OPENSHIFT_API_URL=          # enables S2I plugin when set
-PACK_CLI_PATH=              # enables buildpack plugin when set
+OPENSHIFT_TOKEN=
+PACK_CLI_PATH=              # optional local pack; otherwise in-cluster pack Job
+IMAGE_PUSH_SECRET=          # K8s secret for registry push in build Jobs
+SOURCE_BUILD_NAMESPACE=     # namespace for build Jobs
 ```
 
 ---
@@ -103,4 +118,5 @@ buildStrategy?: 'existing-dockerfile' | 'buildpacks' | 's2i' | 'skip';
 
 | Date | Change |
 |------|--------|
+| 2026-06-05 | DEPLOY-2 Phase 2: Kaniko/pack/S2I builds, orchestrator build node, source-build HIL gate |
 | 2026-06-01 | DEPLOY-2 Phase 1: runtime-detect, source-build plugins, build-plan wiring |

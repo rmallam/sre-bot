@@ -4,6 +4,7 @@ import { Markup } from 'telegraf';
 import type { Platform } from '../../../shared/src/types.js';
 import type { RunUpdateQuickAction } from '../../../shared/src/run-update.js';
 import { log } from '../../../shared/src/http.js';
+import { sendTelegramFormatted } from './telegram-send.js';
 
 const AGENT = 'commander-agent';
 
@@ -31,8 +32,6 @@ export async function postNotify(
   incidentId: string,
   quickActions?: RunUpdateQuickAction[]
 ): Promise<void> {
-  const plain = message.replace(/[*`<>]/g, '');
-
   switch (platform) {
     case 'slack': {
       if (!slackClient) {
@@ -53,11 +52,11 @@ export async function postNotify(
         return;
       }
       const keyboard = telegramKeyboard(quickActions);
-      if (keyboard) {
-        await telegramBot.telegram.sendMessage(chatId, plain, keyboard);
-      } else {
-        await telegramBot.telegram.sendMessage(chatId, plain);
-      }
+      await sendTelegramFormatted(
+        (t, extra) => telegramBot!.telegram.sendMessage(chatId, t, extra),
+        message,
+        keyboard?.reply_markup
+      );
       break;
     }
     default:

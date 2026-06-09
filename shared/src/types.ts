@@ -11,7 +11,7 @@ export type { RolloutPhase } from './rollout-phase.js';
 export type Platform = 'slack' | 'telegram' | 'teams' | 'web';
 export type ResourceKind = 'Deployment' | 'StatefulSet' | 'Pod' | 'Job' | 'DaemonSet';
 export type IncidentMode = 'diagnose' | 'pre-deploy' | 'rollback' | 'ci-failure';
-export type InvestigateScope = 'workload' | 'namespace' | 'cluster';
+export type InvestigateScope = 'workload' | 'namespace' | 'cluster' | 'app';
 export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type ApprovalStatus =
   | 'PENDING'

@@ -12,6 +12,7 @@ import type { Telegraf } from 'telegraf';
 import type { RemediationResult } from '../../../shared/src/types.js';
 import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
 import { log } from '../../../shared/src/http.js';
+import { sendTelegramFormatted } from './telegram-send.js';
 
 const AGENT = 'commander-agent';
 
@@ -119,9 +120,10 @@ export async function confirmHandler(req: Request, res: Response): Promise<void>
           });
           return;
         }
-        // Telegram uses Markdown V2 — send plain text for safety
-        const plainMessage = message.replace(/[*`<>]/g, '');
-        await telegramBot.telegram.sendMessage(chatId, plainMessage);
+        await sendTelegramFormatted(
+          (t, extra) => telegramBot!.telegram.sendMessage(chatId, t, extra),
+          message
+        );
         log('info', AGENT, 'Confirmation posted to Telegram', {
           incidentId: result.incidentId,
           channelId,

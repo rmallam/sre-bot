@@ -31,6 +31,7 @@ export function ChatPage() {
   const [bootstrapping, setBootstrapping] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [waitingForRun, setWaitingForRun] = useState(false);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   /** Turns that should not typewriter-animate (history or already shown). */
   const seenTurnKeysRef = useRef<Set<string>>(new Set());
@@ -78,6 +79,7 @@ export function ChatPage() {
     const data = await fetchChatSession(cid);
     applyTranscript(data.transcript);
     setWaitingForRun(data.waitingForRun);
+    setActiveRunId(data.lastRunId ?? null);
     return data;
   }, [applyTranscript]);
 
@@ -99,23 +101,30 @@ export function ChatPage() {
       const data = await fetchChatSession(cid);
       applyTranscript(data.transcript, { markAllSeen: true });
       setWaitingForRun(data.waitingForRun);
+      setActiveRunId(data.lastRunId ?? null);
     },
     [applyTranscript, setSearchParams]
   );
 
-  const startNewChat = useCallback(async () => {
-    setBootstrapping(true);
-    try {
-      const created = await createChatSession();
-      await refreshSessions();
-      setTurns([]);
-      await selectChannel(created.channelId);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBootstrapping(false);
-    }
-  }, [refreshSessions, selectChannel]);
+  const startNewChat = useCallback(
+    async (initialPrompt?: string) => {
+      setBootstrapping(true);
+      try {
+        const created = await createChatSession();
+        await refreshSessions();
+        setTurns([]);
+        await selectChannel(created.channelId);
+        if (initialPrompt) {
+          setInput(initialPrompt);
+        }
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setBootstrapping(false);
+      }
+    },
+    [refreshSessions, selectChannel]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -126,6 +135,7 @@ export function ChatPage() {
         if (cancelled) return;
 
         const wantNew = searchParams.get('new') === '1';
+        const initialPrompt = searchParams.get('prompt')?.trim() ?? '';
         if (wantNew || list.length === 0) {
           const created = await createChatSession();
           if (cancelled) return;
@@ -137,6 +147,9 @@ export function ChatPage() {
           });
           setSessions([...list]);
           await selectChannel(created.channelId);
+          if (initialPrompt) {
+            setInput(initialPrompt);
+          }
           return;
         }
 
@@ -205,6 +218,9 @@ export function ChatPage() {
       setWaitingForRun(result.waitingForRun ?? false);
       if (result.waitingForRun) {
         void loadTranscript(channelId);
+      } else if (result.transcript?.length) {
+        const lastWithRun = [...result.transcript].reverse().find((t) => t.runId);
+        if (lastWithRun?.runId) setActiveRunId(lastWithRun.runId);
       }
       void refreshSessions();
     } catch (err) {
@@ -235,8 +251,8 @@ export function ChatPage() {
       <aside className="chat-sidebar">
         <div className="chat-sidebar-header">
           <h3>Conversations</h3>
-          <button type="button" className="btn btn-primary btn-sm" onClick={() => void startNewChat()}>
-            New chat
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void startNewChat()}>
+            New
           </button>
         </div>
         <ul className="chat-session-list">
@@ -263,18 +279,49 @@ export function ChatPage() {
           <div className="chat-empty">Starting assistant…</div>
         ) : !channelId ? (
           <div className="chat-start-panel">
-            <h3>SRE Assistant</h3>
+            <h3>What can I help with?</h3>
             <p>Deploy, investigate, check workloads, and triage CI — in plain language.</p>
+            <div className="chat-suggestions">
+              <button
+                type="button"
+                className="chat-suggestion"
+                onClick={() => void startNewChat('investigate cluster health')}
+              >
+                Investigate cluster health
+              </button>
+              <button
+                type="button"
+                className="chat-suggestion"
+                onClick={() => void startNewChat('list pods in all namespaces')}
+              >
+                List pods in all namespaces
+              </button>
+              <button
+                type="button"
+                className="chat-suggestion"
+                onClick={() => void startNewChat('help')}
+              >
+                Show available commands
+              </button>
+            </div>
             <button type="button" className="btn btn-primary" onClick={() => void startNewChat()}>
-              Start a conversation
+              New conversation
             </button>
           </div>
         ) : (
-          <>
+          <div className="chat-panel">
             <div className="chat-toolbar">
               <span className="chat-toolbar-title">
                 {sessions.find((s) => s.channelId === channelId)?.sessionLabel ?? 'Assistant'}
               </span>
+              {activeRunId && waitingForRun && (
+                <Link
+                  className="chat-active-run-link"
+                  to={`/runs/${encodeURIComponent(activeRunId)}`}
+                >
+                  Run in progress — view details
+                </Link>
+              )}
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
@@ -288,26 +335,26 @@ export function ChatPage() {
             <div className="chat-thread" role="log" aria-live="polite">
               {turns.length === 0 && !loading && (
                 <div className="chat-empty">
-                  Ask anything — e.g.{' '}
-                  <button type="button" className="chat-chip" onClick={() => setInput('help')}>
-                    help
-                  </button>
-                  ,{' '}
-                  <button
-                    type="button"
-                    className="chat-chip"
-                    onClick={() => setInput('investigate cluster health')}
-                  >
-                    investigate cluster health
-                  </button>
-                  , or{' '}
-                  <button
-                    type="button"
-                    className="chat-chip"
-                    onClick={() => setInput('is httpd running in any namespace')}
-                  >
-                    is httpd running in any namespace
-                  </button>
+                  <p>Ask anything about your cluster, deployments, or incidents.</p>
+                  <div className="chat-empty-suggestions">
+                    <button type="button" className="chat-chip" onClick={() => setInput('help')}>
+                      help
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-chip"
+                      onClick={() => setInput('investigate cluster health')}
+                    >
+                      investigate cluster health
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-chip"
+                      onClick={() => setInput('list pods in all namespaces')}
+                    >
+                      list pods
+                    </button>
+                  </div>
                 </div>
               )}
               {turns.map((turn, i) => {
@@ -332,16 +379,19 @@ export function ChatPage() {
                 );
               })}
               {loading && !turns.some((t) => t.role === 'status') && (
-                <div className="chat-bubble chat-bubble-assistant">
-                  <div className="chat-bubble-body chat-typing">
+                <div className="chat-message chat-message-assistant">
+                  <div className="chat-message-header">
+                    <span className="chat-message-role">Assistant</span>
+                  </div>
+                  <div className="chat-message-body chat-typing">
                     <span className="chat-status-dot" aria-hidden />
                     Thinking…
                   </div>
                 </div>
               )}
               {waitingForRun && !loading && !turns.some((t) => t.role === 'status') && (
-                <div className="chat-bubble chat-bubble-status">
-                  <div className="chat-bubble-body chat-status-line">
+                <div className="chat-message chat-message-status">
+                  <div className="chat-status-line">
                     <span className="chat-status-dot" aria-hidden />
                     Waiting for run updates…
                   </div>
@@ -350,32 +400,39 @@ export function ChatPage() {
               <div ref={bottomRef} />
             </div>
 
-            {error && <p className="chat-error">{error}</p>}
-
-            <form className="chat-composer" onSubmit={onSubmit}>
-              <textarea
-                className="chat-input"
-                rows={2}
-                placeholder="Ask in plain language…"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    void onSubmit(e);
-                  }
-                }}
-                disabled={loading}
-              />
-              <button
-                type="submit"
-                className="btn btn-primary chat-send"
-                disabled={loading || !input.trim()}
-              >
-                Send
-              </button>
-            </form>
-          </>
+            <div className="chat-composer-wrap">
+              {error && <p className="chat-error">{error}</p>}
+              <form className="chat-composer" onSubmit={onSubmit}>
+                <textarea
+                  className="chat-input"
+                  rows={2}
+                  placeholder="Ask in plain language…"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      void onSubmit(e);
+                    }
+                  }}
+                  disabled={loading}
+                />
+                <div className="chat-composer-footer">
+                  <span className="chat-composer-hint">Enter to send · Shift+Enter for newline</span>
+                  <button
+                    type="submit"
+                    className="btn btn-primary chat-send"
+                    disabled={loading || !input.trim()}
+                    aria-label="Send message"
+                  >
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+                      <path d="M8 12V4M8 4l-3 3M8 4l3 3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
         )}
       </div>
     </div>

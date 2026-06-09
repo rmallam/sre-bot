@@ -22,6 +22,7 @@ import type { DeployProvenance } from '../../../shared/src/deploy-provenance.js'
 import { postWithRetry, log } from '../../../shared/src/http.js';
 import { gatherPodFacts } from './k8s-facts.js';
 import { gatherPreDeployFacts, checkNamespaceExists } from './pre-deploy.js';
+import { buildFromSource, type BuildFromSourceRequest } from './source-build-runner.js';
 import { gatherStackPreDeployFacts } from './stack-predeploy.js';
 import {
   ensureMirrorSynced,
@@ -230,6 +231,66 @@ app.get('/resolve-workload', async (req: Request, res: Response) => {
   }
 });
 
+app.get('/cluster-health', async (req: Request, res: Response) => {
+  const force = req.query.force === 'true';
+  try {
+    const { getClusterHealthSnapshot } = await import('./cluster-health-snapshot.js');
+    const snapshot = await getClusterHealthSnapshot(force);
+    res.json(snapshot);
+  } catch (err) {
+    log('error', AGENT, 'GET /cluster-health failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get('/app-graph', async (req: Request, res: Response) => {
+  const appId = String(req.query.appId ?? '').trim();
+  const namespace = req.query.namespace ? String(req.query.namespace) : undefined;
+  const force = req.query.force === 'true';
+  if (!appId) {
+    res.status(400).json({ error: 'appId required' });
+    return;
+  }
+  try {
+    const { getAppReviewSnapshot } = await import('./app-graph-snapshot.js');
+    const review = await getAppReviewSnapshot(appId, namespace, force);
+    res.json(review.graph);
+  } catch (err) {
+    log('error', AGENT, 'GET /app-graph failed', { appId, error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get('/app-review', async (req: Request, res: Response) => {
+  const appId = String(req.query.appId ?? '').trim();
+  const namespace = req.query.namespace ? String(req.query.namespace) : undefined;
+  const force = req.query.force === 'true';
+  if (!appId) {
+    res.status(400).json({ error: 'appId required' });
+    return;
+  }
+  try {
+    const { getAppReviewSnapshot } = await import('./app-graph-snapshot.js');
+    const review = await getAppReviewSnapshot(appId, namespace, force);
+    res.json(review);
+  } catch (err) {
+    log('error', AGENT, 'GET /app-review failed', { appId, error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get('/apps', async (req: Request, res: Response) => {
+  const namespace = req.query.namespace ? String(req.query.namespace) : undefined;
+  try {
+    const { listApps } = await import('./app-graph-builder.js');
+    const result = await listApps(namespace);
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'GET /apps failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ── GET /get — list cluster resources (read-only, for commander chat) ─────────
 
 const GET_RESOURCES = new Set<ClusterGetResource>([
@@ -401,6 +462,38 @@ async function runAnalysis(body: AnomalyDetected): Promise<void> {
     });
   }
 }
+
+app.post('/build/from-source', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as BuildFromSourceRequest;
+  if (!body?.incidentId || !body?.appName || !body?.namespace || !body?.githubRepo) {
+    res.status(400).json({
+      error: 'Missing required fields: incidentId, appName, namespace, githubRepo',
+    });
+    return;
+  }
+
+  const buildEnabled = (process.env['SOURCE_BUILD_ENABLED'] ?? 'false').toLowerCase() === 'true';
+  if (!buildEnabled) {
+    res.status(503).json({
+      error: 'SOURCE_BUILD_ENABLED is false — enable to execute in-cluster builds',
+    });
+    return;
+  }
+
+  try {
+    const result = await buildFromSource({
+      ...body,
+      gitRef: body.gitRef ?? 'main',
+    });
+    res.status(result.success ? 200 : 422).json(result);
+  } catch (err) {
+    log('error', AGENT, 'POST /build/from-source failed', {
+      incidentId: body.incidentId,
+      error: String(err),
+    });
+    res.status(500).json({ error: String(err) });
+  }
+});
 
 // ── POST /pre-deploy ──────────────────────────────────────────────────────────
 //

@@ -21,7 +21,7 @@ import {
 } from './investigate-choice.js';
 import { getChannelPref } from './channel-prefs.js';
 import { appendWebStatusStep, markWebRunWaiting, clearWebStatus } from './chat-web-notify.js';
-import { getSession } from './sessions.js';
+import { formatDeployDispatchError } from '../../../shared/src/deploy-command.js';
 
 const AGENT = 'commander-chat';
 
@@ -62,6 +62,14 @@ async function webThinking(channelId: string, step: string): Promise<void> {
   await appendWebStatusStep(channelId, step);
 }
 
+function formatChatCommandError(err: unknown): string {
+  const message = formatDeployDispatchError(err);
+  if (/^I (need|could not|couldn't)/i.test(message) || message.includes('\n\n')) {
+    return message;
+  }
+  return `Something went wrong: ${message}`;
+}
+
 export async function processChatMessage(opts: {
   text: string;
   platform: Platform;
@@ -97,21 +105,33 @@ export async function processChatMessage(opts: {
     try {
       const result = await handleCommand(investigateChoice.command, userId, platform, channelId, text);
       await syncActiveTopicFromCommand(platform, channelId, userId, investigateChoice.command);
+      const waitingForRun = result.waitingForRun ?? !result.immediateReply;
       if (platform === 'web') {
         await clearWebStatus(channelId, 'pending');
-        await markWebRunWaiting(channelId, result.incidentId);
+        if (waitingForRun) {
+          await markWebRunWaiting(channelId, result.incidentId);
+          if (result.existingRunId) {
+            const { setSession } = await import('./sessions.js');
+            await setSession(platform, channelId, userId, { lastRunId: result.existingRunId });
+          }
+        }
       }
       const reply = result.immediateReply ?? ackMessage(result.incidentId, 'investigate');
-      await recordAssistantMessage(platform, channelId, userId, reply);
+      await recordAssistantMessage(platform, channelId, userId, reply, {
+        incidentId: result.incidentId,
+        runId: result.existingRunId,
+        quickActions: result.quickActions,
+      });
       return {
         reply,
         incidentId: result.incidentId,
         executed: true,
         commandType: 'investigate',
-        waitingForRun: !result.immediateReply,
+        waitingForRun,
+        ...(result.quickActions?.length ? { quickActions: result.quickActions } : {}),
       };
     } catch (err) {
-      const reply = `⚠️ ${String(err)}`;
+      const reply = formatChatCommandError(err);
       await recordAssistantMessage(platform, channelId, userId, reply);
       return { reply, executed: false };
     }
@@ -141,7 +161,7 @@ export async function processChatMessage(opts: {
         commandType: 'delete',
       };
     } catch (err) {
-      const reply = `⚠️ ${String(err)}`;
+      const reply = formatChatCommandError(err);
       await recordAssistantMessage(platform, channelId, userId, reply);
       return { reply, executed: false };
     }
@@ -167,7 +187,7 @@ export async function processChatMessage(opts: {
         waitingForRun: true,
       };
     } catch (err) {
-      const reply = `⚠️ ${String(err)}`;
+      const reply = formatChatCommandError(err);
       await recordAssistantMessage(platform, channelId, userId, reply);
       return { reply, executed: false };
     }
@@ -182,24 +202,36 @@ export async function processChatMessage(opts: {
       const result = await handleCommand(clarified, userId, platform, channelId, text);
       await syncActiveTopicFromCommand(platform, channelId, userId, clarified);
       const asyncRun = ASYNC_COMMANDS.has(clarified.type);
-      if (platform === 'web' && asyncRun) {
+      const waitingForRun = result.waitingForRun ?? (asyncRun && !result.immediateReply);
+      if (platform === 'web') {
         await clearWebStatus(channelId, 'pending');
-        await markWebRunWaiting(channelId, result.incidentId);
-      } else if (platform === 'web') {
-        await clearWebStatus(channelId, result.incidentId);
+        if (waitingForRun) {
+          await markWebRunWaiting(channelId, result.incidentId);
+          if (result.existingRunId) {
+            const { setSession } = await import('./sessions.js');
+            await setSession(platform, channelId, userId, { lastRunId: result.existingRunId });
+          }
+        } else if (result.immediateReply) {
+          await clearWebStatus(channelId, result.incidentId);
+        }
       }
       const reply =
         result.immediateReply ?? ackMessage(result.incidentId, clarified.type);
-      await recordAssistantMessage(platform, channelId, userId, reply);
+      await recordAssistantMessage(platform, channelId, userId, reply, {
+        incidentId: result.incidentId,
+        runId: result.existingRunId,
+        quickActions: result.quickActions,
+      });
       return {
         reply,
         incidentId: result.incidentId,
         executed: true,
         commandType: clarified.type,
-        waitingForRun: asyncRun && !result.immediateReply,
+        waitingForRun,
+        ...(result.quickActions?.length ? { quickActions: result.quickActions } : {}),
       };
     } catch (err) {
-      const reply = `⚠️ ${String(err)}`;
+      const reply = formatChatCommandError(err);
       await recordAssistantMessage(platform, channelId, userId, reply);
       return { reply, executed: false };
     }
@@ -253,10 +285,6 @@ export async function processChatMessage(opts: {
     parsed = flow.command;
   }
 
-  if (routed.conversationalReply && parsed.type === 'deploy') {
-    await recordAssistantMessage(platform, channelId, userId, routed.conversationalReply);
-  }
-
   try {
     if (platform === 'web') {
       const label =
@@ -270,15 +298,26 @@ export async function processChatMessage(opts: {
       await webThinking(channelId, label);
     }
 
-    const result = await handleCommand(parsed, userId, platform, channelId, text);
+    const result = await handleCommand(parsed, userId, platform, channelId, text, {
+      routingConfidence: routed.confidence,
+      routingSource: routed.routingSource,
+      llmRawGithubRepo: routed.llmRawGithubRepo,
+    });
     await syncActiveTopicFromCommand(platform, channelId, userId, parsed);
 
     const asyncRun = ASYNC_COMMANDS.has(parsed.type) && !result.immediateReply;
-    if (platform === 'web' && asyncRun) {
+    const waitingForRun = result.waitingForRun ?? asyncRun;
+    if (platform === 'web') {
       await clearWebStatus(channelId, 'pending');
-      await markWebRunWaiting(channelId, result.incidentId);
-    } else if (platform === 'web') {
-      await clearWebStatus(channelId, result.incidentId);
+      if (waitingForRun) {
+        await markWebRunWaiting(channelId, result.incidentId);
+        if (result.existingRunId) {
+          const { setSession } = await import('./sessions.js');
+          await setSession(platform, channelId, userId, { lastRunId: result.existingRunId });
+        }
+      } else if (result.immediateReply) {
+        await clearWebStatus(channelId, result.incidentId);
+      }
     }
 
     const reply =
@@ -286,13 +325,17 @@ export async function processChatMessage(opts: {
       routed.conversationalReply ??
       ackMessage(result.incidentId, parsed.type);
 
-    await recordAssistantMessage(platform, channelId, userId, reply);
+    await recordAssistantMessage(platform, channelId, userId, reply, {
+      incidentId: result.incidentId,
+      runId: result.existingRunId,
+      quickActions: result.quickActions,
+    });
     return {
       reply,
       incidentId: result.incidentId,
       executed: true,
       commandType: parsed.type,
-      waitingForRun: asyncRun,
+      waitingForRun,
       ...(result.quickActions?.length ? { quickActions: result.quickActions } : {}),
     };
   } catch (err) {
@@ -300,7 +343,7 @@ export async function processChatMessage(opts: {
     if (platform === 'web') {
       await clearWebStatus(channelId, 'pending');
     }
-    const reply = `⚠️ An error occurred: ${String(err)}`;
+    const reply = formatChatCommandError(err);
     await recordAssistantMessage(platform, channelId, userId, reply);
     return { reply, executed: false, commandType: parsed.type };
   }

@@ -21,6 +21,7 @@ import {
 import {
   probeClusterConnectivity,
   remediateKubeconfigInsecureTls,
+  isInClusterKube,
 } from '../../../shared/src/kube-connectivity.js';
 import { log } from '../../../shared/src/http.js';
 import { ensureNamespace } from './ensure-namespace.js';
@@ -79,24 +80,30 @@ async function ensureClusterReachable(opts: ChartApplyOpts): Promise<void> {
 
     await progress(
       opts,
-      'API connection failed (TLS/host mismatch). Adjusting kubeconfig (skip TLS verify for forwarded API) and retrying…'
+      isInClusterKube()
+        ? 'API connection failed from inside the cluster. Retrying…'
+        : 'API connection failed (TLS/host mismatch). Adjusting kubeconfig (skip TLS verify for forwarded API) and retrying…'
     );
 
     try {
       const clusters = await remediateKubeconfigInsecureTls();
-      log('info', 'gitops-agent', 'Patched kubeconfig clusters for TLS', {
-        incidentId: opts.incidentId,
-        clusters,
-      });
+      if (clusters.length > 0) {
+        log('info', 'gitops-agent', 'Patched kubeconfig clusters for TLS', {
+          incidentId: opts.incidentId,
+          clusters,
+        });
+      }
       await probeClusterConnectivity(opts.incidentId);
       await progress(opts, 'Cluster API is reachable after kubeconfig fix.');
       return;
     } catch (secondErr) {
       const second = analyze(secondErr);
+      const hint = isInClusterKube()
+        ? 'Check gitops-agent RBAC and kubectl client version in the gitops image.'
+        : `Ensure Podman can reach your cluster API (KUBE_API_HOST=${process.env['KUBE_API_HOST'] ?? 'host.containers.internal'}) ` +
+          `or enable compose profile kube-proxy.`;
       throw new Error(
-        `${analysis.summary} Automatic fix did not help. ` +
-          `Ensure Podman can reach your cluster API (KUBE_API_HOST=${process.env['KUBE_API_HOST'] ?? 'host.containers.internal'}) ` +
-          `or enable compose profile kube-proxy. Detail: ${String(secondErr).slice(0, 280)}`
+        `${analysis.summary} Automatic fix did not help. ${hint} Detail: ${String(secondErr).slice(0, 280)}`
       );
     }
   }

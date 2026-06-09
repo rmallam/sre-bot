@@ -99,7 +99,7 @@ flowchart TB
 |-------|------|----------------|
 | **watcher** | 8080 | Watches K8s Warning events and pod state; starts runs on anomalies (with cooldown). |
 | **commander** | 8081 | Slack/Telegram intake, LLM-assisted routing, user notifications, remediation confirmations. |
-| **investigator** | 8082 | Read-only K8s facts, `GET /facts`, `GET /verify`, pre-deploy repo analysis. |
+| **investigator** | 8082 | Read-only K8s facts, `GET /facts`, `GET /verify`, `GET /app-review`, `GET /apps`, pre-deploy repo analysis. See [APP-GRAPH-DESIGN.md](./APP-GRAPH-DESIGN.md). |
 | **brain** | 8083 | LLM planning (`POST /plan-only`); legacy path can still send plans to HIL. |
 | **orchestrator** | 8084 | LangGraph loop: observe → sanitize → plan → authorize → policy → act → verify. |
 | **hil** | 8085 | Approval store, Slack/Telegram approval buttons, web dashboard, resume after approve. |

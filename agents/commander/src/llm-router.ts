@@ -23,7 +23,8 @@ import { tryPrefFollowUp } from './channel-prefs.js';
 import { trySessionFollowUp } from './session-followups.js';
 import { tryResumeCaseWithHint } from './case-manager.js';
 import { tryPlatformSemanticRoute } from './semantic-platform.js';
-import { resolveAgentMode } from '../../../shared/src/agent-mode.js';
+import { normalizeDeployCommand } from '../../../shared/src/deploy-command.js';
+import type { DeployRoutingSource } from '../../../shared/src/deploy-confidence.js';
 import { isHelpQuery, HELP_MESSAGE } from './help.js';
 import { getChatTranscriptForLlm } from './chat-transcript.js';
 import { getSession } from './sessions.js';
@@ -43,6 +44,9 @@ export interface LlmRouteResult {
   userReply?: string;
   confidence: number;
   intent?: CommandIntentName;
+  routingSource?: DeployRoutingSource;
+  /** Raw githubRepo from LLM JSON before commander normalization. */
+  llmRawGithubRepo?: string;
 }
 
 function commanderLlmAvailable(): boolean {
@@ -57,13 +61,20 @@ function commanderLlmAvailable(): boolean {
 function withReply(
   parsed: ParsedCommand,
   confidence: number,
-  opts?: { userReply?: string; intent?: CommandIntentName }
+  opts?: {
+    userReply?: string;
+    intent?: CommandIntentName;
+    routingSource?: DeployRoutingSource;
+    llmRawGithubRepo?: string;
+  }
 ): LlmRouteResult {
   const reply = opts?.userReply?.trim();
   return {
     parsed,
     confidence,
     intent: opts?.intent,
+    routingSource: opts?.routingSource,
+    llmRawGithubRepo: opts?.llmRawGithubRepo,
     conversationalReply: reply || undefined,
     userReply: reply || undefined,
   };
@@ -187,7 +198,10 @@ export async function routeMessage(
   if (channelId) {
     const caseResume = await tryResumeCaseWithHint(text, platform, channelId, userId);
     if (caseResume) {
-      return withReply(caseResume.parsed, 0.93, { userReply: caseResume.reply });
+      return withReply(caseResume.parsed, 0.93, {
+        userReply: caseResume.reply,
+        routingSource: 'followup',
+      });
     }
 
     const routingMode = resolveAgentMode().routingMode;
@@ -204,7 +218,10 @@ export async function routeMessage(
       return withReply({ type: 'unknown' }, 0.95, { userReply: sessionFollow.text });
     }
     if (sessionFollow?.type === 'parsed') {
-      return withReply(sessionFollow.parsed, 0.92, { userReply: sessionFollow.reply });
+      return withReply(sessionFollow.parsed, 0.92, {
+        userReply: sessionFollow.reply,
+        routingSource: 'followup',
+      });
     }
 
     if (routingMode !== 'llm_only') {
@@ -212,12 +229,14 @@ export async function routeMessage(
       if (nsDeploy) {
         return withReply(nsDeploy, 0.95, {
           userReply: `Got it — I'll create namespace \`${nsDeploy.namespace}\` and continue the deploy.`,
+          routingSource: 'followup',
         });
       }
       const branchDeploy = await tryDeployBranchFollowUp(platform, channelId, userId, text);
       if (branchDeploy) {
         return withReply(branchDeploy, 0.95, {
           userReply: `Got it — retrying deploy on branch \`${branchDeploy.gitRef}\`.`,
+          routingSource: 'followup',
         });
       }
       const statusReply = await tryStatusFollowUp(platform, channelId, userId, text);
@@ -236,7 +255,7 @@ export async function routeMessage(
       fast.type === 'investigate' && llmAvailable
         ? await enrichInvestigateImageHint(fast, text, userId, { transcript })
         : fast;
-    return withReply(enriched, 0.95);
+    return withReply(enriched, 0.95, { routingSource: 'regex' });
   }
 
   const session = channelId ? await getSession(platform, channelId, userId) : undefined;
@@ -268,22 +287,39 @@ export async function routeMessage(
 
       const parsed = commandIntentToParsed(intent, text);
       if (parsed) {
-        const enriched =
+        let enriched: ParsedCommand =
           parsed.type === 'investigate'
             ? await enrichInvestigateImageHint(parsed, text, userId, { transcript })
             : parsed;
+        if (enriched.type === 'deploy') {
+          enriched = normalizeDeployCommand(enriched);
+        }
+        const deployReady =
+          enriched.type === 'deploy' &&
+          !!(enriched.containerImage || enriched.githubRepo || enriched.stackServices?.length);
+        const llmAsksMore =
+          !!intent.userReply &&
+          (/\?/.test(intent.userReply) ||
+            /\b(catalog|github|repository|repo url|which repo)\b/i.test(intent.userReply));
         const ack =
-          intent.userReply ||
-          (enriched.type === 'deploy'
-            ? `Starting deploy for ${enriched.githubRepo || enriched.appName || 'your app'}.`
-            : enriched.type === 'investigate'
-              ? `Investigating ${enriched.label}…`
-              : enriched.type === 'workload-status'
-                ? `Checking ${enriched.label}…`
-                : enriched.type === 'ci-failure'
-                  ? `Triaging CI for ${enriched.githubRepo.replace(/^github\.com\//, '')}…`
-                  : undefined);
-        return withReply(enriched, intent.confidence, { intent: intent.intent, userReply: ack });
+          deployReady && llmAsksMore
+            ? `Starting deploy of ${enriched.appName ?? enriched.githubRepo?.replace(/^github\.com\//, '') ?? 'app'} to namespace \`${enriched.namespace}\`…`
+            : intent.userReply ||
+              (enriched.type === 'deploy'
+                ? `Starting deploy for ${enriched.githubRepo || enriched.appName || 'your app'}.`
+                : enriched.type === 'investigate'
+                  ? `Investigating ${enriched.label}…`
+                  : enriched.type === 'workload-status'
+                    ? `Checking ${enriched.label}…`
+                    : enriched.type === 'ci-failure'
+                      ? `Triaging CI for ${enriched.githubRepo.replace(/^github\.com\//, '')}…`
+                      : undefined);
+        return withReply(enriched, intent.confidence, {
+          intent: intent.intent,
+          userReply: ack,
+          routingSource: 'llm',
+          llmRawGithubRepo: intent.intent === 'deploy' ? intent.githubRepo : undefined,
+        });
       }
 
       if (intent.intent === 'deploy') {
@@ -330,7 +366,7 @@ export async function routeMessage(
       }
       return withReply(regexParsed, 0.55, { userReply });
     }
-    return withReply(regexParsed, llmAvailable ? 0.75 : 0.9);
+    return withReply(regexParsed, llmAvailable ? 0.75 : 0.9, { routingSource: 'regex' });
   }
 
   if (!llmAvailable) {
@@ -359,7 +395,7 @@ const UNIFIED_INTENT_SYSTEM = `You are the intent router for an SRE chatbot. Rep
   "intent": "investigate" | "deploy" | "rollback" | "delete" | "get" | "ci-failure" | "workload-status" | "help" | "chat",
   "confidence": 0.0 to 1.0,
   "userReply": "1-3 short sentences for the user (greeting, ack, or what you still need)",
-  "investigateScope": "cluster" | "namespace" | "workload",
+  "investigateScope": "cluster" | "namespace" | "workload" | "app",
   "workloadHint": "deployment/app name or empty",
   "namespace": "kubernetes namespace or empty",
   "label": "short human phrase",
@@ -382,9 +418,11 @@ Rules:
 - Expand image shorthand using workloadHint: "vyogotech ghcr latest" + frappe-operator → ghcr.io/vyogotech/frappe-operator:latest
 - Informal phrasing ("pull the newest tag from GHCR", "bump to v2.1") → still set containerImage when intent is clear
 - investigate cluster health → investigateScope cluster
+- "why isn't app X working" / app-level end-to-end → investigateScope app, workloadHint = app name
 - "is app running" / "is X up in namespace Y" → intent workload-status (NOT investigate); set workloadHint + namespace
 - "is app running in any/all namespaces" → workload-status; never use "any" as namespace name — leave namespace empty or use scope words
 - intent help when user asks what you can do, capabilities, or how to use the bot
+- intent get when user asks to list/show/display pods, nodes, deployments, namespaces, services, or events (set getResource + namespace when given)
 - intent chat only for greetings/thanks/off-topic; set userReply helpfully
 - direct deploy if no git push → deployStrategy direct
 - confidence: high when fields are explicit, lower when guessing`;

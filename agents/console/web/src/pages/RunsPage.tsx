@@ -13,7 +13,7 @@ export function RunsPage({ live }: Props) {
   const [groups, setGroups] = useState<ResourceRunGroup[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const [showHistory, setShowHistory] = useState(true);
+  const [showHistory, setShowHistory] = useState(false);
 
   const load = useCallback(() => {
     fetchRunsGrouped(150).then((d) => setGroups(d.groups)).catch(console.error);
@@ -39,7 +39,7 @@ export function RunsPage({ live }: Props) {
           g.runs.some(
             (r) =>
               r.outcome?.rootCause?.toLowerCase().includes(q) ||
-              r.outcome?.suggestedAction.toLowerCase().includes(q)
+              r.outcome?.suggestedAction?.toLowerCase().includes(q)
           )
         );
       })
@@ -73,7 +73,7 @@ export function RunsPage({ live }: Props) {
     <>
       <div className="filter-bar">
         <input
-          placeholder="Search resources, root causes, fixes…"
+          placeholder="Search runs, root causes, fixes…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           style={{ minWidth: 240 }}
@@ -93,7 +93,7 @@ export function RunsPage({ live }: Props) {
             checked={showHistory}
             onChange={(e) => setShowHistory(e.target.checked)}
           />
-          Show attempt history
+          Show full attempt history
         </label>
         <button type="button" className="btn btn-sm" onClick={load}>
           Refresh
@@ -104,14 +104,14 @@ export function RunsPage({ live }: Props) {
       </div>
 
       <p style={{ fontSize: '0.8125rem', color: 'var(--text-dim)', margin: '0 0 1rem' }}>
-        Runs are grouped by resource. Each attempt shows the suggested remediation, whether it worked,
-        and follow-up actions — copy snippets to build team skills later.
+        Investigation and remediation attempts, grouped by workload. Click a run ID for the full
+        timeline and tool steps.
       </p>
 
       {filtered.length === 0 && (
         <div className="empty-state">
-          <h3>No resources match</h3>
-          <p>Try clearing filters or trigger a deploy / investigation from Telegram.</p>
+          <h3>No runs match</h3>
+          <p>Try clearing filters or start an investigation from the Assistant.</p>
         </div>
       )}
 

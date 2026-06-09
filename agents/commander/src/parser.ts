@@ -15,8 +15,11 @@ import {
   resolveOperatorSuggestion,
   workloadHintFromNamespace,
 } from './investigate-target.js';
+import { extractEventFromInvestigateText } from '../../../shared/src/k8s-event-investigation.js';
+import { normalizeGithubRepoSlug } from '../../../shared/src/git-ref.js';
+import { normalizeDeployCommand } from '../../../shared/src/deploy-command.js';
 
-export type InvestigateScope = 'workload' | 'namespace' | 'cluster';
+export type InvestigateScope = 'workload' | 'namespace' | 'cluster' | 'event' | 'app';
 
 export interface DeployCmd {
   type: 'deploy';
@@ -53,6 +56,9 @@ export interface InvestigateCmd {
   operatorSuggestion?: string;
   deployProvenance?: import('../../../shared/src/deploy-provenance.js').DeployProvenance;
   allowClusterHotFix?: boolean;
+  /** When scope is event — Kubernetes event reason from user prompt. */
+  eventReason?: string;
+  eventMessage?: string;
 }
 
 export interface RollbackCmd {
@@ -254,7 +260,7 @@ export function extractGithubRepo(text: string): string | null {
   const match = text.match(
     /(?:https?:\/\/)?github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?(?:[\/\s#?]|$)/i
   );
-  return match?.[1] != null ? `github.com/${match[1]}` : null;
+  return match?.[1] != null ? normalizeGithubRepoSlug(`github.com/${match[1]}`) : null;
 }
 
 export function extractGithubRepos(text: string): string[] {
@@ -274,13 +280,16 @@ function extractDeployNamespace(text: string): string {
   if (flagMatch?.[1]) return flagMatch[1];
   const toMatch = text.match(/\b(?:into|to)\s+namespace\s+([\w-]+)/i);
   if (toMatch?.[1]) return toMatch[1];
+  const intoNs = text.match(/\binto\s+(?:the\s+)?([\w-]+)\s+namespace\b/i);
+  if (intoNs?.[1] && !isMetaNamespaceToken(intoNs[1], text)) return intoNs[1];
   const toNs = text.match(/\bto\s+([\w-]+)\s+namespace\b/i);
   if (toNs?.[1]) return toNs[1];
   const inNs = text.match(/\bin\s+(?:the\s+)?([\w-]+)\s+namespace\b/i);
   if (inNs?.[1]) return inNs[1];
-  const fromNs = text.match(/\bfrom\s+(?:the\s+)?([\w-]+)(?:\s+namespace)?\b/i);
+  // Require the word "namespace" — avoid treating "from this repo" as a namespace.
+  const fromNs = text.match(/\bfrom\s+(?:the\s+)?([\w-]+)\s+namespace\b/i);
   if (fromNs?.[1] && !STOP_WORDS.has(fromNs[1].toLowerCase())) return fromNs[1];
-  return 'default';
+  return '';
 }
 
 function extractDeployStrategy(text: string): { strategy: 'gitops' | 'direct'; explicit: boolean } {
@@ -302,7 +311,9 @@ function extractGitRef(text: string): string {
   const branchKw = text.match(/\bbranch\s+([\w./-]+)/i);
   if (branchKw?.[1]) return branchKw[1];
   const refMatch = text.match(/(?:@|--ref\s+|--branch\s+|--tag\s+)([\w./-]+)/i);
-  return refMatch?.[1] ?? 'main';
+  if (refMatch?.[1]) return refMatch[1];
+  if (/\blatest\b/i.test(text)) return 'latest';
+  return 'main';
 }
 
 function extractNamespaceHint(text: string): string | undefined {
@@ -405,8 +416,80 @@ function extractWorkloadName(text: string): { name: string; namespace?: string }
   return null;
 }
 
+export function parseEventInvestigation(text: string): InvestigateCmd | null {
+  const extracted = extractEventFromInvestigateText(text);
+  if (!extracted) return null;
+  return {
+    type: 'investigate',
+    scope: 'event',
+    namespace: '_all',
+    resourceName: '_event',
+    label: extracted.reason,
+    eventReason: extracted.reason,
+    eventMessage: extracted.message,
+  };
+}
+
+export function parseAppInvestigation(text: string): InvestigateCmd | null {
+  const nsHint = extractNamespaceHint(text);
+
+  const patterns: Array<{ re: RegExp; nameIdx: number }> = [
+    { re: /\b(fix|remediate|repair)\s+(?:the\s+)?app\s+([\w][\w.-]*)/i, nameIdx: 2 },
+    { re: /\bapp\s+review\s+(?:for\s+)?(?:the\s+)?([\w][\w.-]*)/i, nameIdx: 1 },
+    { re: /\binvestigate\s+(?:the\s+)?app\s+([\w][\w.-]*)/i, nameIdx: 1 },
+    { re: /\bwhy\s+isn'?t\s+(?:my|the)\s+app\s+([\w][\w.-]*)\s+working\b/i, nameIdx: 1 },
+    { re: /\bwhy\s+isn'?t\s+app\s+([\w][\w.-]*)\s+working\b/i, nameIdx: 1 },
+    { re: /\bwhy\s+isn'?t\s+(?:my|the)\s+([\w][\w.-]*)\s+app\s+working\b/i, nameIdx: 1 },
+    { re: /\bwhy\s+isn'?t\s+(?:my|the)\s+([\w][\w.-]*)\s+application\s+working\b/i, nameIdx: 1 },
+  ];
+
+  for (const { re, nameIdx } of patterns) {
+    const m = text.match(re);
+    const name = m?.[nameIdx]?.trim();
+    if (name && !STOP_WORDS.has(name.toLowerCase())) {
+      const namespace = nsHint ?? 'default';
+      return {
+        type: 'investigate',
+        scope: 'app',
+        namespace,
+        resourceName: name,
+        label: `app ${name}`,
+      };
+    }
+  }
+
+  if (/\bwhy\s+isn'?t\s+(?:my|the)\s+app\s+working\b/i.test(text)) {
+    return {
+      type: 'investigate',
+      scope: 'app',
+      namespace: nsHint ?? 'default',
+      resourceName: '_unresolved',
+      label: 'app',
+    };
+  }
+
+  if (/\b(application|app)\s+(not\s+working|down|broken|failing)\b/i.test(text)) {
+    const hint = extractWorkloadName(text);
+    if (hint?.name) {
+      return {
+        type: 'investigate',
+        scope: 'app',
+        namespace: hint.namespace ?? nsHint ?? 'default',
+        resourceName: hint.name,
+        label: `app ${hint.name}`,
+      };
+    }
+  }
+
+  return null;
+}
+
 function parseInvestigate(text: string): InvestigateCmd | null {
   const normalised = text.trim();
+
+  const eventCmd = parseEventInvestigation(normalised);
+  if (eventCmd) return eventCmd;
+
   const remediationIntent =
     REMEDIATION_TRIGGERS.test(normalised) &&
     /\b(deployment|workload|app|application|service|pod|image|tag)\b/i.test(normalised);
@@ -440,6 +523,9 @@ function parseInvestigate(text: string): InvestigateCmd | null {
       label: `${nsHint} namespace`,
     };
   }
+
+  const appCmd = parseAppInvestigation(normalised);
+  if (appCmd) return appCmd;
 
   const nsOnly = extractNamespaceHint(normalised);
   if (
@@ -953,8 +1039,10 @@ export function parseRegexFastPath(text: string): ParsedCommand | null {
 
   const parsed = parseCommand(normalised);
   if (parsed.type === 'investigate') {
+    if (parsed.scope === 'event') return parsed;
     if (parsed.scope === 'cluster') return parsed;
     if (parsed.scope === 'namespace' && parsed.resourceName === '_namespace') return parsed;
+    if (parsed.scope === 'app' && parsed.resourceName !== '_unresolved') return parsed;
     if (!investigateNeedsLlmResolution(parsed)) return parsed;
   }
 

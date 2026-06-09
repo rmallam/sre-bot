@@ -12,6 +12,7 @@ const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
 const HIL_URL = process.env['HIL_URL'] ?? 'http://hil-agent:8080';
 const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
 const COMMANDER_URL = process.env['COMMANDER_URL'] ?? 'http://commander-agent:8080';
+const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 const CODING_AGENT_URL = process.env['CODING_AGENT_URL'] ?? 'http://coding-agent:8080';
 
 const AGENT_HEALTH_URLS: Record<string, string> = {
@@ -30,7 +31,16 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 
 async function proxyJson(url: string, init?: RequestInit): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(60_000) });
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(60_000) });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[console] upstream fetch failed: ${url} — ${msg}`);
+    return new Response(JSON.stringify({ error: `Upstream unavailable: ${msg}`, url }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 }
 
 app.get('/api/health', (_req, res) => {
@@ -56,6 +66,34 @@ app.get('/api/agents', async (_req, res) => {
   res.json({ agents: results });
 });
 
+app.get('/api/cluster-health', async (req, res) => {
+  const force = req.query.force === 'true';
+  const r = await proxyJson(`${INVESTIGATOR_URL}/cluster-health${force ? '?force=true' : ''}`);
+  const body = await r.text();
+  res.status(r.status).type('application/json').send(body);
+});
+
+app.get('/api/app-review', async (req, res) => {
+  const appId = String(req.query.appId ?? '').trim();
+  if (!appId) {
+    res.status(400).json({ error: 'appId required' });
+    return;
+  }
+  const params = new URLSearchParams({ appId });
+  if (req.query.namespace) params.set('namespace', String(req.query.namespace));
+  if (req.query.force === 'true') params.set('force', 'true');
+  const r = await proxyJson(`${INVESTIGATOR_URL}/app-review?${params}`);
+  const body = await r.text();
+  res.status(r.status).type('application/json').send(body);
+});
+
+app.get('/api/apps', async (req, res) => {
+  const params = req.query.namespace ? `?namespace=${encodeURIComponent(String(req.query.namespace))}` : '';
+  const r = await proxyJson(`${INVESTIGATOR_URL}/apps${params}`);
+  const body = await r.text();
+  res.status(r.status).type('application/json').send(body);
+});
+
 app.get('/api/overview', async (_req, res) => {
   try {
     const [hilRes, runsRes] = await Promise.all([
@@ -78,6 +116,112 @@ app.get('/api/overview', async (_req, res) => {
       runsFailed: byStatus('failed') + byStatus('escalated'),
       runsCancelled: byStatus('cancelled'),
     });
+  } catch (err) {
+    res.status(502).json({ error: String(err) });
+  }
+});
+
+app.get('/api/activity', async (req, res) => {
+  const limit = Math.min(parseInt(String(req.query.limit ?? '60'), 10) || 60, 200);
+  try {
+    const [runsRes, hilRes] = await Promise.all([
+      proxyJson(`${ORCHESTRATOR_URL}/runs?limit=${limit}`),
+      proxyJson(`${HIL_URL}/api/approvals`),
+    ]);
+    const runs = runsRes.ok
+      ? ((await runsRes.json()) as {
+          runs?: Array<{
+            runId: string;
+            incidentId: string;
+            status: string;
+            updatedAt: string;
+            startedAt: string;
+            displayName?: string;
+            resourceName?: string;
+            namespace?: string;
+            mode?: string;
+          }>;
+        }).runs ?? []
+      : [];
+    const approvals = hilRes.ok
+      ? ((await hilRes.json()) as {
+          approvals?: Array<{
+            incidentId: string;
+            runId?: string;
+            status: string;
+            namespace: string;
+            resourceName: string;
+            resourceKind: string;
+            mode: string;
+            triggeredAt: string;
+            triggeredBy?: string;
+            lockedVia?: string;
+            plan?: { action?: string };
+          }>;
+        }).approvals ?? []
+      : [];
+
+    type Ev = {
+      id: string;
+      kind: 'run' | 'approval' | 'approval_decision';
+      at: string;
+      title: string;
+      detail?: string;
+      status?: string;
+      source?: string;
+      runId?: string;
+      incidentId?: string;
+    };
+
+    const events: Ev[] = [];
+
+    for (const run of runs) {
+      const label = run.displayName ?? run.resourceName ?? run.runId.slice(0, 8);
+      events.push({
+        id: `run-${run.runId}-${run.updatedAt}`,
+        kind: 'run',
+        at: run.updatedAt ?? run.startedAt,
+        title: `${label} — ${run.status.replace(/_/g, ' ')}`,
+        detail: run.mode ? `Mode: ${run.mode.replace(/-/g, ' ')}` : undefined,
+        status: run.status,
+        source: 'orchestrator',
+        runId: run.runId,
+        incidentId: run.incidentId,
+      });
+    }
+
+    for (const a of approvals) {
+      const label = `${a.namespace}/${a.resourceName}`;
+      const action = a.plan?.action?.replace(/_/g, ' ') ?? a.mode;
+      if (a.status === 'PENDING') {
+        events.push({
+          id: `approval-${a.incidentId}`,
+          kind: 'approval',
+          at: a.triggeredAt,
+          title: `Approval needed: ${label}`,
+          detail: action,
+          status: a.status,
+          source: a.lockedVia ?? a.triggeredBy ?? 'hil',
+          runId: a.runId,
+          incidentId: a.incidentId,
+        });
+      } else {
+        events.push({
+          id: `approval-${a.incidentId}-${a.status}`,
+          kind: 'approval_decision',
+          at: a.triggeredAt,
+          title: `${a.status}: ${label}`,
+          detail: action,
+          status: a.status,
+          source: a.lockedVia ?? a.triggeredBy ?? 'hil',
+          runId: a.runId,
+          incidentId: a.incidentId,
+        });
+      }
+    }
+
+    events.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+    res.json({ events: events.slice(0, limit) });
   } catch (err) {
     res.status(502).json({ error: String(err) });
   }

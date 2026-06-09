@@ -129,8 +129,10 @@ export async function resolvePodForWorkload(
           selector
         );
         const items = podsRes.body.items ?? [];
-        const running = items.find((p) => p.status?.phase === 'Running');
-        const pick = running ?? items[0];
+        const unhealthy = items.find((p) =>
+          (p.status?.containerStatuses ?? []).some((c) => !c.ready || c.state?.waiting)
+        );
+        const pick = unhealthy ?? items.find((p) => p.status?.phase === 'Running') ?? items[0];
         if (pick?.metadata?.name) {
           log('info', AGENT, 'Resolved pod via deployment selector', {
             incidentId,
@@ -157,8 +159,10 @@ export async function resolvePodForWorkload(
       const matches = (podsRes.body.items ?? []).filter((p) =>
         p.metadata?.name?.startsWith(prefix)
       );
-      const running = matches.find((p) => p.status?.phase === 'Running');
-      const pick = running ?? matches[0];
+      const unhealthy = matches.find((p) =>
+        (p.status?.containerStatuses ?? []).some((c) => !c.ready || c.state?.waiting)
+      );
+      const pick = unhealthy ?? matches.find((p) => p.status?.phase === 'Running') ?? matches[0];
       if (pick?.metadata?.name) {
         log('info', AGENT, 'Resolved pod via deployment name prefix', {
           incidentId,
@@ -170,6 +174,54 @@ export async function resolvePodForWorkload(
       }
     } catch (err) {
       log('warn', AGENT, 'Pod prefix lookup failed', { incidentId, error: String(err) });
+    }
+  }
+
+  if (resourceKind === 'StatefulSet') {
+    try {
+      const stsRes = await appsV1.readNamespacedStatefulSet(resourceName, namespace);
+      const sts = stsRes.body;
+      const selector = labelSelectorFromLabels(sts.spec?.selector?.matchLabels);
+      if (selector) {
+        const podsRes = await coreV1.listNamespacedPod(
+          namespace,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          selector
+        );
+        const items = podsRes.body.items ?? [];
+        const unhealthy = items.find((p) =>
+          (p.status?.containerStatuses ?? []).some((c) => !c.ready || c.state?.waiting)
+        );
+        const pick = unhealthy ?? items[0];
+        if (pick?.metadata?.name) {
+          log('info', AGENT, 'Resolved pod via statefulset selector', {
+            incidentId,
+            namespace,
+            resourceName,
+            podName: pick.metadata.name,
+          });
+          return pick.metadata.name;
+        }
+      }
+    } catch (err) {
+      log('warn', AGENT, 'StatefulSet pod lookup failed', {
+        incidentId,
+        namespace,
+        resourceName,
+        error: String(err),
+      });
+    }
+
+    // StatefulSet pods: name-0, name-1, …
+    const ordinalPod = `${resourceName}-0`;
+    try {
+      await coreV1.readNamespacedPod(ordinalPod, namespace);
+      return ordinalPod;
+    } catch {
+      /* fall through */
     }
   }
 

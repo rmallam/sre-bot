@@ -8,6 +8,7 @@ import { platformRouteMessage, platformRoutingEnabled } from '../../../shared/sr
 import { parseCommand } from './parser.js';
 import type { ParsedCommand } from './parser.js';
 import type { LlmRouteResult } from './llm-router.js';
+import type { DeployRoutingSource } from '../../../shared/src/deploy-confidence.js';
 
 const AGENT = 'commander-platform-router';
 
@@ -18,11 +19,13 @@ const CHITCHAT_REPLY =
 function withReply(
   parsed: ParsedCommand,
   confidence: number,
-  userReply?: string
+  userReply?: string,
+  routingSource: DeployRoutingSource = 'platform'
 ): LlmRouteResult {
   return {
     parsed,
     confidence,
+    routingSource,
     userReply,
     conversationalReply: userReply,
   };

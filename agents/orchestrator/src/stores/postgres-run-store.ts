@@ -3,6 +3,8 @@ import type { RunStore, StoredRun, PendingToolApproval } from '../../../../share
 import type { RunStatus, ToolTranscriptEntry } from '../../../../shared/src/types.js';
 import type { CompiledPlan } from '../../../../shared/src/tool-registry.js';
 import type { ToolCall } from '../../../../shared/src/tool-contracts.js';
+import { resourceKeyFromStartRequest } from '../../../../shared/src/remediation-outcome.js';
+import type { StartRunRequest } from '../../../../shared/src/types.js';
 
 const { Pool } = pg;
 
@@ -31,6 +33,14 @@ export class PostgresRunStore implements RunStore {
       CREATE INDEX IF NOT EXISTS idx_sre_runs_incident ON sre_runs(incident_id);
       CREATE INDEX IF NOT EXISTS idx_sre_runs_updated ON sre_runs(updated_at DESC);
     `);
+    await this.pool.query(`
+      ALTER TABLE sre_runs ADD COLUMN IF NOT EXISTS resource_key TEXT;
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_sre_runs_active_resource
+      ON sre_runs(resource_key, updated_at DESC)
+      WHERE status IN ('running', 'awaiting_human');
+    `);
   }
 
   private rowToRun(row: Record<string, unknown>): StoredRun {
@@ -51,12 +61,26 @@ export class PostgresRunStore implements RunStore {
 
   async initRun(runId: string, incidentId: string, metadata?: Record<string, unknown>): Promise<void> {
     const now = new Date();
+    const req = metadata?.request as StartRunRequest | undefined;
+    const resourceKey = req ? resourceKeyFromStartRequest(req) : `run:${incidentId}`;
     await this.pool.query(
-      `INSERT INTO sre_runs (run_id, incident_id, status, transcript, metadata, started_at, updated_at)
-       VALUES ($1, $2, 'running', '[]'::jsonb, $3, $4, $4)
-       ON CONFLICT (run_id) DO UPDATE SET updated_at = $4`,
-      [runId, incidentId, metadata ?? null, now]
+      `INSERT INTO sre_runs (run_id, incident_id, status, transcript, metadata, resource_key, started_at, updated_at)
+       VALUES ($1, $2, 'running', '[]'::jsonb, $3, $4, $5, $5)
+       ON CONFLICT (run_id) DO UPDATE SET updated_at = $5, resource_key = COALESCE(sre_runs.resource_key, $4)`,
+      [runId, incidentId, metadata ?? null, resourceKey, now]
     );
+  }
+
+  /** PLAT-13 — indexed lookup for run dedupe at scale. */
+  async findActiveRunByResourceKey(resourceKey: string): Promise<StoredRun | undefined> {
+    const res = await this.pool.query(
+      `SELECT * FROM sre_runs
+       WHERE resource_key = $1 AND status IN ('running', 'awaiting_human')
+       ORDER BY updated_at DESC LIMIT 1`,
+      [resourceKey]
+    );
+    if (res.rowCount === 0) return undefined;
+    return this.rowToRun(res.rows[0] as Record<string, unknown>);
   }
 
   async getRun(runId: string): Promise<StoredRun | undefined> {

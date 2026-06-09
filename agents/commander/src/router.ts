@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { formatFetchError, postWithRetry, log } from '../../../shared/src/http.js';
 import type { DeployRequest, DiagnosisContext, Platform, StartRunRequest } from '../../../shared/src/types.js';
-import type { HealthOutcome, UndeployOutcomePayload } from '../../../shared/src/command-outcome.js';
+import type { HealthOutcome, AppReviewOutcome, UndeployOutcomePayload } from '../../../shared/src/command-outcome.js';
 import type { ParsedCommand } from './parser.js';
 import { prepareDeleteCommand, storeDeleteChoice } from './delete-choice.js';
 import type { ResourceKind } from '../../../shared/src/types.js';
@@ -12,6 +12,9 @@ import { syncActiveTopicFromCommand } from './active-topic.js';
 import { getChannelPref } from './channel-prefs.js';
 import { composeUserReply } from './compose-outcome.js';
 import { formatRcaPointersForPlan } from '../../../shared/src/rca-pointers.js';
+import { buildEventInvestigation } from '../../../shared/src/k8s-event-investigation.js';
+import type { ClusterHealthSnapshot } from '../../../shared/src/cluster-health.js';
+import type { AppReviewResult } from '../../../shared/src/app-graph.js';
 import { subjectFromInvestigate, subjectFromDeploy } from '../../../shared/src/agent-case.js';
 import { resolveAgentMode } from '../../../shared/src/agent-mode.js';
 import {
@@ -19,6 +22,16 @@ import {
   bindRunToCase,
   operatorMessageFromCase,
 } from './case-manager.js';
+import {
+  validateDeployCommand,
+  validateStartRunRequest,
+  formatDeployDispatchError,
+} from '../../../shared/src/deploy-command.js';
+import {
+  evaluateDeployConfidence,
+  type DeployRoutingSource,
+} from '../../../shared/src/deploy-confidence.js';
+import { parseCommand } from './parser.js';
 
 const AGENT = 'commander-agent';
 const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
@@ -33,6 +46,10 @@ export interface CommandHandleResult {
   immediateReply?: string;
   /** Inline Approve/Reject for Telegram when a HIL approval is still open. */
   quickActions?: Array<{ id: string; label: string }>;
+  /** When orchestrator deduplicated to an in-flight run. */
+  existingRunId?: string;
+  /** Keep polling chat for run updates (dedupe or async). */
+  waitingForRun?: boolean;
 }
 
 interface DispatchRunResult {
@@ -44,6 +61,11 @@ interface DispatchRunResult {
 }
 
 async function dispatchRun(payload: StartRunRequest, incidentId: string): Promise<DispatchRunResult> {
+  const preflight = validateStartRunRequest(payload);
+  if (!preflight.ok) {
+    throw new Error(preflight.userMessage);
+  }
+
   if (USE_ORCHESTRATOR) {
     const url = `${ORCHESTRATOR_URL}/runs`;
     const res = await fetch(url, {
@@ -61,7 +83,12 @@ async function dispatchRun(payload: StartRunRequest, incidentId: string): Promis
       error?: string;
     };
     if (!res.ok) {
-      throw new Error(data.error ?? `Orchestrator rejected run (${res.status})`);
+      throw new Error(
+        formatDeployDispatchError(
+          new Error(data.error ?? `Orchestrator rejected run (${res.status})`),
+          payload
+        )
+      );
     }
     log('info', AGENT, data.deduplicated ? 'Run deduplicated' : 'POST OK', {
       incidentId,
@@ -99,18 +126,46 @@ async function dispatchRun(payload: StartRunRequest, incidentId: string): Promis
   return { started: true };
 }
 
-function dedupeRunReply(result: DispatchRunResult, parsed: import('./parser.js').InvestigateCmd): string {
+function isActiveRunStatus(status?: string): boolean {
+  return status === 'running' || status === 'awaiting_human';
+}
+
+async function buildDedupeRunReply(
+  result: DispatchRunResult,
+  parsed: import('./parser.js').InvestigateCmd
+): Promise<string> {
   const runRef = result.existingRunId ?? result.existingIncidentId ?? 'existing run';
+  const target = `**${parsed.namespace}/${parsed.resourceName}**`;
+
   if (result.existingStatus === 'awaiting_human') {
     const imageHint = parsed.operatorSuggestion ? `\nYour hint: \`${parsed.operatorSuggestion}\`.` : '';
     return (
-      `⏸️ A fix for **${parsed.namespace}/${parsed.resourceName}** is waiting for your approval (\`${runRef}\`).` +
+      `⏸️ A fix for ${target} is waiting for your approval (\`${runRef}\`).` +
       `${imageHint}\n\nUse **Approve/Reject** below, or reply **cancel run** to clear and start over.`
     );
   }
+
+  let progress = '';
+  if (result.existingRunId) {
+    try {
+      const detail = await fetchRunDetailsText(result.existingRunId, { verbose: false });
+      const lines = detail
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .slice(0, 4);
+      if (lines.length > 0) {
+        progress = `\n\n**Current progress:**\n${lines.map((l) => `• ${l.replace(/^#+\s*/, '')}`).join('\n')}`;
+      }
+    } catch {
+      /* optional */
+    }
+  }
+
   return (
-    `ℹ️ Already working on **${parsed.namespace}/${parsed.resourceName}** (\`${runRef}\`, status: ${result.existingStatus ?? 'active'}). ` +
-    `I'll update you when that run finishes.`
+    `ℹ️ Already investigating ${target} (\`${runRef}\`, status: **${result.existingStatus ?? 'active'}**).` +
+    `${progress}\n\n` +
+    `Open **View run** for details, **Cancel stuck run** if this looks frozen, or ask **what's happening**.`
   );
 }
 
@@ -225,6 +280,128 @@ function healthLabel(parsed: Extract<ParsedCommand, { type: 'investigate' }>): s
   return parsed.label;
 }
 
+async function fetchEventInvestigation(
+  parsed: Extract<ParsedCommand, { type: 'investigate' }>,
+  incidentId: string,
+  composeOpts: import('../../../shared/src/command-outcome.js').ComposeOptions
+): Promise<string> {
+  const reason = parsed.eventReason ?? parsed.label;
+  const message = parsed.eventMessage ?? '';
+
+  let snapshot: ClusterHealthSnapshot | null = null;
+  try {
+    const res = await fetch(`${INVESTIGATOR_URL}/cluster-health?force=true`, {
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (res.ok) {
+      snapshot = (await res.json()) as ClusterHealthSnapshot;
+    }
+  } catch (err) {
+    log('warn', AGENT, 'cluster-health fetch for event investigation failed', {
+      incidentId,
+      error: String(err),
+    });
+  }
+
+  const data = buildEventInvestigation({ reason, message, snapshot });
+  return composeUserReply({ kind: 'event_investigation', data }, composeOpts);
+}
+
+async function loadAppReview(
+  parsed: Extract<ParsedCommand, { type: 'investigate' }>
+): Promise<AppReviewResult | null> {
+  const appId = parsed.resourceName;
+  const params = new URLSearchParams({ appId, force: 'true' });
+  if (parsed.namespace && parsed.namespace !== '_all' && parsed.namespace !== 'default') {
+    params.set('namespace', parsed.namespace);
+  }
+  try {
+    const res = await fetch(`${INVESTIGATOR_URL}/app-review?${params}`, {
+      signal: AbortSignal.timeout(90_000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`GET /app-review failed ${res.status}: ${body.slice(0, 300)}`);
+    }
+    return (await res.json()) as AppReviewResult;
+  } catch {
+    return null;
+  }
+}
+
+function appReviewToOutcome(review: AppReviewResult): AppReviewOutcome {
+  const fn = review.frontierNode;
+  return {
+    appId: review.appId,
+    namespace: review.namespace,
+    overallStatus: review.overallStatus,
+    narrative: review.narrative,
+    frontierName: fn?.name,
+    frontierKind: fn?.kind,
+    frontierDetail: fn?.detail,
+    nodeCount: review.graph.nodes.length,
+    clusterReachable: review.clusterReachable,
+    reachable: review.reachable,
+    error: review.error,
+  };
+}
+
+async function fetchAppReview(
+  parsed: Extract<ParsedCommand, { type: 'investigate' }>,
+  incidentId: string,
+  composeOpts: import('../../../shared/src/command-outcome.js').ComposeOptions
+): Promise<string> {
+  const review = await loadAppReview(parsed);
+  if (!review) {
+    const data: AppReviewOutcome = {
+      appId: parsed.resourceName,
+      namespace: parsed.namespace,
+      overallStatus: 'unknown',
+      narrative: 'App review request failed',
+      nodeCount: 0,
+      reachable: false,
+      clusterReachable: false,
+      error: 'fetch failed',
+    };
+    return composeUserReply({ kind: 'app_review', data }, composeOpts);
+  }
+  return composeUserReply({ kind: 'app_review', data: appReviewToOutcome(review) }, composeOpts);
+}
+
+function lastAppReviewFromResult(review: AppReviewResult): import('./sessions.js').LastAppReview {
+  const fn = review.frontierNode;
+  return {
+    appId: review.appId,
+    namespace: review.namespace,
+    overallStatus: review.overallStatus,
+    frontierNodeId: review.frontierNodeId,
+    frontierName: fn?.name,
+    frontierKind: fn?.kind,
+    frontierNamespace: fn?.namespace,
+    reviewedAt: review.checkedAt,
+  };
+}
+
+/** Target workload for remediation after app review (frontier deployment/pod). */
+function remediationTargetFromAppReview(review: AppReviewResult): {
+  namespace: string;
+  resourceName: string;
+  resourceKind: ResourceKind;
+} {
+  const fn = review.frontierNode;
+  if (fn?.kind === 'deployment' && fn.namespace) {
+    return { namespace: fn.namespace, resourceName: fn.name, resourceKind: 'Deployment' };
+  }
+  if (fn?.kind === 'pod' && fn.namespace) {
+    return { namespace: fn.namespace, resourceName: fn.name, resourceKind: 'Pod' };
+  }
+  return {
+    namespace: review.namespace,
+    resourceName: review.appId,
+    resourceKind: 'Deployment',
+  };
+}
+
 async function fetchHealthInvestigation(
   parsed: Extract<ParsedCommand, { type: 'investigate' }>,
   incidentId: string
@@ -302,12 +479,19 @@ export async function fetchWorkloadStatusReply(opts: {
   );
 }
 
+export interface CommandDispatchContext {
+  routingConfidence?: number;
+  routingSource?: DeployRoutingSource;
+  llmRawGithubRepo?: string;
+}
+
 export async function handleCommand(
   parsed: ParsedCommand,
   userId: string,
   platform: Platform,
   channelId: string,
-  rawMessage: string
+  rawMessage: string,
+  dispatchCtx?: CommandDispatchContext
 ): Promise<CommandHandleResult> {
   const incidentId = uuidv4();
   const triggeredAt = new Date().toISOString();
@@ -403,18 +587,46 @@ export async function handleCommand(
       return { incidentId, immediateReply: text };
     }
     case 'deploy': {
-      const appName =
-        parsed.appName ??
-        (parsed.githubRepo ? parsed.githubRepo.split('/').pop() : undefined) ??
-        'app';
+      const validated = validateDeployCommand(parsed);
+      if (!validated.ok) {
+        return { incidentId, immediateReply: validated.userMessage };
+      }
+      const regexParsed = parseCommand(rawMessage);
+      const routingSource =
+        dispatchCtx?.routingSource ?? (dispatchCtx === undefined ? 'regex' : 'llm');
+      const bypassConfidenceGate =
+        routingSource === 'followup' || routingSource === 'clarification';
+      if (!bypassConfidenceGate) {
+        const confidence = evaluateDeployConfidence({
+          rawText: rawMessage,
+          deploy: validated.deploy,
+          routingConfidence: dispatchCtx?.routingConfidence,
+          routingSource,
+          regexDeploy: regexParsed.type === 'deploy' ? regexParsed : undefined,
+          llmRawGithubRepo: dispatchCtx?.llmRawGithubRepo,
+        });
+        log('info', AGENT, 'Deploy confidence gate', {
+          incidentId,
+          ok: confidence.ok,
+          score: confidence.score,
+          threshold: confidence.threshold,
+          reasons: confidence.reasons,
+          routingSource,
+        });
+        if (!confidence.ok) {
+          return { incidentId, immediateReply: confidence.clarifyMessage! };
+        }
+      }
+      const deploy = validated.deploy;
+      const appName = validated.appName;
       const agentCase = await openOrResumeCase({
         platform,
         channelId,
         userId,
         subject: subjectFromDeploy({
-          namespace: parsed.namespace,
+          namespace: deploy.namespace,
           appName,
-          githubRepo: parsed.githubRepo || undefined,
+          githubRepo: deploy.githubRepo || undefined,
         }),
         userHint: rawMessage,
       });
@@ -423,16 +635,16 @@ export async function handleCommand(
         incidentId,
         triggeredBy: 'commander',
         triggeredAt,
-        namespace: parsed.namespace,
+        namespace: deploy.namespace,
         resourceKind: 'Deployment',
         resourceName: appName,
         mode: 'pre-deploy',
-        githubRepo: parsed.githubRepo || undefined,
-        containerImage: parsed.containerImage,
-        gitRef: parsed.gitRef,
-        deployStrategy: parsed.deployStrategy,
-        createNamespace: parsed.createNamespace,
-        stackServices: parsed.stackServices,
+        githubRepo: deploy.githubRepo || undefined,
+        containerImage: deploy.containerImage,
+        gitRef: deploy.gitRef,
+        deployStrategy: deploy.deployStrategy,
+        createNamespace: deploy.createNamespace,
+        stackServices: deploy.stackServices,
         requestedBy: userId,
         platform,
         channelId,
@@ -449,7 +661,7 @@ export async function handleCommand(
         activeCaseId: agentCase.caseId,
       });
       void linkRunToSession(platform, channelId, userId, incidentId);
-      await rememberDeployDraft(platform, channelId, userId, parsed);
+      await rememberDeployDraft(platform, channelId, userId, deploy);
       break;
     }
     case 'rollback': {
@@ -475,9 +687,91 @@ export async function handleCommand(
       break;
     }
     case 'investigate': {
+      if (parsed.scope === 'event') {
+        const text = await fetchEventInvestigation(parsed, incidentId, composeOpts);
+        return { incidentId, immediateReply: text };
+      }
       if (parsed.scope === 'cluster' || parsed.scope === 'namespace') {
         const health = await fetchHealthInvestigation(parsed, incidentId);
         const text = await composeUserReply({ kind: 'health', data: health }, composeOpts);
+        return { incidentId, immediateReply: text };
+      }
+      if (parsed.scope === 'app') {
+        const review = await loadAppReview(parsed);
+        const text = review
+          ? await composeUserReply({ kind: 'app_review', data: appReviewToOutcome(review) }, composeOpts)
+          : await fetchAppReview(parsed, incidentId, composeOpts);
+
+        if (review) {
+          await setSession(platform, channelId, userId, {
+            lastAppReview: lastAppReviewFromResult(review),
+            activeTopic: {
+              kind: 'investigate',
+              resourceName: review.appId,
+              namespace: review.namespace,
+              label: `app ${review.appId}`,
+              updatedAt: new Date().toISOString(),
+            },
+          });
+        }
+
+        const wantsRemediation =
+          parsed.operatorSuggestion ||
+          (/\b(fix|remediate|repair|patch)\b/i.test(rawMessage) &&
+            !/\b(cluster|namespace)\b/i.test(rawMessage));
+
+        if (wantsRemediation && review && review.overallStatus !== 'ok') {
+          const target = remediationTargetFromAppReview(review);
+          const agentCase = await openOrResumeCase({
+            platform,
+            channelId,
+            userId,
+            subject: subjectFromInvestigate({
+              scope: 'app',
+              namespace: review.namespace,
+              resourceName: review.appId,
+              label: parsed.label,
+            }),
+            userHint: rawMessage,
+          });
+          const mode = resolveAgentMode();
+          const payload: StartRunRequest = {
+            incidentId,
+            triggeredBy: 'commander',
+            triggeredAt,
+            namespace: target.namespace,
+            resourceKind: target.resourceKind,
+            resourceName: target.resourceName,
+            mode: 'diagnose',
+            eventReason: 'AppReviewRemediation',
+            eventMessage: `App ${review.appId} review: ${review.narrative}`,
+            requestedBy: userId,
+            platform,
+            channelId,
+            rawMessage,
+            investigateScope: 'app',
+            investigationLabel: parsed.label,
+            caseId: agentCase.caseId,
+            agentMode: mode.agentMode,
+            userHints: agentCase.evidence.userHints,
+            deployProvenance: parsed.deployProvenance,
+            allowClusterHotFix: parsed.allowClusterHotFix,
+          };
+          await dispatchRun(payload, incidentId);
+          await bindRunToCase(platform, channelId, userId, agentCase.caseId, incidentId);
+          await setSession(platform, channelId, userId, {
+            lastIncidentId: incidentId,
+            lastMode: 'diagnose',
+            activeCaseId: agentCase.caseId,
+            waitingForRun: true,
+          });
+          void linkRunToSession(platform, channelId, userId, incidentId);
+          return {
+            incidentId,
+            immediateReply: `${text}\n\nStarting remediation on **${target.namespace}/${target.resourceName}**…`,
+          };
+        }
+
         return { incidentId, immediateReply: text };
       }
       const agentCase = await openOrResumeCase({
@@ -524,10 +818,18 @@ export async function handleCommand(
           dispatch.existingIncidentId,
           dispatch.existingRunId
         );
+        const viewRunAction = dispatch.existingRunId
+          ? [
+              { id: `view_run_${dispatch.existingRunId}`, label: 'View run' },
+              { id: `cancel_run_${dispatch.existingRunId}`, label: 'Cancel stuck run' },
+            ]
+          : [];
         return {
           incidentId: dispatch.existingIncidentId ?? incidentId,
-          immediateReply: dedupeRunReply(dispatch, parsed),
-          quickActions,
+          immediateReply: await buildDedupeRunReply(dispatch, parsed),
+          quickActions: [...viewRunAction, ...(quickActions ?? [])],
+          existingRunId: dispatch.existingRunId,
+          waitingForRun: isActiveRunStatus(dispatch.existingStatus),
         };
       }
       await bindRunToCase(platform, channelId, userId, agentCase.caseId, incidentId);

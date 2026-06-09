@@ -67,11 +67,38 @@ export interface ChoicePromptOutcome {
   options: Array<{ label: string; score?: number }>;
 }
 
+export interface EventInvestigationOutcome {
+  reason: string;
+  message: string;
+  severity: 'benign' | 'warning' | 'critical';
+  title: string;
+  explanation: string;
+  recommendation: string;
+  clusterHealthy: boolean;
+  currentNotes: string[];
+}
+
+export interface AppReviewOutcome {
+  appId: string;
+  namespace: string;
+  overallStatus: 'ok' | 'degraded' | 'down' | 'unknown';
+  narrative: string;
+  frontierName?: string;
+  frontierKind?: string;
+  frontierDetail?: string;
+  nodeCount: number;
+  clusterReachable?: boolean;
+  reachable: boolean;
+  error?: string;
+}
+
 export type CommandOutcome =
   | { kind: 'undeploy'; ok: boolean; userHint?: string; payload: UndeployOutcomePayload }
   | { kind: 'workload_status'; facts: WorkloadStatusFacts }
   | { kind: 'cluster_get'; data: ClusterGetOutcome }
   | { kind: 'health'; data: HealthOutcome }
+  | { kind: 'event_investigation'; data: EventInvestigationOutcome }
+  | { kind: 'app_review'; data: AppReviewOutcome }
   | { kind: 'not_found'; subject: string; namespace?: string; context?: string }
   | { kind: 'choice_prompt'; data: ChoicePromptOutcome }
   | { kind: 'plain'; text: string };

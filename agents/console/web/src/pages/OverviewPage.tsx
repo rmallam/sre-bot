@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { fetchAgents, fetchApprovals, fetchOverview, fetchRuns } from '../api';
-import type { AgentHealth, Approval, RunListItem } from '../types';
+import { fetchAgents, fetchApprovals, fetchClusterHealth, fetchOverview, fetchRuns } from '../api';
+import type { AgentHealth, Approval, ClusterHealthSnapshot, RunListItem } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
+import { ClusterHealthPanel } from '../components/ClusterHealthPanel';
 
 interface Props {
   live: boolean;
@@ -14,6 +15,9 @@ export function OverviewPage({ live }: Props) {
   const [agents, setAgents] = useState<AgentHealth[]>([]);
   const [pending, setPending] = useState<Approval[]>([]);
   const [recentRuns, setRecentRuns] = useState<RunListItem[]>([]);
+  const [clusterHealth, setClusterHealth] = useState<ClusterHealthSnapshot | null>(null);
+  const [clusterError, setClusterError] = useState<string | null>(null);
+  const [clusterLoading, setClusterLoading] = useState(true);
 
   const load = useCallback(() => {
     Promise.all([
@@ -26,27 +30,44 @@ export function OverviewPage({ live }: Props) {
     ]).catch(console.error);
   }, []);
 
+  const loadCluster = useCallback((force = false) => {
+    setClusterLoading(true);
+    fetchClusterHealth(force)
+      .then((data) => {
+        setClusterHealth(data);
+        setClusterError(null);
+      })
+      .catch((err) => {
+        setClusterError(String(err));
+      })
+      .finally(() => setClusterLoading(false));
+  }, []);
+
   useEffect(() => {
     load();
+    loadCluster(true);
     const ms = live ? 5000 : 30000;
+    const clusterMs = live ? 30000 : 60000;
     const id = setInterval(load, ms);
-    return () => clearInterval(id);
-  }, [live, load]);
+    const clusterId = setInterval(() => loadCluster(true), clusterMs);
+    return () => {
+      clearInterval(id);
+      clearInterval(clusterId);
+    };
+  }, [live, load, loadCluster]);
 
   return (
     <>
-      <div className="stats-grid">
+      <div className="stats-grid stats-grid-compact">
         <div className="stat-card stat-card-action">
           <div className="label">SRE Assistant</div>
-          <p className="stat-card-desc">
-            Chat in plain language — same assistant as Telegram. Sessions are saved across restarts when Redis is enabled.
-          </p>
+          <p className="stat-card-desc">Deploy, investigate, and triage in plain language.</p>
           <div className="stat-card-buttons">
             <Link to="/chat?new=1" className="btn btn-primary">
-              Start new chat
+              New chat
             </Link>
-            <Link to="/chat" className="btn btn-ghost">
-              Open assistant
+            <Link to="/apps" className="btn btn-ghost">
+              App graphs
             </Link>
           </div>
         </div>
@@ -67,14 +88,12 @@ export function OverviewPage({ live }: Props) {
           <div className="value success">{stats?.runsSucceeded ?? '—'}</div>
         </div>
         <div className="stat-card">
-          <div className="label">Failed / escalated</div>
+          <div className="label">Failed</div>
           <div className="value danger">{stats?.runsFailed ?? '—'}</div>
         </div>
-        <div className="stat-card">
-          <div className="label">Total tracked</div>
-          <div className="value">{stats?.runsTotal ?? '—'}</div>
-        </div>
       </div>
+
+      <ClusterHealthPanel health={clusterHealth} loading={clusterLoading} error={clusterError} />
 
       <div className="grid-2">
         <div className="card">
@@ -96,7 +115,7 @@ export function OverviewPage({ live }: Props) {
         <div className="card">
           <div className="card-header">
             <h3>Recent runs</h3>
-            <Link to="/runs">View all</Link>
+            <Link to="/runs">All runs</Link>
           </div>
           <div className="card-body" style={{ padding: 0 }}>
             {recentRuns.length === 0 ? (
@@ -139,17 +158,13 @@ export function OverviewPage({ live }: Props) {
                   {a.namespace}/{a.resourceName}
                 </strong>
                 <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>
-                  {a.plan.action.replace(/_/g, ' ')}
+                  {a.plan?.action?.replace(/_/g, ' ') ?? 'approval pending'}
                 </span>
               </div>
             ))}
           </div>
         </div>
       )}
-
-      <p style={{ marginTop: '1.5rem', fontSize: '0.8125rem', color: 'var(--text-dim)' }}>
-        You can also approve, reject, or ignore from Telegram — actions sync here automatically.
-      </p>
     </>
   );
 }

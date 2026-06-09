@@ -34,7 +34,15 @@ export async function composeUserReply(
 ): Promise<string> {
   const fallback = formatCommandOutcomeFallback(outcome, opts);
 
-  if (!COMPOSE_LLM || outcome.kind === 'plain' || outcome.kind === 'choice_prompt') {
+  if (
+    !COMPOSE_LLM ||
+    outcome.kind === 'plain' ||
+    outcome.kind === 'choice_prompt' ||
+    outcome.kind === 'cluster_get' ||
+    outcome.kind === 'health' ||
+    outcome.kind === 'event_investigation' ||
+    outcome.kind === 'app_review'
+  ) {
     return fallback;
   }
 

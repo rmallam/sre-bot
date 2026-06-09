@@ -8,9 +8,10 @@ import type {
   ResourceKind,
   SpecialistDiagnostic,
 } from '../../../shared/src/types.js';
-import { gatherPodFacts } from './k8s-facts.js';
-import { gatherPreDeployFacts } from './pre-deploy.js';
 import { findManifest } from './git-mirror.js';
+import { gatherPreDeployFacts } from './pre-deploy.js';
+import { gatherWorkloadPodFacts } from './workload-gather.js';
+import { enrichFactsWithPrimaryFailure } from '../../../shared/src/investigation-diagnosis.js';
 import {
   gatherClusterHealthFacts,
   gatherNamespaceHealthFacts,
@@ -20,6 +21,8 @@ import { resolvePodForWorkload } from './workload-resolve.js';
 import { enrichWithDeepRca } from './rca-enrich.js';
 import { resolveDeployProvenance } from './deploy-provenance-resolve.js';
 import type { DeployProvenance } from '../../../shared/src/deploy-provenance.js';
+import { appReviewToDiagnosisContext } from '../../../shared/src/app-graph.js';
+import { buildAppReview } from './app-graph-builder.js';
 
 const GITOPS_REPO_URL = process.env['GITOPS_REPO_URL'] ?? '';
 
@@ -137,6 +140,43 @@ export async function gatherFactsSync(opts: {
     return envelopeFromPartial(opts, { ...nsFacts, namespace: ns });
   }
 
+  if (scope === 'app') {
+    const appId = opts.resourceName.startsWith('_') ? (opts.rawMessage ?? opts.resourceName) : opts.resourceName;
+    const ns = opts.namespace === '_all' ? undefined : opts.namespace;
+    const review = await buildAppReview({
+      appId,
+      namespace: ns,
+      incidentId: opts.incidentId,
+    });
+    let partial = appReviewToDiagnosisContext(review, {
+      incidentId: opts.incidentId,
+      namespace: review.namespace,
+    });
+
+    const fn = review.frontierNode;
+    if (fn && fn.status !== 'ok' && fn.namespace) {
+      const wlKind = fn.kind === 'pod' ? ('Pod' as ResourceKind) : ('Deployment' as ResourceKind);
+      const wlName = fn.name;
+      const k8sFacts = await gatherWorkloadPodFacts(fn.namespace, wlName, wlKind, opts.incidentId);
+      partial = {
+        ...partial,
+        namespace: fn.namespace,
+        resourceName: wlName,
+        resourceKind: wlKind,
+        podSpec: k8sFacts.podSpec ?? partial.podSpec,
+        containerStatuses: k8sFacts.containerStatuses ?? partial.containerStatuses,
+        resourceLimits: k8sFacts.resourceLimits ?? partial.resourceLimits,
+        nodeInfo: k8sFacts.nodeInfo ?? partial.nodeInfo,
+        recentEvents: [...(partial.recentEvents ?? []), ...(k8sFacts.recentEvents ?? [])].slice(0, 30),
+        currentLogs: [review.narrative, k8sFacts.currentLogs ?? ''].filter(Boolean).join('\n\n'),
+        previousLogs: k8sFacts.previousLogs ?? '',
+      };
+    }
+
+    const base = envelopeFromPartial(opts, partial);
+    return enrichFactsWithPrimaryFailure(base);
+  }
+
   let namespace = opts.namespace === '_all' ? 'default' : opts.namespace;
   let resourceName = opts.resourceName;
   let resourceKind = opts.resourceKind;
@@ -172,7 +212,7 @@ export async function gatherFactsSync(opts: {
   }
 
   const [k8sFacts, manifestResult] = await Promise.all([
-    gatherPodFacts(namespace, podName, resourceName, resourceKind, opts.incidentId),
+    gatherWorkloadPodFacts(namespace, resourceName, resourceKind, opts.incidentId),
     GITOPS_REPO_URL
       ? findManifest(resourceName, resourceKind, namespace)
       : Promise.resolve(null),
@@ -206,7 +246,7 @@ export async function gatherFactsSync(opts: {
     requestProvenance: opts.deployProvenance,
   });
 
-  return {
+  return enrichFactsWithPrimaryFailure({
     incidentId: opts.incidentId,
     triggeredBy: 'commander',
     triggeredAt: new Date().toISOString(),
@@ -229,7 +269,7 @@ export async function gatherFactsSync(opts: {
     observabilitySummary: deepRca.observabilitySummary,
     safeMode: true,
     deployProvenance,
-  };
+  });
 }
 
 function inferScope(resourceName: string): InvestigateScope {

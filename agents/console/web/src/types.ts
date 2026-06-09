@@ -127,3 +127,108 @@ export interface AgentHealth {
   ok: boolean;
   status: string;
 }
+
+export type ClusterHealthStatus = 'healthy' | 'degraded' | 'unreachable';
+
+export type ClusterHealthDisplayStatus = 'healthy' | 'degrading' | 'apps_failing' | 'unreachable';
+
+export interface ClusterHealthNode {
+  name: string;
+  ready: boolean;
+}
+
+export interface ClusterHealthDeployment {
+  namespace: string;
+  name: string;
+  ready: number;
+  desired: number;
+}
+
+export interface ClusterHealthPodIssue {
+  namespace: string;
+  name: string;
+  phase: string;
+  reason: string;
+}
+
+export interface ClusterHealthEvent {
+  namespace: string;
+  reason: string;
+  object: string;
+  message: string;
+  lastTime: string;
+}
+
+export interface ClusterHealthSnapshot {
+  reachable: boolean;
+  checkedAt: string;
+  error?: string;
+  status: ClusterHealthStatus;
+  displayStatus: ClusterHealthDisplayStatus;
+  statusSummary: string;
+  nodes: {
+    total: number;
+    ready: number;
+    notReady: number;
+    items: ClusterHealthNode[];
+  };
+  pods: {
+    total: number;
+    running: number;
+    pending: number;
+    failed: number;
+    problematic: number;
+    issues: ClusterHealthPodIssue[];
+  };
+  deployments: {
+    total: number;
+    unhealthy: number;
+    items: ClusterHealthDeployment[];
+  };
+  warningEvents: ClusterHealthEvent[];
+  eventWindowMinutes: number;
+}
+
+export interface AppGraphNode {
+  id: string;
+  kind: 'deployment' | 'service' | 'ingress' | 'pod' | 'external';
+  namespace: string;
+  name: string;
+  status: 'ok' | 'degraded' | 'down' | 'unknown';
+  detail: string;
+  ready?: number;
+  desired?: number;
+}
+
+export interface AppGraph {
+  appId: string;
+  namespace: string;
+  nodes: AppGraphNode[];
+  edges: Array<{ from: string; to: string; kind: string }>;
+}
+
+export interface AppReviewResult {
+  appId: string;
+  namespace: string;
+  checkedAt: string;
+  reachable: boolean;
+  clusterReachable: boolean;
+  overallStatus: 'ok' | 'degraded' | 'down' | 'unknown';
+  frontierNodeId?: string;
+  narrative: string;
+  graph: AppGraph;
+  error?: string;
+}
+
+export interface AppListEntry {
+  appId: string;
+  namespace: string;
+  deploymentCount: number;
+  source: 'annotation' | 'deployment-name';
+}
+
+export interface AppsListResult {
+  apps: AppListEntry[];
+  clusterReachable: boolean;
+  error?: string;
+}

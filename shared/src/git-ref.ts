@@ -18,6 +18,11 @@ export function isGitCloneTarget(repo: string | undefined | null): boolean {
 
 export function gitAuthOrMissingRepoError(err: unknown): string | null {
   const msg = String(err);
+  if (/remote branch .+ not found|couldn't find remote ref/i.test(msg)) {
+    return (
+      'Could not find that Git branch or tag. Try specifying a branch, e.g. `@main` or `on branch develop`.'
+    );
+  }
   if (/could not read Username for/i.test(msg)) {
     return (
       'Git could not access the repository (private repo needs GITHUB_TOKEN, or the repo URL may be wrong). ' +
@@ -30,12 +35,30 @@ export function gitAuthOrMissingRepoError(err: unknown): string | null {
   return null;
 }
 
+/** Normalize github.com/org/repo from LLM/URL variants (fixes double-prefixed URLs). */
+export function normalizeGithubRepoSlug(repo: string): string {
+  let s = repo.trim();
+  if (!s) return s;
+  s = s.replace(/^github\.com\/https?:\/\//i, 'https://');
+  s = s.replace(/^https?:\/\//, '');
+  s = s.replace(/\.git$/i, '');
+  if (!/^github\.com\//i.test(s) && /^[\w.-]+\/[\w.-]+/.test(s)) {
+    return `github.com/${s}`;
+  }
+  return s.startsWith('github.com/') ? s : `github.com/${s.replace(/^github\.com\//, '')}`;
+}
+
+/** Colloquial refs like "latest" → use remote default branch detection. */
+export function normalizeRequestedGitRef(ref: string | undefined): string | undefined {
+  const t = ref?.trim();
+  if (!t) return undefined;
+  if (/^(latest|head|newest|current)$/i.test(t)) return undefined;
+  return t;
+}
+
 /** Normalize github.com/org/repo or full URL to an HTTPS clone URL (no token). */
 export function toHttpsCloneUrl(repo: string): string {
-  let slug = repo.trim().replace(/^https?:\/\//, '').replace(/\.git$/i, '');
-  if (!slug.includes('github.com/')) {
-    slug = `github.com/${slug.replace(/^github\.com\//, '')}`;
-  }
+  const slug = normalizeGithubRepoSlug(repo);
   return `https://${slug}`;
 }
 
@@ -88,7 +111,14 @@ export async function buildCloneRefCandidates(
     if (t && !refs.includes(t)) refs.push(t);
   };
 
-  add(requestedRef || 'main');
+  const normalized = normalizeRequestedGitRef(requestedRef);
+  if (normalized) {
+    add(normalized);
+  } else if (requestedRef?.trim() && !/^(latest|head|newest|current)$/i.test(requestedRef.trim())) {
+    add(requestedRef.trim());
+  } else {
+    add('main');
+  }
   add(await detectDefaultBranch(cloneUrl));
   for (const fb of ['main', 'master', 'develop', 'trunk']) add(fb);
 

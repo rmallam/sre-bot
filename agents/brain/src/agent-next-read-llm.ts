@@ -61,9 +61,10 @@ ${catalog}
 
 Rules:
 - One tool per turn. Do not repeat tools already fetched unless evidence is stale.
-- Prefer minimal steps: workload → events → logs/metrics as needed.
-- decision=enough_evidence when you can recommend restart, git_patch, or escalate with confidence.
-- decision=ask_user when missing critical info (image tag, pull secret, repo) that tools cannot provide.
+- Order: get_workload → get_events first. Only call logs/metrics if container is running or crash-looping (not ImagePullBackOff/ErrImagePull).
+- If container status or events show ImagePullBackOff, ErrImagePull, InvalidImageName, or CrashLoopBackOff, stop after workload+events — do NOT fetch logs/metrics for pull failures (containers never started).
+- decision=enough_evidence when a terminal failure is identified OR you can recommend restart, git_patch, or escalate with confidence.
+- decision=ask_user when ImagePullBackOff/ErrImagePull and user has not supplied image tag or pull secret.
 - decision=escalate when unsafe to proceed or evidence is inconclusive after reasonable fetches.
 - Never invent tool names. Never suggest writes — only read tools above.
 

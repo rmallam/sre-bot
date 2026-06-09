@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { cancelRun, fetchRun, fetchRunSummary } from '../api';
 import { StatusBadge } from '../components/StatusBadge';
 import { OutcomeBadge, formatAction } from '../components/OutcomeBadge';
@@ -11,22 +11,50 @@ interface Props {
   live?: boolean;
 }
 
+function isStaleRunning(run: Record<string, unknown>): boolean {
+  if (String(run.status) !== 'running') return false;
+  const transcript = (run.transcript as unknown[]) ?? [];
+  if (transcript.length > 0) return false;
+  const updatedAt = String(run.updatedAt ?? run.startedAt ?? '');
+  const updatedMs = Date.parse(updatedAt);
+  if (Number.isNaN(updatedMs)) return false;
+  return Date.now() - updatedMs > 2 * 60 * 60 * 1000;
+}
+
 export function RunDetailPage({ live = true }: Props) {
-  const { runId } = useParams<{ runId: string }>();
+  const { runId: routeRunId } = useParams<{ runId: string }>();
+  const navigate = useNavigate();
   const toast = useToast();
   const [run, setRun] = useState<Record<string, unknown> | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [summary, setSummary] = useState('');
   const [busy, setBusy] = useState(false);
+  const [resolvedRunId, setResolvedRunId] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    if (!runId) return;
-    fetchRun(runId).then(setRun).catch(console.error);
-    fetchRunSummary(runId, true)
+    if (!routeRunId) return;
+    setLoadError(null);
+    fetchRun(routeRunId)
+      .then((data) => {
+        setRun(data);
+        const fullId = String(data.runId ?? routeRunId);
+        setResolvedRunId(fullId);
+        if (data.resolvedFrom) {
+          navigate(`/runs/${encodeURIComponent(fullId)}`, { replace: true });
+        }
+      })
+      .catch((err) => {
+        setRun(null);
+        setLoadError(String(err).includes('404') ? 'Run not found — check the full run ID.' : String(err));
+      });
+    fetchRunSummary(routeRunId, true)
       .then((s) => setSummary(s.text))
       .catch(() => setSummary(''));
-  }, [runId]);
+  }, [routeRunId, navigate]);
 
   useEffect(() => {
+    setRun(null);
+    setLoadError(null);
     load();
     const ms = live ? 5000 : 30000;
     const id = setInterval(load, ms);
@@ -34,10 +62,11 @@ export function RunDetailPage({ live = true }: Props) {
   }, [live, load]);
 
   async function handleCancel() {
-    if (!runId || !window.confirm('Cancel this run? In-flight tools may still finish.')) return;
+    const id = resolvedRunId ?? routeRunId;
+    if (!id || !window.confirm('Cancel this run? In-flight tools may still finish.')) return;
     setBusy(true);
     try {
-      await cancelRun(runId);
+      await cancelRun(id);
       toast('Run cancelled');
       load();
     } catch (e) {
@@ -45,6 +74,34 @@ export function RunDetailPage({ live = true }: Props) {
     } finally {
       setBusy(false);
     }
+  }
+
+  if (loadError) {
+    return (
+      <>
+        <Link to="/runs" style={{ fontSize: '0.875rem' }}>
+          ← Back to runs
+        </Link>
+        <div className="card" style={{ marginTop: '1rem' }}>
+          <div className="card-body">
+            <h3 style={{ marginTop: 0 }}>Run not found</h3>
+            <p style={{ color: 'var(--text-muted)' }}>
+              {loadError}
+              {routeRunId && (
+                <>
+                  {' '}
+                  Requested ID: <span className="mono">{routeRunId}</span>
+                </>
+              )}
+            </p>
+            <p style={{ fontSize: '0.8125rem', color: 'var(--text-dim)' }}>
+              Run links must include the full UUID. If you copied a truncated ID, open the run from
+              the Runs tab or chat **View run** button.
+            </p>
+          </div>
+        </div>
+      </>
+    );
   }
 
   if (!run) {
@@ -55,13 +112,14 @@ export function RunDetailPage({ live = true }: Props) {
   const status = String(run.status ?? 'unknown');
   const outcome = run.outcome as RemediationOutcome | undefined;
   const canCancel = status === 'running' || status === 'awaiting_human';
+  const stale = isStaleRunning(run);
   const meta = (run.metadata as Record<string, unknown> | undefined) ?? {};
   const codingAgentJobId =
     typeof meta.codingAgentJobId === 'string' ? meta.codingAgentJobId : undefined;
-  const suggestedAction = outcome?.suggestedAction ?? meta.remediationPlan
-    ? (meta.remediationPlan as { action?: string }).action
-    : undefined;
+  const plan = meta.remediationPlan as { action?: string } | undefined;
+  const suggestedAction = outcome?.suggestedAction ?? plan?.action;
   const showCodingPanel = !!codingAgentJobId || suggestedAction === 'coding_agent_handoff';
+  const displayRunId = resolvedRunId ?? String(run.runId ?? routeRunId ?? '');
 
   return (
     <>
@@ -69,10 +127,19 @@ export function RunDetailPage({ live = true }: Props) {
         ← Back to runs
       </Link>
 
+      {stale && (
+        <div className="cluster-health-banner cluster-health-banner-warn" style={{ marginTop: '1rem' }} role="alert">
+          <p className="cluster-health-banner-summary" style={{ margin: 0 }}>
+            This run looks <strong>stuck</strong> — still marked running with no tool steps recorded.
+            Cancel it and start a fresh investigation from chat.
+          </p>
+        </div>
+      )}
+
       <div style={{ marginTop: '1rem', marginBottom: '1.5rem', display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center' }}>
         <div style={{ flex: 1 }}>
           <h3 style={{ margin: '0 0 0.5rem', fontSize: '1.25rem' }}>
-            Run <span className="mono">{runId?.slice(0, 12)}…</span>
+            Run <span className="mono">{displayRunId}</span>
           </h3>
           <StatusBadge status={status} />
           <span style={{ marginLeft: 12, color: 'var(--text-muted)', fontSize: '0.875rem' }}>
@@ -94,12 +161,14 @@ export function RunDetailPage({ live = true }: Props) {
           </div>
           <div className="card-body">
             <div className="attempt-grid">
-              <div>
-                <label>Suggested fix</label>
-                <p>
-                  <strong>{formatAction(outcome.suggestedAction)}</strong>
-                </p>
-              </div>
+              {outcome.suggestedAction && (
+                <div>
+                  <label>Suggested fix</label>
+                  <p>
+                    <strong>{formatAction(outcome.suggestedAction)}</strong>
+                  </p>
+                </div>
+              )}
               <div>
                 <label>Root cause</label>
                 <p>{outcome.rootCause ?? '—'}</p>
@@ -110,15 +179,15 @@ export function RunDetailPage({ live = true }: Props) {
                 {outcome.reasoning}
               </p>
             )}
-            {outcome.actionsTaken.length > 0 && (
+            {(outcome.actionsTaken ?? []).length > 0 && (
               <div className="attempt-actions" style={{ marginTop: '1rem' }}>
                 <label>What was done</label>
                 <ul>
-                  {outcome.actionsTaken.map((a, i) => (
+                  {(outcome.actionsTaken ?? []).map((a, i) => (
                     <li key={i} className={a.success ? 'ok' : 'fail'}>
                       <span className="action-mark">{a.success ? '✓' : '✗'}</span>
                       <strong>{formatAction(a.action)}</strong>
-                      <span className="muted"> — {a.summary.slice(0, 200)}</span>
+                      <span className="muted"> — {(a.summary ?? '').slice(0, 200)}</span>
                     </li>
                   ))}
                 </ul>

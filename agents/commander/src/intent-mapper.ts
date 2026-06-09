@@ -3,6 +3,8 @@
  */
 
 import type { CommandIntent } from '../../../shared/src/command-intent.js';
+import { normalizeGithubRepoSlug } from '../../../shared/src/git-ref.js';
+import { normalizeDeployCommand } from '../../../shared/src/deploy-command.js';
 import {
   parseCommand,
   parseSimpleDeploy,
@@ -10,6 +12,8 @@ import {
   parseCi,
   parseWorkloadStatus,
   extractGithubRepo,
+  parseEventInvestigation,
+  parseAppInvestigation,
   type ParsedCommand,
   type DeployCmd,
   type InvestigateCmd,
@@ -66,8 +70,23 @@ function intentGetToParsed(s: CommandIntent, text: string): ParsedCommand | null
 }
 
 function intentInvestigateToParsed(s: CommandIntent, text: string): InvestigateCmd | null {
+  const eventCmd = parseEventInvestigation(text);
+  if (eventCmd) return eventCmd;
+
+  const appCmd = parseAppInvestigation(text);
+  if (appCmd) return appCmd;
+
   const opNs = extractOperatorNamespaceHint(text);
   const scope = s.investigateScope ?? (s.workloadHint ? 'workload' : opNs ? 'namespace' : 'cluster');
+  if (scope === 'app' && s.workloadHint) {
+    return {
+      type: 'investigate',
+      scope: 'app',
+      namespace: s.namespace?.trim() || opNs || 'default',
+      resourceName: s.workloadHint.trim(),
+      label: s.label ?? `app ${s.workloadHint.trim()}`,
+    };
+  }
   if (scope === 'cluster') {
     return {
       type: 'investigate',
@@ -115,9 +134,16 @@ function intentInvestigateToParsed(s: CommandIntent, text: string): InvestigateC
 
 function intentDeployToParsed(s: CommandIntent, text: string): DeployCmd | null {
   const catalogDeploy = parseSimpleDeploy(text);
-  if (catalogDeploy) return catalogDeploy;
+  if (catalogDeploy) {
+    const llmNs = s.namespace?.trim();
+    if (llmNs && catalogDeploy.namespace === 'default' && llmNs !== 'default') {
+      return { ...catalogDeploy, namespace: llmNs };
+    }
+    return catalogDeploy;
+  }
 
-  const githubRepo = s.githubRepo ?? extractGithubRepo(text);
+  const rawRepo = extractGithubRepo(text) ?? s.githubRepo;
+  const githubRepo = rawRepo ? normalizeGithubRepoSlug(rawRepo) : null;
   if (!githubRepo) {
     if (s.workloadHint) {
       const hintDeploy = parseSimpleDeploy(
@@ -132,24 +158,26 @@ function intentDeployToParsed(s: CommandIntent, text: string): DeployCmd | null 
 
   const regexDeploy = parseCommand(text.includes('deploy') ? text : `deploy ${text}`);
   const namespace =
-    s.namespace ?? (regexDeploy.type === 'deploy' ? regexDeploy.namespace : 'default');
+    (s.namespace?.trim() || undefined) ??
+    (regexDeploy.type === 'deploy' && regexDeploy.namespace?.trim()
+      ? regexDeploy.namespace.trim()
+      : undefined) ??
+    '';
   const gitRef = s.gitRef ?? (regexDeploy.type === 'deploy' ? regexDeploy.gitRef : 'main');
   const directExplicit =
     s.deployStrategy === 'direct' ||
     (regexDeploy.type === 'deploy' && regexDeploy.deployStrategy === 'direct');
 
-  return {
+  return normalizeDeployCommand({
     type: 'deploy',
-    githubRepo: githubRepo.startsWith('github.com/')
-      ? githubRepo
-      : `github.com/${githubRepo.replace(/^github\.com\//, '')}`,
+    githubRepo,
     gitRef,
     namespace,
     deployStrategy: directExplicit ? 'direct' : 'gitops',
     deployStrategyExplicit:
       !!s.deployStrategy ||
       (regexDeploy.type === 'deploy' && regexDeploy.deployStrategyExplicit),
-  };
+  });
 }
 
 function intentDeleteToParsed(s: CommandIntent, text: string): ParsedCommand | null {

@@ -49,7 +49,7 @@ Do **not** replatform on Holmes-style LLM MCP writes. Adopt Holmes **investigati
 | 14 | **PLAT-10** | Additional backends (Datadog, Tempo) | Optional breadth |
 | 15 | **PLAT-11** | Read-only debug MCP profile (human-only) | Optional power-user |
 | 16 | **PLAT-12** | Hybrid RCA handoff (external summary → orchestrator) | [Design ready](./RCA-HANDOFF-SCHEMA.md) |
-| 17 | **DEPLOY-2** | Source-to-image / buildpack deploy pipeline | [Phase 2 pending](./SOURCE-TO-IMAGE-DEPLOY.md) |
+| 17 | **DEPLOY-2** | Source-to-image / buildpack deploy pipeline | [Phase 2 shipped](./SOURCE-TO-IMAGE-DEPLOY.md) |
 
 ---
 
@@ -60,7 +60,7 @@ Do **not** replatform on Holmes-style LLM MCP writes. Adopt Holmes **investigati
 | **PLAT-1** | **Natural language routing** — `GEMINI_COMMANDER_MODEL=gemini-2.5-flash` | **Done** | |
 | **PLAT-2** | **Run deduplication** | **Done** | |
 | **PLAT-3** | **Watcher cooldown normalization** | **Done** | |
-| **PLAT-13** | **Orchestrator “active run” index** — Redis/Postgres lookup by resource key | Pending | Supports PLAT-2 at scale |
+| **PLAT-13** | **Orchestrator “active run” index** — Redis/Postgres lookup by resource key | **Done** | Postgres `resource_key` index |
 | **PLAT-14** | Stale HIL run reconcile | **Done** | Orphan `awaiting_human` auto-cancel |
 | **PLAT-15** | Smart rollout wait (pod phase–aware verify) | **Done** | Post-remediation, not blind timers |
 
@@ -72,9 +72,9 @@ Do **not** replatform on Holmes-style LLM MCP writes. Adopt Holmes **investigati
 |----|------|--------|-------|
 | **CON-1** | Grouped resources + remediation outcomes + skill export | **Done** | |
 | **CON-2** | Console auth (OAuth / basic / SSO proxy) | **Deferred** | POC — open `:8091` acceptable for now |
-| **CON-3** | Keyboard shortcuts (approve/reject on focus) | Pending | |
-| **CON-4** | Unified activity feed (Telegram + web + HIL) | Pending | |
-| **CON-5** | “Latest only” default filter on Resources page | Pending | |
+| **CON-3** | Keyboard shortcuts (approve/reject on focus) | **Done** | A/R/I + J/K on Approvals |
+| **CON-4** | Unified activity feed (Telegram + web + HIL) | **Done** | `/activity` timeline |
+| **CON-5** | “Latest only” default filter on Resources page | **Done** | Runs page default |
 
 Details: [OPERATIONS-CONSOLE.md](./OPERATIONS-CONSOLE.md)
 
@@ -177,13 +177,13 @@ Enable agentic: `SRE_AGENT_MODE=agentic` — see [AGENT-MODE-DESIGN.md](./AGENT-
 | Area | Shipped | Next up |
 |------|---------|---------|
 | Conversational UX | UX-1–17 | — |
-| Operations Console | Grouped resources, outcomes, export | CON-3–5 (auth deferred) |
+| Operations Console | Grouped resources, outcomes, export, activity feed | CON-2 auth deferred |
 | CI remediation | Phases 1–3 (incl. post-PR verify) | CI-4 custom agent templates |
 | Cluster investigate | Agentic mode, smart rollout wait, git-patch gates | AGENT-D2/D3 |
 | Observability | K8s facts + deep RCA | PLAT-10 Datadog/Tempo |
 | Learning loop | RAG learn + ranked `/rag/query` injection | — |
 | Proactive | Watcher + ignore | PLAT-6 operator, PLAT-7 alerts |
-| Platform | Dedupe, stale HIL reconcile, sre-agent-platform sidecar | PLAT-13 active run index |
+| Platform | Dedupe, stale HIL reconcile, active run index, sre-agent-platform sidecar | PLAT-6/7 proactive |
 
 ---
 

@@ -71,6 +71,17 @@ export interface ResourceRunGroup {
   runs: EnrichedRunSummary[];
 }
 
+export function resourceKeyFromStartRequest(req: {
+  githubRepo?: string;
+  namespace?: string;
+  resourceName?: string;
+  incidentId?: string;
+}): string {
+  if (req.githubRepo) return `ci:${req.githubRepo}`;
+  if (req.namespace && req.resourceName) return `k8s:${req.namespace}/${req.resourceName}`;
+  return `run:${req.incidentId ?? 'unknown'}`;
+}
+
 export function runResourceKey(run: StoredRun): string {
   const req = run.metadata?.request as Record<string, unknown> | undefined;
   if (req?.githubRepo) return `ci:${String(req.githubRepo)}`;

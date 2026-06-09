@@ -8,7 +8,7 @@ RUN apk add --no-cache curl git openssh-client
 
 # kubectl + helm — match container CPU arch (fixes helm Go crash on Podman/Mac arm64)
 RUN ARCH="${TARGETARCH}" \
-    && curl -fsSL "https://dl.k8s.io/release/v1.28.0/bin/linux/${ARCH}/kubectl" -o /usr/local/bin/kubectl \
+    && curl -fsSL "https://dl.k8s.io/release/v1.35.0/bin/linux/${ARCH}/kubectl" -o /usr/local/bin/kubectl \
     && chmod +x /usr/local/bin/kubectl \
     && curl -fsSL "https://get.helm.sh/helm-v3.14.4-linux-${ARCH}.tar.gz" -o /tmp/helm.tgz \
     && tar -xzf /tmp/helm.tgz -C /tmp \

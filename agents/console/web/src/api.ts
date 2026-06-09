@@ -1,4 +1,15 @@
-import type { Approval, AgentHealth, IgnoredResource, OverviewStats, RunListItem, ResourceRunGroup } from './types';
+import type {
+  Approval,
+  AgentHealth,
+  AppListEntry,
+  AppReviewResult,
+  AppsListResult,
+  ClusterHealthSnapshot,
+  IgnoredResource,
+  OverviewStats,
+  RunListItem,
+  ResourceRunGroup,
+} from './types';
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -11,6 +22,26 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function fetchOverview(): Promise<OverviewStats> {
   return json('/api/overview');
+}
+
+export function fetchClusterHealth(force = false): Promise<ClusterHealthSnapshot> {
+  return json(`/api/cluster-health${force ? '?force=true' : ''}`);
+}
+
+export function fetchAppReview(
+  appId: string,
+  namespace?: string,
+  force = false
+): Promise<AppReviewResult> {
+  const params = new URLSearchParams({ appId });
+  if (namespace?.trim()) params.set('namespace', namespace.trim());
+  if (force) params.set('force', 'true');
+  return json(`/api/app-review?${params}`);
+}
+
+export function fetchApps(namespace?: string): Promise<AppsListResult> {
+  const params = namespace?.trim() ? `?namespace=${encodeURIComponent(namespace.trim())}` : '';
+  return json(`/api/apps${params}`);
 }
 
 export function fetchAgents(): Promise<{ agents: AgentHealth[] }> {
@@ -31,6 +62,22 @@ export function fetchRuns(limit = 50): Promise<{ runs: RunListItem[] }> {
 
 export function fetchRunsGrouped(limit = 150): Promise<{ groups: ResourceRunGroup[] }> {
   return json(`/api/runs/grouped?limit=${limit}`);
+}
+
+export interface ActivityEvent {
+  id: string;
+  kind: 'run' | 'approval' | 'approval_decision';
+  at: string;
+  title: string;
+  detail?: string;
+  status?: string;
+  source?: string;
+  runId?: string;
+  incidentId?: string;
+}
+
+export function fetchActivity(limit = 60): Promise<{ events: ActivityEvent[] }> {
+  return json(`/api/activity?limit=${limit}`);
 }
 
 export function exportSkillsMarkdown(limit = 150): Promise<{ markdown: string; count: number }> {

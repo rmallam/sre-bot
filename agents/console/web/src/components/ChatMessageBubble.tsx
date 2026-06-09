@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { ChatTurn } from '../api';
 import { StreamingMessage } from './StreamingMessage';
 import { ChatQuickActions, type ChatQuickAction } from './ChatQuickActions';
@@ -15,38 +16,49 @@ export function ChatMessageBubble({
   onAnimationComplete,
   onQuickAction,
 }: Props) {
-  const className =
-    turn.role === 'user'
-      ? 'chat-bubble chat-bubble-user'
-      : turn.role === 'status'
-        ? 'chat-bubble chat-bubble-status'
-        : 'chat-bubble chat-bubble-assistant';
-
-  return (
-    <div className={className}>
-      {turn.role === 'status' ? (
-        <div className="chat-bubble-body chat-status-line">
+  if (turn.role === 'status') {
+    return (
+      <div className="chat-message chat-message-status">
+        <div className="chat-status-line">
           <span className="chat-status-dot" aria-hidden />
           <span className="chat-status-text">{turn.content}</span>
         </div>
-      ) : turn.role === 'assistant' ? (
-        <>
-          <StreamingMessage
-            content={turn.content}
-            animate={animate}
-            onComplete={onAnimationComplete}
-          />
-          {turn.quickActions?.length ? (
-            <ChatQuickActions
-              actions={turn.quickActions as ChatQuickAction[]}
-              incidentId={turn.incidentId}
-              onAction={onQuickAction}
+      </div>
+    );
+  }
+
+  const isUser = turn.role === 'user';
+
+  return (
+    <div className={`chat-message ${isUser ? 'chat-message-user' : 'chat-message-assistant'}`}>
+      <div className="chat-message-header">
+        <span className="chat-message-role">{isUser ? 'You' : 'Assistant'}</span>
+      </div>
+      <div className="chat-message-body">
+        {turn.role === 'assistant' ? (
+          <>
+            <StreamingMessage
+              content={turn.content}
+              animate={animate}
+              onComplete={onAnimationComplete}
             />
-          ) : null}
-        </>
-      ) : (
-        <div className="chat-bubble-body">{turn.content}</div>
-      )}
+            {turn.quickActions?.length ? (
+              <ChatQuickActions
+                actions={turn.quickActions as ChatQuickAction[]}
+                incidentId={turn.incidentId}
+                onAction={onQuickAction}
+              />
+            ) : null}
+            {turn.runId ? (
+              <p className="chat-run-link">
+                <Link to={`/runs/${encodeURIComponent(turn.runId)}`}>View run details →</Link>
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <div className="chat-bubble-body">{turn.content}</div>
+        )}
+      </div>
     </div>
   );
 }

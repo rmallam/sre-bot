@@ -27,29 +27,31 @@ function AttemptRow({ run, onCopySkill }: { run: RunListItem; onCopySkill: (md: 
       {o && (
         <div className="attempt-body">
           <div className="attempt-grid">
-            <div>
-              <label>Suggested fix</label>
-              <p>
-                <strong>{formatAction(o.suggestedAction)}</strong>
-                {o.planSource === 'human' && (
-                  <span className="tag-human" style={{ marginLeft: 8 }}>
-                    human
-                  </span>
-                )}
-              </p>
-              {o.rootCause && (
-                <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.8125rem' }}>
-                  {o.rootCause}
+            {o.suggestedAction ? (
+              <div>
+                <label>Suggested fix</label>
+                <p>
+                  <strong>{formatAction(o.suggestedAction)}</strong>
+                  {o.planSource === 'human' && (
+                    <span className="tag-human" style={{ marginLeft: 8 }}>
+                      human
+                    </span>
+                  )}
                 </p>
-              )}
-            </div>
+                {o.rootCause && (
+                  <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.8125rem' }}>
+                    {o.rootCause}
+                  </p>
+                )}
+              </div>
+            ) : null}
             <div>
               <label>Mode</label>
               <p>{run.mode?.replace(/-/g, ' ') ?? '—'}</p>
             </div>
           </div>
 
-          {o.actionsTaken.length > 0 && (
+          {o.actionsTaken && o.actionsTaken.length > 0 && (
             <div className="attempt-actions">
               <label>What was done</label>
               <ul>

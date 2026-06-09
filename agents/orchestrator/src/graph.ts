@@ -20,6 +20,8 @@ import type {
   SpecialistDiagnostic,
 } from '../../../shared/src/types.js';
 import { provenanceGateNode } from './deploy-source-gate.js';
+import { sourceBuildGraphNode, continueAfterSourceBuildApproval } from './source-build-node.js';
+import { shouldRunSourceBuild } from '../../../shared/src/deploy/source-build-gate.js';
 import { buildHelmDeployPlan } from '../../../shared/src/helm-generator.js';
 import { evaluatePolicyGate, getAutonomyMode } from '../../../shared/src/policy.js';
 import { evaluateCombinedPolicy, evaluateCompiledToolPolicy } from '../../../shared/src/tool-policy.js';
@@ -103,6 +105,12 @@ import {
 } from './agent-graph-nodes.js';
 import { groundRunbookFromFacts } from './rag-grounding.js';
 import { ragGroundingEnabled } from '../../../shared/src/platform-client.js';
+import {
+  adjustPlanForPrimaryFailure,
+  enrichFactsWithPrimaryFailure,
+  extractPrimaryFailure,
+  formatPrimaryFailureMessage,
+} from '../../../shared/src/investigation-diagnosis.js';
 
 const AGENT = 'orchestrator-agent';
 const MAX_ITERATIONS = parseInt(process.env['AUTONOMY_MAX_ITERATIONS'] ?? '5', 10);
@@ -307,11 +315,23 @@ async function observeNode(state: GraphState): Promise<Partial<GraphState>> {
     baseFacts.specialistDiagnostics && baseFacts.specialistDiagnostics.length > 0
       ? baseFacts.specialistDiagnostics
       : await deriveSpecialistDiagnostics(baseFacts);
-  const facts: DiagnosisContext = {
+  const facts: DiagnosisContext = enrichFactsWithPrimaryFailure({
     ...baseFacts,
     specialistDiagnostics,
-  };
+  });
   const iteration = state.iteration + 1;
+
+  if (
+    state.mode === 'diagnose' &&
+    state.request.platform &&
+    state.request.channelId &&
+    !isAgenticDiagnose(state.request, state.mode)
+  ) {
+    const primary = extractPrimaryFailure(facts);
+    if (primary) {
+      await notifyUser(runCtx(state), formatPrimaryFailureMessage(primary));
+    }
+  }
 
   if (
     state.mode === 'pre-deploy' &&
@@ -530,6 +550,10 @@ async function ragGroundingNode(state: GraphState): Promise<Partial<GraphState>>
   };
 }
 
+async function sourceBuildNode(state: GraphState): Promise<Partial<GraphState>> {
+  return sourceBuildGraphNode(state);
+}
+
 async function planNode(state: GraphState): Promise<Partial<GraphState>> {
   if (!state.factsSanitized) return { status: 'failed', lastError: 'No sanitized facts' };
 
@@ -704,7 +728,10 @@ async function planNode(state: GraphState): Promise<Partial<GraphState>> {
   const plan =
     state.mode === 'pre-deploy'
       ? await buildDeployPlan(ctx, state.request)
-      : await callPlanLlm(ctx, state.actionHistory);
+      : adjustPlanForPrimaryFailure(
+          ctx,
+          await callPlanLlm(ctx, state.actionHistory)
+        );
 
   if (state.mode === 'pre-deploy' && state.request.platform && state.request.channelId) {
     const actionLabel =
@@ -1488,6 +1515,28 @@ function routeAfterSanitize(state: GraphState): string {
   if (state.status === 'escalated' || state.status === 'failed') return END;
   if (state.mode === 'diagnose' && ragGroundingEnabled()) return 'ragGrounding';
   if (state.mode === 'diagnose') return 'provenanceGate';
+  if (
+    state.mode === 'pre-deploy' &&
+    shouldRunSourceBuild({
+      mode: state.mode,
+      needsImageBuild: state.factsSanitized?.repoSignals?.needsImageBuild,
+      buildStrategy: state.factsSanitized?.repoSignals?.buildStrategy,
+      suggestedImage: state.factsSanitized?.repoSignals?.suggestedImage,
+    })
+  ) {
+    return 'sourceBuild';
+  }
+  return 'plan';
+}
+
+function routeAfterSourceBuild(state: GraphState): string {
+  if (
+    state.status === 'awaiting_human' ||
+    state.status === 'failed' ||
+    state.status === 'escalated'
+  ) {
+    return END;
+  }
   return 'plan';
 }
 
@@ -1587,6 +1636,7 @@ export function buildGraph() {
     .addNode('sanitize', sanitizeNode)
     .addNode('ragGrounding', ragGroundingNode)
     .addNode('provenanceGate', provenanceGateGraphNode)
+    .addNode('sourceBuild', sourceBuildNode)
     .addNode('plan', planNode)
     .addNode('preflight', preflightNode)
     .addNode('authorize', authorizeNode)
@@ -1608,6 +1658,12 @@ export function buildGraph() {
     .addEdge('agentFinalize', 'sanitize')
     .addConditionalEdges('sanitize', routeAfterSanitize, {
       ragGrounding: 'ragGrounding',
+      provenanceGate: 'provenanceGate',
+      sourceBuild: 'sourceBuild',
+      plan: 'plan',
+      [END]: END,
+    })
+    .addConditionalEdges('sourceBuild', routeAfterSourceBuild, {
       plan: 'plan',
       [END]: END,
     })
@@ -1791,11 +1847,144 @@ async function notifyRunOutcome(
   // Pre-deploy success/failure summaries are sent from verify/confirm; avoid duplicate here.
 }
 
+async function resumeAfterSourceBuildApproval(
+  cmd: import('../../../shared/src/types.js').RemediateCommand,
+  existing: import('./run-store.js').StoredRun | undefined
+): Promise<RunStatus> {
+  const runId = cmd.runId ?? cmd.incidentId;
+  const storedRequest = existing?.metadata?.request as StartRunRequest | undefined;
+  const request: StartRunRequest = {
+    ...(storedRequest ?? (cmd as unknown as StartRunRequest)),
+    incidentId: cmd.incidentId,
+    namespace: cmd.namespace,
+    resourceName: cmd.resourceName,
+    resourceKind: cmd.resourceKind,
+    mode: cmd.mode,
+    triggeredBy: cmd.triggeredBy,
+    triggeredAt: cmd.triggeredAt,
+    platform: cmd.platform ?? storedRequest?.platform,
+    channelId: cmd.channelId ?? storedRequest?.channelId,
+    requestedBy: cmd.requestedBy ?? storedRequest?.requestedBy,
+  };
+
+  const factsSnapshot = existing?.metadata?.factsSnapshot as DiagnosisContext | undefined;
+
+  let state: GraphState = {
+    runId,
+    incidentId: cmd.incidentId,
+    request,
+    namespace: cmd.namespace,
+    resourceName: cmd.resourceName,
+    resourceKind: cmd.resourceKind,
+    mode: cmd.mode,
+    pendingPlan: undefined,
+    actionHistory: [],
+    iteration: Math.max(1, existing?.transcript?.length ?? 1),
+    maxIterations: MAX_ITERATIONS,
+    authorizeForceHil: false,
+    autonomyMode: getAutonomyMode(),
+    status: 'running',
+    awaitingHuman: false,
+    securityFindings: [],
+    factsRaw: factsSnapshot,
+    factsSanitized: factsSnapshot,
+    lastError: undefined,
+    failureAnalysisPending: false,
+    failureAnalysisUsed: false,
+    lastFailedPlan: undefined,
+    postDeployRecoveryUsed: false,
+    preflightAttempts: 0,
+    stackDeployPlan: undefined,
+    agentEvidence: undefined,
+    agentSteps: [],
+    agentFetchedTools: [],
+    agentTurns: 0,
+    pendingReadTool: undefined,
+    agentGoal: undefined,
+    agentFocusGoal: undefined,
+    agentInvestigateComplete: false,
+    retrievedPlaybook: undefined,
+    detectedErrorSignature: undefined,
+    targetComponent: undefined,
+  };
+
+  await setRunStatus(runId, 'running');
+  await mergeRunMetadata(runId, { sourceBuildApproved: true });
+
+  if (request.platform && request.channelId) {
+    await notifyUser(
+      runCtx(state),
+      `▶️ Approved — building container image for \`${cmd.resourceName}\`…`
+    );
+  }
+
+  const buildPatch = await continueAfterSourceBuildApproval(state);
+  state = { ...state, ...buildPatch };
+  if (state.status === 'failed' || state.status === 'awaiting_human') {
+    await setRunStatus(runId, state.status);
+    await snapshotRunOutcome(runId, state);
+    await notifyRunOutcome({ ...state, runId, status: state.status }, state.actionHistory ?? []);
+    return state.status;
+  }
+
+  state = { ...state, ...(await planNode(state)) };
+  state = { ...state, ...(await preflightNode(state)) };
+  if (state.status === 'failed' || state.status === 'escalated') {
+    await setRunStatus(runId, state.status);
+    await snapshotRunOutcome(runId, state, 'approved');
+    await notifyRunOutcome({ ...state, runId, status: state.status }, state.actionHistory ?? []);
+    return state.status;
+  }
+
+  state = { ...state, ...(await authorizeNode(state)) };
+  if (state.status === 'escalated') {
+    await setRunStatus(runId, 'escalated');
+    await snapshotRunOutcome(runId, state, 'approved');
+    await notifyRunOutcome({ ...state, runId, status: 'escalated' }, state.actionHistory ?? []);
+    return 'escalated';
+  }
+
+  state = { ...state, ...(await policyNode(state)) };
+  if (state.status === 'awaiting_human') {
+    await snapshotRunOutcome(runId, state, 'approved');
+    await notifyRunOutcome({ ...state, runId, status: 'awaiting_human' }, state.actionHistory ?? []);
+    return 'awaiting_human';
+  }
+  if (state.status === 'failed' || state.status === 'escalated') {
+    await setRunStatus(runId, state.status);
+    await snapshotRunOutcome(runId, state, 'approved');
+    await notifyRunOutcome({ ...state, runId, status: state.status }, state.actionHistory ?? []);
+    return state.status;
+  }
+
+  state = { ...state, ...(await actNode(state)) };
+  const verifyResult = await verifyNode(state);
+  const finalState = { ...state, ...verifyResult } as GraphState;
+  const status = (finalState.status ?? 'failed') as RunStatus;
+
+  await setRunStatus(runId, status);
+  await snapshotRunOutcome(runId, finalState, 'approved');
+  await notifyRunOutcome({ ...finalState, runId, status }, finalState.actionHistory ?? []);
+  return status;
+}
+
 export async function resumeRunAfterApproval(cmd: RemediateCommand): Promise<RunStatus> {
   const runId = cmd.runId ?? cmd.incidentId;
   const existing = await getRun(runId);
   if (!existing) {
     await initRun(runId, cmd.incidentId, { request: cmd });
+  }
+
+  const meta = existing?.metadata ?? {};
+  const sourceBuildPending = meta['sourceBuildPending'] as
+    | import('../../../shared/src/deploy/source-build-gate.js').SourceBuildPending
+    | undefined;
+  const sourceBuildDone =
+    typeof meta['sourceBuildResult'] === 'object' &&
+    (meta['sourceBuildResult'] as { success?: boolean }).success === true;
+
+  if (sourceBuildPending && !sourceBuildDone) {
+    return resumeAfterSourceBuildApproval(cmd, existing);
   }
 
   const storedRequest = existing?.metadata?.request as StartRunRequest | undefined;

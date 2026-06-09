@@ -11,6 +11,15 @@ const httpsFix = parseSimpleDeploy('Deploy https into simple namespace');
 assert.ok(httpsFix);
 assert.equal(httpsFix?.appName, 'httpd');
 
+const redisHa = parseSimpleDeploy('deploy redis HA into redis namespace');
+assert.ok(redisHa);
+assert.equal(redisHa?.namespace, 'redis');
+assert.equal(redisHa?.appName, 'redis');
+
+const redisIntoThe = parseSimpleDeploy('deploy redis HA into the redis namespace');
+assert.ok(redisIntoThe);
+assert.equal(redisIntoThe?.namespace, 'redis');
+
 const gh = parseSimpleDeploy('deploy github.com/org/app in simple');
 assert.equal(gh, null);
 
