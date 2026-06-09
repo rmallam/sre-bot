@@ -96,7 +96,7 @@ export async function gatherPreDeployFacts(
         cloneError: undefined,
         resolvedGitRef: gitRef,
       }
-    : await cloneAndLocateEntryPoint(githubRepo ?? '', gitRef, incidentId);
+    : await cloneAndLocateEntryPoint(githubRepo ?? '', gitRef, incidentId, req.resourceName);
 
   const result: Partial<DiagnosisContext> = {
     incidentId: req.incidentId,
@@ -229,7 +229,8 @@ function detectRepoSignals(repoDir: string): import('../../../shared/src/types.j
 async function cloneAndLocateEntryPoint(
   repoUrl: string,
   gitRef: string,
-  incidentId: string
+  incidentId: string,
+  appHint?: string
 ): Promise<EntryPointResult> {
   let tmpDir: string | null = null;
   try {
@@ -244,7 +245,7 @@ async function cloneAndLocateEntryPoint(
       };
     }
 
-    const result = await detectEntryPoint(tmpDir, incidentId, req.resourceName);
+    const result = await detectEntryPoint(tmpDir, incidentId, appHint);
     const repoSignals = detectRepoSignals(tmpDir);
     if (result.gitManifestPath) {
       result.gitManifestPath = result.gitManifestPath.replace(tmpDir + '/', '');
