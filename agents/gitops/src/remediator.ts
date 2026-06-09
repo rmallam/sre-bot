@@ -205,15 +205,51 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
         targetRevision: gitRef,
       });
 
-      const applyResult = await repoMirror.applyPatchAndPush({
-        incidentId,
-        manifestPath: `applications/${namespace}-${resourceName}.yaml`,
-        patch: [{ op: 'add', path: '', value: YAML.parse(argoManifest) }],
-        commitMessage: `feat(argocd): register ${resourceName} application`,
-        openPR: GITOPS_USE_PR,
-      });
-      commitSha = applyResult.commitSha;
-      commitUrl = applyResult.commitUrl;
+      try {
+        const applyResult = await repoMirror.applyPatchAndPush({
+          incidentId,
+          manifestPath: `applications/${namespace}-${resourceName}.yaml`,
+          patch: [{ op: 'add', path: '', value: YAML.parse(argoManifest) }],
+          commitMessage: `feat(argocd): register ${resourceName} application`,
+          openPR: GITOPS_USE_PR,
+        });
+        commitSha = applyResult.commitSha;
+        commitUrl = applyResult.commitUrl;
+      } catch (err) {
+        const msg = String(err);
+        const argoMissing =
+          /argoproj\.io\/v1alpha1|kind ["']Application["']|CRDs are installed/i.test(msg);
+        if (!argoMissing) {
+          throw err;
+        }
+        log('warn', AGENT, 'Argo CD unavailable — direct Helm apply fallback', {
+          incidentId,
+          error: msg.slice(0, 240),
+        });
+        if (platform && channelId) {
+          await sendDeployProgress(
+            { incidentId, platform, channelId },
+            'Argo CD is not installed in this cluster — applying the Helm chart directly instead of registering an Application.'
+          );
+        }
+        await applyRepoDirect({
+          incidentId,
+          namespace,
+          resourceName,
+          plan: {
+            ...plan,
+            action: 'repo_apply',
+            targetManifestPath:
+              plan.targetManifestPath || `${chartPath.replace(/^\.\//, '')}/Chart.yaml`,
+          },
+          dryRun: cmd.executionOptions?.dryRun,
+          createNamespace: cmd.executionOptions?.createNamespace,
+          platform,
+          channelId,
+          orchestratorManaged: Boolean(runId),
+        });
+        argoCDSyncStatus = 'Unknown';
+      }
     } else if (plan.action === 'git_patch') {
       const patchTarget = gitPatchTarget(cmd);
       const hasGitOpsRepo = Boolean(process.env['GITOPS_REPO_URL']?.trim());

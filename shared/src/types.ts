@@ -152,7 +152,7 @@ export interface DiagnosisContext extends IncidentEnvelope {
   channelId?: string;
   githubRepo?: string;
   needsHelmGeneration?: boolean;
-  repoEntryPointKind?: 'helm' | 'kustomize' | 'plain-yaml' | 'unknown';
+  repoEntryPointKind?: 'helm' | 'kustomize' | 'plain-yaml' | 'operator-install' | 'unknown';
   repoSignals?: RepoSignals;
   priorActionSummary?: string;
   safeMode?: boolean;

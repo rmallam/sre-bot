@@ -734,6 +734,21 @@ async function planNode(state: GraphState): Promise<Partial<GraphState>> {
         );
 
   if (state.mode === 'pre-deploy' && state.request.platform && state.request.channelId) {
+    const existing = state.factsSanitized?.existingDeployments ?? [];
+    if (existing.length > 0) {
+      const preview = existing.slice(0, 6).join(', ');
+      const suffix = existing.length > 6 ? ` (+${existing.length - 6} more)` : '';
+      await sendDeployProgress(
+        {
+          incidentId: state.incidentId,
+          platform: state.request.platform,
+          channelId: state.request.channelId,
+        },
+        `Namespace \`${state.namespace}\` already has deployment(s): ${preview}${suffix}. ` +
+          `If this is a reinstall, confirm in the approval step — otherwise cancel the run.`
+      );
+    }
+
     const actionLabel =
       plan.action === 'repo_apply'
         ? 'direct apply to the cluster (no Git push)'

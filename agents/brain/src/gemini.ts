@@ -140,9 +140,12 @@ STRICT RULES:
 3. In "diagnose" mode: If you cannot determine a root cause, set action to "escalate_human" and proposedPatch to [].
 3b. In "diagnose" mode without gitManifestContent: prefer escalate_human over git_patch unless proposing a cluster hot-fix with a concrete proposedPatch on /spec/template/*.
 4. In "pre-deploy" mode:
+   - If repoEntryPointKind is "helm" or gitManifestPath ends with Chart.yaml: use "helm_deploy" (GitOps) or "repo_apply" (direct) — never "git_patch"
+   - If repoEntryPointKind is "operator-install" (install.yaml): use "repo_apply" to kubectl apply the official bundle unless a Helm chart is present (then prefer Helm)
+   - Never treat Docker Compose files (compose.yml) as Kubernetes manifests
    - If needsHelmGeneration is true, set action to "helm_deploy" and populate helmChart.files
-   - If gitManifestContent is provided, use action "git_patch"
-   - If gitManifestContent is NOT provided, generate Deployment via git_patch (single "add" at path "")
+   - If gitManifestContent is provided for plain YAML/Kustomize only, use action "git_patch" or "repo_apply" for direct mode
+   - If gitManifestContent is NOT provided, generate Deployment via helm_deploy (preferred) not git_patch
 5. Your proposedPatch MUST be valid RFC 6902 JSON Patch when action is git_patch.
 6. targetManifestPath from gitManifestPath or deployments/<resourceName>.yaml (or deploy/helm/<resourceName> for helm)
 7. commitMessage MUST follow Conventional Commits format.

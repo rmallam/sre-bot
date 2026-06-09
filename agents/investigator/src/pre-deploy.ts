@@ -8,12 +8,13 @@
  */
 
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, readdir, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, extname } from 'node:path';
+import { join } from 'node:path';
 import * as k8s from '@kubernetes/client-node';
 import { shallowCloneRepo } from './git-clone.js';
 import { enrichRepoSignals } from '../../../shared/src/deploy/runtime-detect.js';
+import { detectDeployEntryPoint } from '../../../shared/src/deploy/entry-point.js';
 import type { DeployRequest, DiagnosisContext } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
 
@@ -209,7 +210,7 @@ async function gatherNamespaceFacts(
 // ── Repo clone & entry-point detection ───────────────────────────────────────
 
 /** Detects which kind of K8s entry point the repo uses. */
-type EntryPointKind = 'kustomize' | 'helm' | 'plain-yaml' | 'unknown';
+type EntryPointKind = 'kustomize' | 'helm' | 'plain-yaml' | 'operator-install' | 'unknown';
 
 interface EntryPointResult {
   gitManifestPath?: string;
@@ -243,7 +244,7 @@ async function cloneAndLocateEntryPoint(
       };
     }
 
-    const result = await detectEntryPoint(tmpDir, incidentId);
+    const result = await detectEntryPoint(tmpDir, incidentId, req.resourceName);
     const repoSignals = detectRepoSignals(tmpDir);
     if (result.gitManifestPath) {
       result.gitManifestPath = result.gitManifestPath.replace(tmpDir + '/', '');
@@ -284,75 +285,27 @@ async function cloneAndLocateEntryPoint(
 /**
  * Searches the cloned repo directory for a known K8s entry point.
  *
- * Priority:
- *  1. kustomization.yaml / kustomization.yml  (Kustomize)
- *  2. Chart.yaml                               (Helm)
- *  3. First *.yaml / *.yml in root or deploy/  (plain YAML)
+ * Priority: Kustomize → Helm (incl. nested charts) → operator install.yaml → plain YAML.
+ * Skips Docker Compose files (compose.yml) at repo root.
  */
 async function detectEntryPoint(
   repoDir: string,
-  incidentId: string
+  incidentId: string,
+  appHint?: string
 ): Promise<EntryPointResult> {
-  // 1. Kustomize
-  for (const candidate of [
-    join(repoDir, 'kustomization.yaml'),
-    join(repoDir, 'kustomization.yml'),
-    join(repoDir, 'base', 'kustomization.yaml'),
-    join(repoDir, 'base', 'kustomization.yml'),
-    join(repoDir, 'overlays', 'prod', 'kustomization.yaml'),
-    join(repoDir, 'overlays', 'production', 'kustomization.yaml'),
-    join(repoDir, 'k8s', 'kustomization.yaml'),
-  ]) {
-    if (existsSync(candidate)) {
-      log('info', AGENT, 'Detected Kustomize entry point', { incidentId, path: candidate });
-      return readEntryPoint(candidate, 'kustomize', incidentId);
-    }
+  const found = detectDeployEntryPoint(repoDir, appHint);
+  if (!found) {
+    log('warn', AGENT, 'Could not detect K8s entry point in repo', {
+      incidentId,
+      repoDir,
+    });
+    return {};
   }
 
-  // 2. Helm
-  for (const candidate of [
-    join(repoDir, 'Chart.yaml'),
-    join(repoDir, 'helm', 'Chart.yaml'),
-    join(repoDir, 'charts', 'Chart.yaml'),
-  ]) {
-    if (existsSync(candidate)) {
-      log('info', AGENT, 'Detected Helm chart entry point', { incidentId, path: candidate });
-      return readEntryPoint(candidate, 'helm', incidentId);
-    }
-  }
-
-  // 3. Plain YAML — search common directories
-  const searchDirs = [
-    repoDir,
-    join(repoDir, 'deploy'),
-    join(repoDir, 'k8s'),
-    join(repoDir, 'manifests'),
-    join(repoDir, 'kubernetes'),
-  ];
-
-  for (const dir of searchDirs) {
-    if (!existsSync(dir)) continue;
-    let entries: string[];
-    try {
-      entries = await readdir(dir);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const ext = extname(entry).toLowerCase();
-      if (ext === '.yaml' || ext === '.yml') {
-        const full = join(dir, entry);
-        log('info', AGENT, 'Detected plain YAML entry point', { incidentId, path: full });
-        return readEntryPoint(full, 'plain-yaml', incidentId);
-      }
-    }
-  }
-
-  log('warn', AGENT, 'Could not detect K8s entry point in repo', {
-    incidentId,
-    repoDir,
-  });
-  return {};
+  log('info', AGENT, `Detected ${found.kind} entry point`, { incidentId, path: found.path });
+  const kind: EntryPointKind =
+    found.kind === 'operator-install' ? 'operator-install' : found.kind;
+  return readEntryPoint(found.path, kind, incidentId);
 }
 
 async function readEntryPoint(

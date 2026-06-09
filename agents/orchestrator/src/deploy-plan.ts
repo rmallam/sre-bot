@@ -1,11 +1,8 @@
 import type { DiagnosisContext, RemediationPlan, StartRunRequest } from '../../../shared/src/types.js';
 import { buildHelmDeployPlan, defaultChartPath } from '../../../shared/src/helm-generator.js';
 import { buildDeployPlanWithSourceBuild } from '../../../shared/src/deploy/build-plan.js';
+import { isHelmChartPath } from '../../../shared/src/deploy/entry-point.js';
 import { callPlanLlm } from './tools.js';
-
-function isHelmChartPath(manifestPath?: string): boolean {
-  return !!manifestPath && /(^|\/)Chart\.yaml$/i.test(manifestPath);
-}
 
 function chartPathFromManifest(manifestPath: string): string {
   return manifestPath.replace(/\/Chart\.yaml$/i, '');
@@ -129,6 +126,56 @@ export async function buildDeployPlan(
   }
 
   const plan = await callPlanLlm(ctx, []);
+
+  const manifestPath = ctx.gitManifestPath ?? plan.targetManifestPath;
+  if (request.mode === 'pre-deploy' && isHelmChartPath(manifestPath)) {
+    const chartManifestPath = manifestPath!;
+    const direct = deployStrategy === 'direct';
+    if (direct) {
+      return {
+        ...plan,
+        action: 'repo_apply',
+        rootCause: plan.rootCause || 'Repository contains a Helm chart',
+        reasoning:
+          plan.reasoning ||
+          `Direct Helm install from ${chartPathFromManifest(chartManifestPath)}/ (no Git push).`,
+        proposedPatch: [],
+        targetManifestPath: chartManifestPath,
+        targetRepo: 'app',
+        githubRepo: plan.githubRepo ?? githubRepo,
+        gitRef: plan.gitRef ?? gitRef,
+      };
+    }
+    if (plan.action === 'git_patch') {
+      return {
+        ...plan,
+        action: 'helm_deploy',
+        rootCause: plan.rootCause || 'Repository contains a Helm chart',
+        reasoning:
+          plan.reasoning ||
+          `Register Argo CD Application for chart at ${chartPathFromManifest(chartManifestPath)}/.`,
+        proposedPatch: [],
+        targetManifestPath: chartManifestPath,
+        targetRepo: 'gitops',
+        githubRepo: plan.githubRepo ?? githubRepo,
+        gitRef: plan.gitRef ?? gitRef,
+      };
+    }
+  }
+
+  if (request.mode === 'pre-deploy' && ctx.repoEntryPointKind === 'operator-install' && ctx.gitManifestPath) {
+    return {
+      ...plan,
+      action: deployStrategy === 'direct' ? 'repo_apply' : plan.action,
+      targetManifestPath: ctx.gitManifestPath,
+      targetRepo: deployStrategy === 'direct' ? 'app' : plan.targetRepo ?? 'both',
+      githubRepo: plan.githubRepo ?? githubRepo,
+      gitRef: plan.gitRef ?? gitRef,
+      reasoning:
+        plan.reasoning ||
+        `Apply official operator install manifest from ${ctx.gitManifestPath}.`,
+    };
+  }
 
   if (request.mode === 'pre-deploy' && githubRepo && !plan.githubRepo) {
     return {
