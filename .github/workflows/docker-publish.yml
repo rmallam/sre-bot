@@ -34,17 +34,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent:
-          - watcher
-          - commander
-          - investigator
-          - brain
-          - orchestrator
-          - hil
-          - gitops
-          - executor
-          - security
-          - cicd
+        include:
+          - agent: watcher
+            path: watcher
+          - agent: commander
+            path: commander
+          - agent: investigator
+            path: investigator
+          - agent: brain
+            path: brain
+          - agent: orchestrator
+            path: orchestrator
+          - agent: hil
+            path: hil
+          - agent: gitops
+            path: gitops
+          - agent: executor
+            path: executor
+          - agent: security
+            path: security
+          # Image: sre-bot-cicd — source lives in agents/cicd-agent/
+          - agent: cicd
+            path: cicd-agent
 
     steps:
       - name: Checkout
@@ -76,7 +87,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: agents/${{ matrix.agent }}/Dockerfile
+          file: agents/${{ matrix.path }}/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
