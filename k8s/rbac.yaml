@@ -165,7 +165,7 @@ roleRef:
   name: sre-bot-hil
   apiGroup: rbac.authorization.k8s.io
 
-# ── gitops: reset circuit breaker on success + kubectl dry-run ────────────────
+# ── gitops: circuit breaker reset + direct Helm/kubectl deploy (incl. operators) ─
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -175,10 +175,24 @@ rules:
   - apiGroups: ["sre.bot"]
     resources: ["sreincidents", "sreincidents/status"]
     verbs: ["get", "list", "patch", "update"]
-  # Needed for kubectl apply --dry-run=server
   - apiGroups: ["", "apps", "batch", "networking.k8s.io"]
     resources: ["*"]
-    verbs: ["get", "list", "create", "update", "patch"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apiregistration.k8s.io"]
+    resources: ["apiservices"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
