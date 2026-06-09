@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { parseReadmeInstallHints } from '../src/deploy/readme-install-hints.js';
+import {
+  isLocalHelmChartPath,
+  parseReadmeInstallHints,
+  resolveDeployManifestPath,
+} from '../src/deploy/readme-install-hints.js';
 
 const helmReadme = `
 ## Install
@@ -12,6 +16,29 @@ const helmHints = parseReadmeInstallHints(helmReadme);
 assert.ok(helmHints);
 assert.equal(helmHints.method, 'helm');
 assert.equal(helmHints.chartPath, 'helm/frappe-operator');
+assert.equal(helmHints.remoteHelmRepo, false);
+
+const frappeRemoteReadme = `
+# Or install with Helm
+helm repo add frappe-operator https://vyogotech.github.io/frappe-operator/helm-repo
+helm install frappe-operator frappe-operator/frappe-operator \\
+  --namespace frappe-operator-system \\
+  --create-namespace
+`;
+const remoteHints = parseReadmeInstallHints(frappeRemoteReadme);
+assert.ok(remoteHints);
+assert.equal(remoteHints.method, 'helm');
+assert.equal(remoteHints.remoteHelmRepo, true);
+assert.equal(remoteHints.chartPath, undefined);
+assert.equal(isLocalHelmChartPath('frappe-operator/frappe-operator'), false);
+assert.equal(isLocalHelmChartPath('helm/frappe-operator'), true);
+
+const resolved = resolveDeployManifestPath({
+  detectedManifestPath: 'helm/frappe-operator/Chart.yaml',
+  readmeHints: remoteHints,
+});
+assert.equal(resolved.source, 'detected');
+assert.equal(resolved.manifestPath, 'helm/frappe-operator/Chart.yaml');
 
 const kubectlReadme = `
 kubectl apply -f config/manager/manager.yaml

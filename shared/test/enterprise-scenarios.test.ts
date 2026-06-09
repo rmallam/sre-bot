@@ -88,6 +88,18 @@ const readmeHelm = classifyEnterpriseDeployScenario({
 assert.equal(readmeHelm.scenario, 'readme-guided-helm');
 assert.equal(readmeHelm.manifestPath, 'charts/app/Chart.yaml');
 
+const remoteReadmeHelm = classifyEnterpriseDeployScenario({
+  ctx: baseCtx({
+    gitManifestPath: 'helm/frappe-operator/Chart.yaml',
+    repoEntryPointKind: 'helm',
+    needsHelmGeneration: false,
+  }),
+  request: baseRequest(),
+  readmeHints: { method: 'helm', remoteHelmRepo: true, evidence: 'helm install frappe-operator frappe-operator/frappe-operator' },
+});
+assert.equal(remoteReadmeHelm.scenario, 'helm-existing');
+assert.equal(remoteReadmeHelm.manifestPath, 'helm/frappe-operator/Chart.yaml');
+
 const prod = classifyEnterpriseDeployScenario({
   ctx: baseCtx({ namespaceExists: false }),
   request: baseRequest({ namespace: 'production' }),

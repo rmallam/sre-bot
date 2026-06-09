@@ -21,6 +21,7 @@ import { log } from '../../../shared/src/http.js';
 import { toHttpsCloneUrl } from './app-repo.js';
 import { applyHelmChartWithFallbacks } from './chart-apply.js';
 import { ensureNamespace } from './ensure-namespace.js';
+import { detectDeployEntryPoint } from '../../../shared/src/deploy/entry-point.js';
 import {
   isClusterScopedDocument,
   orderDocumentsForApply,
@@ -142,10 +143,22 @@ export async function applyRepoDirect(opts: {
       }
     }
 
-    const relPath = opts.plan.targetManifestPath;
-    const absPath = resolve(tmpDir, relPath);
+    let relPath = opts.plan.targetManifestPath;
+    let absPath = resolve(tmpDir, relPath);
     if (!absPath.startsWith(resolve(tmpDir))) {
       throw new Error('targetManifestPath escapes cloned repository');
+    }
+
+    if (/\/Chart\.ya?ml$/i.test(relPath) && !existsSync(absPath)) {
+      const found = detectDeployEntryPoint(tmpDir, opts.resourceName);
+      if (found?.kind === 'helm') {
+        relPath = found.path.replace(`${tmpDir}/`, '');
+        absPath = found.path;
+        await sendDeployProgress(
+          notify,
+          `Chart path ${opts.plan.targetManifestPath} not in repo — using ${relPath} instead.`
+        );
+      }
     }
 
     if (/\/Chart\.ya?ml$/i.test(relPath)) {

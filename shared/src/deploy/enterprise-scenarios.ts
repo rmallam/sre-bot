@@ -7,6 +7,7 @@ import { isHelmChartPath } from './entry-point.js';
 import { inspectHelmDependencies } from '../helm-dependencies.js';
 import { isProdNamespace } from '../tool-policy.js';
 import type { ReadmeInstallHints } from './readme-install-hints.js';
+import { isLocalHelmChartPath, resolveDeployManifestPath } from './readme-install-hints.js';
 import { assessDeployCollision, type DeployCollisionAssessment } from './collision-policy.js';
 
 export type EnterpriseDeployScenario =
@@ -140,8 +141,17 @@ export function classifyEnterpriseDeployScenario(
   }
 
   const readme = input.readmeHints;
-  if (readme?.method === 'helm' && readme.chartPath) {
-    const manifestPath = `${readme.chartPath}/Chart.yaml`;
+  const resolved = resolveDeployManifestPath({
+    detectedManifestPath: ctx.gitManifestPath,
+    readmeHints: readme,
+  });
+
+  if (
+    readme?.method === 'helm' &&
+    resolved.source === 'readme' &&
+    resolved.manifestPath &&
+    isLocalHelmChartPath(readme.chartPath)
+  ) {
     tags.push('readme-guided-helm');
     return {
       scenario: 'readme-guided-helm',
@@ -152,11 +162,28 @@ export function classifyEnterpriseDeployScenario(
       warnings,
       requiresHil,
       preSteps: [...preSteps, 'helm-dependency-fetch'],
-      manifestPath,
+      manifestPath: resolved.manifestPath,
     };
   }
 
-  if (readme?.method === 'kubectl' && readme.manifestPath) {
+  if (readme?.method === 'helm' && readme.remoteHelmRepo && resolved.source === 'detected' && resolved.manifestPath) {
+    tags.push('readme-guided-helm');
+    return {
+      scenario: 'helm-existing',
+      tags,
+      recommendedAction: effectiveDirect ? 'repo_apply' : 'helm_deploy',
+      deployStrategy: effectiveDirect ? 'direct' : deployStrategy,
+      reasoning:
+        resolved.note ??
+        `Helm chart at ${chartPathFromManifest(resolved.manifestPath)}/ (README references remote Helm repo).`,
+      warnings,
+      requiresHil,
+      preSteps: [...preSteps, 'helm-dependency-fetch'],
+      manifestPath: resolved.manifestPath,
+    };
+  }
+
+  if (readme?.method === 'kubectl' && readme.manifestPath && !/^https?:\/\//i.test(readme.manifestPath)) {
     tags.push('readme-guided-kubectl');
     return {
       scenario: 'readme-guided-kubectl',
