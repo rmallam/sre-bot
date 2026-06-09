@@ -19,7 +19,7 @@ import {
 } from '../../../shared/src/deploy-readiness-watch.js';
 import { log } from '../../../shared/src/http.js';
 import { toHttpsCloneUrl } from './app-repo.js';
-import { applyHelmChartWithFallbacks } from './chart-apply.js';
+import { applyHelmChartWithFallbacks, applyRemoteHelmChart } from './chart-apply.js';
 import { ensureNamespace } from './ensure-namespace.js';
 import { detectDeployEntryPoint } from '../../../shared/src/deploy/entry-point.js';
 import {
@@ -77,6 +77,39 @@ export async function applyRepoDirect(opts: {
   const hasGeneratedChart =
     !!helmFiles && Object.keys(helmFiles).length > 0;
   const catalogOnly = !isGitCloneTarget(repoUrl);
+  const helmRemote = opts.plan.helmRemote;
+
+  if (helmRemote) {
+    if (opts.createNamespace) {
+      await ensureNamespace({
+        namespace: opts.namespace,
+        incidentId: opts.incidentId,
+        notify,
+      });
+    }
+    await sendDeployProgress(
+      notify,
+      `Installing from Helm repo ${helmRemote.repoUrl} (${helmRemote.chartRef}) — no Git clone.`
+    );
+    const method = await applyRemoteHelmChart({
+      repoName: helmRemote.repoName,
+      repoUrl: helmRemote.repoUrl,
+      chartRef: helmRemote.chartRef,
+      releaseName: opts.resourceName,
+      namespace: opts.namespace,
+      incidentId: opts.incidentId,
+      dryRun: useDryRun,
+      createNamespace: opts.createNamespace,
+      notify,
+    });
+    log('info', 'gitops-agent', 'Remote Helm chart deployed', {
+      incidentId: opts.incidentId,
+      method,
+      namespace: opts.namespace,
+    });
+    await promiseDeployProgress();
+    return;
+  }
 
   if (catalogOnly && !hasGeneratedChart) {
     throw new Error(

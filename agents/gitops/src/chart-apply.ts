@@ -363,6 +363,73 @@ async function applyHelmUpgrade(opts: ChartApplyOpts): Promise<void> {
   }, 'helm-upgrade');
 }
 
+export interface RemoteHelmApplyOpts {
+  repoName: string;
+  repoUrl: string;
+  chartRef: string;
+  releaseName: string;
+  namespace: string;
+  incidentId: string;
+  dryRun?: boolean;
+  createNamespace?: boolean;
+  notify?: DeployNotifyTarget;
+}
+
+/** Install from a published Helm repo — no Git clone. */
+export async function applyRemoteHelmChart(opts: RemoteHelmApplyOpts): Promise<string> {
+  const chartOpts: ChartApplyOpts = {
+    chartDir: opts.chartRef,
+    releaseName: opts.releaseName,
+    namespace: opts.namespace,
+    incidentId: opts.incidentId,
+    dryRun: opts.dryRun,
+    createNamespace: opts.createNamespace,
+    notify: opts.notify,
+  };
+
+  if (opts.createNamespace) {
+    await ensureNamespace({
+      namespace: opts.namespace,
+      incidentId: opts.incidentId,
+      notify: opts.notify,
+    });
+  }
+
+  await ensureClusterReachable(chartOpts);
+  const helmOk = await helmUsable(chartOpts);
+  if (!helmOk) {
+    throw new Error('Helm is not available for remote chart install.');
+  }
+
+  await progress(chartOpts, `Adding Helm repo \`${opts.repoName}\`…`);
+  await runCmd(
+    'helm',
+    ['repo', 'add', opts.repoName, opts.repoUrl, '--force-update'],
+    opts.incidentId
+  );
+  await runCmd('helm', ['repo', 'update', opts.repoName], opts.incidentId);
+
+  await progress(
+    chartOpts,
+    `Installing \`${opts.chartRef}\` as release \`${opts.releaseName}\` in ${opts.namespace}…`
+  );
+  const base = [
+    'upgrade',
+    '--install',
+    opts.releaseName,
+    opts.chartRef,
+    '--namespace',
+    opts.namespace,
+    '--create-namespace',
+  ];
+  if (opts.dryRun) {
+    await runCmd('helm', [...base, '--dry-run'], opts.incidentId);
+  }
+  await runCmd('helm', base, opts.incidentId);
+  await progress(chartOpts, `Helm release ${opts.releaseName} installed from remote repo.`);
+  return 'helm-remote-repo';
+}
+
 export async function applyHelmChartWithFallbacks(opts: ChartApplyOpts): Promise<string> {
   if (opts.createNamespace) {
     await ensureNamespace({

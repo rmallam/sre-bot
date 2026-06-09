@@ -262,6 +262,8 @@ export interface RemediationPlan {
   cicd?: RemediationPlanCicdMeta;
   /** Enterprise deploy scenario selected by planner (audit). */
   enterpriseScenario?: string;
+  /** Install from a published Helm repository (no Git clone). */
+  helmRemote?: import('./deploy/readme-install-hints.js').RemoteHelmInstall;
 }
 
 export interface ToolTranscriptEntry {

@@ -4,6 +4,15 @@
 
 export type ReadmeInstallMethod = 'helm' | 'kubectl' | 'make' | 'script' | 'unknown';
 
+/** Published Helm repo install (helm repo add + helm install repo/chart). */
+export interface RemoteHelmInstall {
+  repoName: string;
+  repoUrl: string;
+  /** e.g. frappe-operator/frappe-operator */
+  chartRef: string;
+  releaseName?: string;
+}
+
 export interface ReadmeInstallHints {
   method: ReadmeInstallMethod;
   chartPath?: string;
@@ -12,16 +21,21 @@ export interface ReadmeInstallHints {
   evidence?: string;
   /** True when README uses helm repo/chart (not a path in the cloned Git tree). */
   remoteHelmRepo?: boolean;
+  /** Parsed remote Helm repo coordinates when README documents helm repo add + install. */
+  remoteHelm?: RemoteHelmInstall;
 }
 
 const HELM_INSTALL =
-  /helm\s+(?:upgrade\s+--install|install)\s+\S+\s+([^\s\\]+)/i;
+  /helm\s+(?:upgrade\s+--install|install)\s+([\w.-]+)\s+([\w.-]+\/[\w.-]+)/i;
+const HELM_INSTALL_LOCAL =
+  /helm\s+(?:upgrade\s+--install|install)\s+[\w.-]+\s+(\.\/?(?:helm|charts|deploy)\/[\w.-]+)/i;
+const HELM_REPO_ADD_LINE =
+  /helm\s+repo\s+add\s+([\w.-]+)\s+(https?:\/\/[^\s'"]+)/i;
 const HELM_CHART_PATH = /(?:^|[\s/`])((?:\.\/)?(?:helm|charts|deploy)\/[\w.-]+\/Chart\.yaml)/im;
 const KUBECTL_APPLY = /kubectl\s+apply\s+(?:-[fk]\s+)?([^\s]+\.ya?ml)/i;
 const INSTALL_YAML = /\binstall\.ya?ml\b/i;
 const MAKE_INSTALL = /make\s+(?:install|deploy)\b/i;
 const INSTALL_SH = /\.\/install\.sh\b|bash\s+install\.sh\b/i;
-const HELM_REPO_ADD = /helm\s+repo\s+add\b/i;
 
 /** Paths that exist under a cloned repo (not `helm repo add` chart refs like `foo/bar`). */
 export function isLocalHelmChartPath(path: string | undefined): boolean {
@@ -32,6 +46,28 @@ export function isLocalHelmChartPath(path: string | undefined): boolean {
   // Remote chart ref: release/chart with no repo directory prefix (e.g. frappe-operator/frappe-operator)
   if (/^[\w.-]+\/[\w.-]+$/.test(p) && !/^(helm|charts|deploy)\//i.test(p)) return false;
   return p.includes('/') && !/^https?:\/\//i.test(p);
+}
+
+function parseRemoteHelmInstall(text: string): RemoteHelmInstall | undefined {
+  const installMatch = text.match(HELM_INSTALL);
+  if (!installMatch) return undefined;
+  const releaseName = installMatch[1];
+  const chartRef = installMatch[2]!.replace(/\\$/, '').trim();
+  if (isLocalHelmChartPath(chartRef)) return undefined;
+
+  let repoName: string | undefined;
+  let repoUrl: string | undefined;
+  for (const line of text.split('\n')) {
+    const add = line.match(HELM_REPO_ADD_LINE);
+    if (add) {
+      repoName = add[1];
+      repoUrl = add[2];
+    }
+  }
+  if (!repoName || !repoUrl) return undefined;
+  if (!chartRef.startsWith(`${repoName}/`)) return undefined;
+
+  return { repoName, repoUrl, chartRef, releaseName };
 }
 
 export function parseReadmeInstallHints(readme: string): ReadmeInstallHints | null {
@@ -49,10 +85,31 @@ export function parseReadmeInstallHints(readme: string): ReadmeInstallHints | nu
     };
   }
 
+  const localInstall = text.match(HELM_INSTALL_LOCAL);
+  if (localInstall) {
+    const chartPath = localInstall[1]!.replace(/^\.\//, '');
+    return {
+      method: 'helm',
+      chartPath,
+      evidence: localInstall[0],
+      remoteHelmRepo: false,
+    };
+  }
+
+  const remoteHelm = parseRemoteHelmInstall(text);
+  if (remoteHelm) {
+    return {
+      method: 'helm',
+      evidence: `helm install ${remoteHelm.releaseName ?? 'release'} ${remoteHelm.chartRef}`,
+      remoteHelmRepo: true,
+      remoteHelm,
+    };
+  }
+
   const helmMatch = text.match(HELM_INSTALL);
   if (helmMatch) {
-    const raw = helmMatch[1]!.replace(/^\.\//, '').replace(/\/Chart\.yaml$/i, '').replace(/\\$/, '').trim();
-    const remoteHelmRepo = HELM_REPO_ADD.test(text) && !isLocalHelmChartPath(raw);
+    const raw = helmMatch[2]!.replace(/^\.\//, '').replace(/\/Chart\.yaml$/i, '').replace(/\\$/, '').trim();
+    const remoteHelmRepo = !isLocalHelmChartPath(raw);
     if (isLocalHelmChartPath(raw)) {
       return {
         method: 'helm',
@@ -115,7 +172,7 @@ export function resolveDeployManifestPath(opts: {
     return { manifestPath: `${readme.chartPath}/Chart.yaml`, source: 'readme' };
   }
 
-  if (readme?.method === 'helm' && readme.remoteHelmRepo && detected) {
+  if (readme?.method === 'helm' && readme.remoteHelmRepo && detected && !readme.remoteHelm) {
     return {
       manifestPath: detected,
       source: 'detected',

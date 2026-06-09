@@ -23,6 +23,7 @@ export type EnterpriseDeployScenario =
   | 'multi-service-stack'
   | 'readme-guided-helm'
   | 'readme-guided-kubectl'
+  | 'helm-remote-repo'
   | 'namespace-missing'
   | 'existing-workload-collision'
   | 'prod-hil-gate'
@@ -47,6 +48,7 @@ export interface EnterpriseScenarioProfile {
   requiresHil: boolean;
   preSteps: Array<'helm-dependency-fetch' | 'namespace-create' | 'reinstall-confirm'>;
   manifestPath?: string;
+  helmRemote?: import('./readme-install-hints.js').RemoteHelmInstall;
 }
 
 function chartPathFromManifest(manifestPath: string): string {
@@ -141,6 +143,24 @@ export function classifyEnterpriseDeployScenario(
   }
 
   const readme = input.readmeHints;
+
+  if (readme?.remoteHelm && readme.remoteHelmRepo) {
+    tags.push('helm-remote-repo');
+    return {
+      scenario: 'helm-remote-repo',
+      tags,
+      recommendedAction: 'repo_apply',
+      deployStrategy: 'direct',
+      reasoning:
+        `Install from published Helm repo ${readme.remoteHelm.repoUrl} ` +
+        `(${readme.remoteHelm.chartRef}) — no Git clone required.`,
+      warnings,
+      requiresHil,
+      preSteps,
+      helmRemote: readme.remoteHelm,
+    };
+  }
+
   const resolved = resolveDeployManifestPath({
     detectedManifestPath: ctx.gitManifestPath,
     readmeHints: readme,
@@ -327,8 +347,9 @@ export function applyEnterpriseProfile(
     action: profile.recommendedAction,
     targetManifestPath: manifestPath || base.targetManifestPath,
     reasoning: profile.reasoning || base.reasoning,
-    githubRepo: base.githubRepo ?? opts.githubRepo,
-    gitRef: base.gitRef ?? opts.gitRef,
+    githubRepo: profile.scenario === 'helm-remote-repo' ? undefined : base.githubRepo ?? opts.githubRepo,
+    gitRef: profile.scenario === 'helm-remote-repo' ? undefined : base.gitRef ?? opts.gitRef,
+    helmRemote: profile.helmRemote ?? base.helmRemote,
     targetRepo:
       profile.recommendedAction === 'repo_apply'
         ? 'app'
@@ -364,6 +385,7 @@ export const ENTERPRISE_DEPLOY_SCENARIO_MATRIX: Array<{
   { scenario: 'multi-service-stack', description: 'Multiple related services with dependency order' },
   { scenario: 'readme-guided-helm', description: 'README documents helm install — prefer documented chart path' },
   { scenario: 'readme-guided-kubectl', description: 'README documents kubectl apply — use documented manifest' },
+  { scenario: 'helm-remote-repo', description: 'Published Helm repo — helm repo add + install without Git clone' },
   { scenario: 'namespace-missing', description: 'Target namespace does not exist — create before apply' },
   { scenario: 'existing-workload-collision', description: 'Namespace has deployments — upgrade vs reinstall confirm' },
   { scenario: 'prod-hil-gate', description: 'Production namespace — human approval required' },

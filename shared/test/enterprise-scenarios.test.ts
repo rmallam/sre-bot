@@ -95,10 +95,21 @@ const remoteReadmeHelm = classifyEnterpriseDeployScenario({
     needsHelmGeneration: false,
   }),
   request: baseRequest(),
-  readmeHints: { method: 'helm', remoteHelmRepo: true, evidence: 'helm install frappe-operator frappe-operator/frappe-operator' },
+  readmeHints: {
+    method: 'helm',
+    remoteHelmRepo: true,
+    remoteHelm: {
+      repoName: 'frappe-operator',
+      repoUrl: 'https://vyogotech.github.io/frappe-operator/helm-repo',
+      chartRef: 'frappe-operator/frappe-operator',
+      releaseName: 'frappe-operator',
+    },
+    evidence: 'helm install',
+  },
 });
-assert.equal(remoteReadmeHelm.scenario, 'helm-existing');
-assert.equal(remoteReadmeHelm.manifestPath, 'helm/frappe-operator/Chart.yaml');
+assert.equal(remoteReadmeHelm.scenario, 'helm-remote-repo');
+assert.equal(remoteReadmeHelm.helmRemote?.chartRef, 'frappe-operator/frappe-operator');
+assert.equal(remoteReadmeHelm.recommendedAction, 'repo_apply');
 
 const prod = classifyEnterpriseDeployScenario({
   ctx: baseCtx({ namespaceExists: false }),
@@ -126,6 +137,6 @@ assert.equal(applied.action, 'repo_apply');
 assert.equal(applied.targetManifestPath, 'install.yaml');
 assert.deepEqual(applied.proposedPatch, []);
 
-assert.equal(ENTERPRISE_DEPLOY_SCENARIO_MATRIX.length, 17);
+assert.equal(ENTERPRISE_DEPLOY_SCENARIO_MATRIX.length, 18);
 
 console.log('enterprise-scenarios.test.ts: ok');
