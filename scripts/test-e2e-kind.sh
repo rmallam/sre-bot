@@ -336,4 +336,8 @@ echo ""
 echo "▶ 20. Vitest unit tests"
 run_all_vitest_tests
 
+# ── 21. Advanced features (correlation, playbook verify, git revert) ─────────
+# shellcheck disable=SC1091
+source "$ROOT/scripts/test-e2e-advanced-features.sh"
+
 print_e2e_summary "Results" || exit 1

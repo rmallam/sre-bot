@@ -489,4 +489,16 @@ sequenceDiagram
 
 ---
 
+## 16. Advanced incident & deploy features
+
+| Feature | Flow |
+|---------|------|
+| **Alert correlation** | AlertManager → commander groups alerts by label or app-graph env binding → single `investigateScope: incident` run |
+| **Playbook verify** | After K8s readiness, investigator runs `## Verification` steps (HTTP + PromQL) from matched RAG runbook |
+| **Git auto-revert** | Pre-deploy verify failure → HIL-approved `git_revert` or autonomous revert via gitops `POST /revert-deploy` |
+
+Env: `ALERT_CORRELATION_*`, `AUTO_GIT_ROLLBACK_*`, `PLAYBOOK_VERIFY_URL_ALLOWLIST`, `PROMETHEUS_URL`.
+
+---
+
 *Last updated to match the enterprise autonomous agent implementation (orchestrator + security + executor + dual-repo Helm).*

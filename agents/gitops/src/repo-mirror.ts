@@ -229,4 +229,57 @@ export class RepoMirror {
 
     return { commitSha, commitUrl, ...(prUrl ? { prUrl } : {}) };
   }
+
+  async getHeadSha(): Promise<string | undefined> {
+    try {
+      await this.sync();
+      const sha = await this.git.revparse(['HEAD']);
+      return sha?.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Revert a deploy commit (or reset to previous SHA when revert is not possible).
+   */
+  async revertDeployCommit(opts: {
+    incidentId: string;
+    deployGitCommitSha?: string;
+    previousGitCommitSha?: string;
+    reason: string;
+  }): Promise<ApplyPatchResult> {
+    await this.sync();
+    const message = `sre-bot: auto-revert failed deploy (${opts.incidentId})\n\n${opts.reason.slice(0, 400)}`;
+
+    if (opts.deployGitCommitSha) {
+      try {
+        await this.git.revert(opts.deployGitCommitSha, ['--no-edit']);
+      } catch {
+        if (opts.previousGitCommitSha) {
+          await this.git.reset(['--hard', opts.previousGitCommitSha]);
+        } else {
+          throw new Error('git revert failed and no previousGitCommitSha provided');
+        }
+      }
+    } else if (opts.previousGitCommitSha) {
+      await this.git.reset(['--hard', opts.previousGitCommitSha]);
+    } else {
+      throw new Error('revert-deploy requires deployGitCommitSha or previousGitCommitSha');
+    }
+
+    const logResult = await this.git.log({ n: 1 });
+    const commitSha = logResult.latest?.hash ?? 'unknown';
+
+    if (this.repoUrl) {
+      await this.git.push('origin', 'main', ['--force-with-lease']);
+      log('info', AGENT, 'Revert push complete', { incidentId: opts.incidentId, commitSha });
+    }
+
+    const commitUrl = this.repoUrl
+      ? `${this.repoUrl.replace(/\.git$/, '')}/commit/${commitSha}`
+      : `local://${commitSha}`;
+
+    return { commitSha, commitUrl };
+  }
 }

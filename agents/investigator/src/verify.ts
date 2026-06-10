@@ -282,3 +282,37 @@ export async function verifyDeployment(
     return { healthy: false, message: msg };
   }
 }
+
+export interface VerifyWithPlaybooksOpts {
+  workloads?: DeployWorkloadRef[];
+  playbookMarkdown?: string;
+}
+
+export async function verifyWithPlaybooks(
+  namespace: string,
+  resourceName: string,
+  incidentId: string,
+  opts?: VerifyWithPlaybooksOpts
+): Promise<VerifyResult> {
+  const base = await verifyDeployment(namespace, resourceName, incidentId, {
+    workloads: opts?.workloads,
+  });
+  const markdown = opts?.playbookMarkdown?.trim();
+  if (!markdown || !base.healthy) return base;
+
+  const { runPlaybookVerifySteps, summarizePlaybookVerifyResults } = await import(
+    './playbook-verify-runner.js'
+  );
+  const checks = await runPlaybookVerifySteps(markdown, { namespace, resourceName });
+  if (checks.length === 0) return base;
+
+  const allPassed = checks.every((c) => c.passed);
+  const summary = summarizePlaybookVerifyResults(checks);
+  return {
+    ...base,
+    healthy: allPassed,
+    allPlaybookChecksPassed: allPassed,
+    playbookChecks: checks,
+    message: allPassed ? `${base.message}; ${summary}` : `${base.message}; ${summary}`,
+  };
+}

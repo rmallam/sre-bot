@@ -493,6 +493,11 @@ async function ragTriageGraphNode(state: GraphState): Promise<Partial<GraphState
       },
     }).catch(() => undefined);
   }
+  if (triage.retrievedPlaybook?.trim()) {
+    await mergeRunMetadata(state.runId, {
+      retrievedPlaybook: triage.retrievedPlaybook,
+    }).catch(() => undefined);
+  }
 
   return {
     ragBypassReact: triage.ragBypassReact,
@@ -1120,6 +1125,25 @@ async function policyNode(state: GraphState): Promise<Partial<GraphState>> {
 
 async function actNode(state: GraphState): Promise<Partial<GraphState>> {
   if (!state.pendingPlan) return { status: 'failed' };
+  if (state.pendingPlan.action === 'git_revert') {
+    const { executeGitRevert } = await import('./deploy-git-rollback.js');
+    const result = await executeGitRevert(runCtx(state));
+    const record: ActionRecord = {
+      action: 'git_revert',
+      success: result.success === true,
+      summary: result.message,
+      commitUrls: result.revertCommitUrl ? [result.revertCommitUrl] : undefined,
+      at: new Date().toISOString(),
+    };
+    if (result.success) {
+      await notifyUser(
+        runCtx(state),
+        `Git revert completed.\n${result.message}${result.revertCommitUrl ? `\n${result.revertCommitUrl}` : ''}`
+      );
+      return { actionHistory: [record], status: 'succeeded' };
+    }
+    return { actionHistory: [record], status: 'failed', lastError: result.message };
+  }
   if (state.stackDeployPlan && state.mode === 'pre-deploy') {
     const stackResult = await executeStackDeployment(state, state.stackDeployPlan);
     const record: ActionRecord = {
@@ -1494,6 +1518,7 @@ async function verifyNode(state: GraphState): Promise<Partial<GraphState>> {
             state.request.platform && state.request.channelId
               ? (msg) => notifyUser(runCtx(state), msg)
               : undefined,
+          playbookMarkdown: state.retrievedPlaybook,
         });
 
   if (history.length > 0 && lastAction) {
@@ -1574,13 +1599,47 @@ async function verifyNode(state: GraphState): Promise<Partial<GraphState>> {
       }
       return { status: 'succeeded', actionHistory: history };
     }
+    const { attemptDeployGitRollback, buildGitRevertPlan } = await import('./deploy-git-rollback.js');
+    const rollback = await attemptDeployGitRollback({
+      runId: state.runId,
+      incidentId: state.incidentId,
+      namespace: state.namespace,
+      resourceName: state.resourceName,
+      verifyMessage: msg,
+      requestHil: async (plan) => {
+        await requestHilApproval(runCtx(state), plan, state.iteration, state.maxIterations);
+        await setRunStatus(state.runId, 'awaiting_human');
+        await persistSuggestedPlan(state.runId, plan);
+        await notifyUser(
+          runCtx(state),
+          `Deploy verification failed for **${state.resourceName}**.\n` +
+            `${humanizeOperatorError(msg)}\n\n` +
+            `Approve to **revert the Git commit** to the last-known-good revision.`
+        );
+      },
+    });
+    if (rollback.awaitingApproval) {
+      return {
+        status: 'awaiting_human',
+        awaitingHuman: true,
+        pendingPlan: buildGitRevertPlan(msg),
+        actionHistory: history,
+        lastError: msg,
+      };
+    }
+    const rollbackNote =
+      rollback.attempted && rollback.success
+        ? `\n\nGit rollback: ${rollback.message}${rollback.revertCommitUrl ? `\n${rollback.revertCommitUrl}` : ''}`
+        : rollback.attempted
+          ? `\n\nGit rollback failed: ${rollback.message}`
+          : '';
     await notifyUser(
       runCtx(state),
       `❌ Deploy did not complete for ${state.resourceName} in ${state.namespace}.\n` +
-        `${humanizeOperatorError(msg)}\n` +
+        `${humanizeOperatorError(msg)}${rollbackNote}\n` +
         `No workloads were created — oc get pods -n ${state.namespace} will be empty.`
     );
-    return { status: 'failed', actionHistory: history, lastError: msg };
+    return { status: 'escalated', actionHistory: history, lastError: msg };
   }
 
   if (state.mode === 'diagnose' && !verify.healthy) {

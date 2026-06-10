@@ -223,6 +223,11 @@ services:
       - SRE_PLATFORM_ROUTING=${SRE_PLATFORM_ROUTING:-true}
       - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
       - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
+      - ALERTMANAGER_WEBHOOK_SECRET=${ALERTMANAGER_WEBHOOK_SECRET:-}
+      - ALERT_CORRELATION_ENABLED=${ALERT_CORRELATION_ENABLED:-true}
+      - ALERT_CORRELATION_USE_APP_GRAPH=${ALERT_CORRELATION_USE_APP_GRAPH:-true}
+      - ALERT_CORRELATION_WINDOW_MS=${ALERT_CORRELATION_WINDOW_MS:-300000}
+      - ALERT_CORRELATION_MIN_GROUP=${ALERT_CORRELATION_MIN_GROUP:-2}
 
   investigator-agent:
     container_name: sre-bot-investigator
@@ -251,6 +256,7 @@ services:
       - INVESTIGATE_GATHER_MODE=${INVESTIGATE_GATHER_MODE:-}
       - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
       - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
+      - PLAYBOOK_VERIFY_URL_ALLOWLIST=${PLAYBOOK_VERIFY_URL_ALLOWLIST:-}
     volumes:
       - ~/.kube:/root/.kube:ro
       - ~/.ssh:/root/.ssh:ro
@@ -284,10 +290,7 @@ services:
       - SRE_RAG_GROUNDING=${SRE_RAG_GROUNDING:-true}
       - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
       - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
-    volumes:
-      - ~/.kube:/root/.kube:ro
-
-  orchestrator-agent:
+      - PLAYBOOK_VERIFY_URL_ALLOWLIST=${PLAYBOOK_VERIFY_URL_ALLOWLIST:-}
     build:
       context: .
       dockerfile: agents/orchestrator/Dockerfile
@@ -337,6 +340,9 @@ services:
       - SRE_RAG_BYPASS_THRESHOLD=${SRE_RAG_BYPASS_THRESHOLD:-0.90}
       - NAMESPACE_RUN_LIMIT=${NAMESPACE_RUN_LIMIT:-5}
       - NAMESPACE_QUEUE_DRAIN_MS=${NAMESPACE_QUEUE_DRAIN_MS:-15000}
+      - AUTO_GIT_ROLLBACK_ENABLED=${AUTO_GIT_ROLLBACK_ENABLED:-false}
+      - AUTO_GIT_ROLLBACK_REQUIRE_HIL=${AUTO_GIT_ROLLBACK_REQUIRE_HIL:-true}
+      - AUTO_GIT_ROLLBACK_BLOCK_NAMESPACES=${AUTO_GIT_ROLLBACK_BLOCK_NAMESPACES:-kube-system,production,prod}
       - CI_VERIFY_AFTER_PR=${CI_VERIFY_AFTER_PR:-true}
       - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
       - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}

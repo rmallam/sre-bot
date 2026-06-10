@@ -1,5 +1,5 @@
 /**
- * PLAT-7 — AlertManager webhook → orchestrator diagnose runs.
+ * PLAT-7 — AlertManager webhook → correlated orchestrator diagnose runs.
  */
 
 import crypto from 'node:crypto';
@@ -7,6 +7,12 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Request, Response } from 'express';
 import { log, postWithRetry } from '../../../shared/src/http.js';
 import type { Platform, ResourceKind, StartRunRequest } from '../../../shared/src/types.js';
+import {
+  buildAlertRunGroups,
+  mergeWithRecentCorrelation,
+  recordCorrelationWindow,
+  type ParsedAlertTarget,
+} from '../../../shared/src/alert-correlation.js';
 
 const AGENT = 'commander-alertmanager-webhook';
 const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
@@ -25,9 +31,26 @@ const LABEL_POD = process.env['ALERTMANAGER_LABEL_POD'] ?? 'pod';
 const LABEL_DEPLOYMENT = process.env['ALERTMANAGER_LABEL_DEPLOYMENT'] ?? 'deployment';
 const LABEL_STATEFULSET = process.env['ALERTMANAGER_LABEL_STATEFULSET'] ?? 'statefulset';
 
+const CORRELATION_ENABLED =
+  (process.env['ALERT_CORRELATION_ENABLED'] ?? 'true').toLowerCase() !== 'false';
+const CORRELATION_USE_APP_GRAPH =
+  (process.env['ALERT_CORRELATION_USE_APP_GRAPH'] ?? 'true').toLowerCase() !== 'false';
+const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
+const CORRELATION_WINDOW_MS = parseInt(
+  process.env['ALERT_CORRELATION_WINDOW_MS'] ?? String(5 * 60 * 1000),
+  10
+);
+const MIN_GROUP_SIZE = parseInt(process.env['ALERT_CORRELATION_MIN_GROUP'] ?? '1', 10);
+
 /** fingerprint → lastFiredMs */
 const alertCooldown = new Map<string, number>();
 const COOLDOWN_MS = parseInt(process.env['ALERTMANAGER_COOLDOWN_MS'] ?? String(15 * 60 * 1000), 10);
+
+/** correlationKey → recent incident */
+const recentCorrelations = new Map<
+  string,
+  { correlationKey: string; incidentId: string; startedAtMs: number }
+>();
 
 interface AlertmanagerAlert {
   status?: string;
@@ -92,6 +115,92 @@ function shouldThrottle(fingerprint: string): boolean {
   return Date.now() - last < COOLDOWN_MS;
 }
 
+function parseFiringAlerts(payload: AlertmanagerPayload): ParsedAlertTarget[] {
+  const out: ParsedAlertTarget[] = [];
+  for (const alert of payload.alerts ?? []) {
+    if (alert.status !== 'firing') continue;
+    const labels = { ...(payload.commonLabels ?? {}), ...(alert.labels ?? {}) };
+    const annotations = { ...(payload.commonAnnotations ?? {}), ...(alert.annotations ?? {}) };
+    const target = workloadFromLabels(labels);
+    if (!target) continue;
+
+    const fingerprint =
+      alert.fingerprint ?? `${labels['alertname'] ?? 'alert'}:${target.namespace}/${target.resourceName}`;
+    if (shouldThrottle(fingerprint)) continue;
+
+    const summary =
+      annotations['summary'] ?? annotations['description'] ?? labels['alertname'] ?? 'Alert firing';
+    out.push({
+      ...target,
+      labels,
+      annotations,
+      fingerprint,
+      alertname: labels['alertname'] ?? 'AlertManager',
+      summary,
+    });
+    alertCooldown.set(fingerprint, Date.now());
+  }
+  return out;
+}
+
+async function enrichWithGraphBindings(alerts: ParsedAlertTarget[]): Promise<ParsedAlertTarget[]> {
+  if (!CORRELATION_USE_APP_GRAPH || alerts.length < 2) return alerts;
+  try {
+    const res = await fetch(`${INVESTIGATOR_URL}/alert-correlation/bindings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workloads: alerts.map((a) => ({
+          namespace: a.namespace,
+          resourceKind: a.resourceKind,
+          resourceName: a.resourceName,
+        })),
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) return alerts;
+    const data = (await res.json()) as { bindings?: Record<string, string> };
+    const map = new Map(Object.entries(data.bindings ?? {}));
+    return alerts.map((alert) => {
+      const key = map.get(
+        `${alert.namespace}/${alert.resourceKind}/${alert.resourceName}`.toLowerCase()
+      );
+      if (!key) return alert;
+      return { ...alert, labels: { ...alert.labels, 'sre-graph-binding': key } };
+    });
+  } catch (err) {
+    log('warn', AGENT, 'Graph binding enrichment failed — using label keys only', {
+      error: String(err),
+    });
+    return alerts;
+  }
+}
+
+function buildStartPayload(group: ReturnType<typeof buildAlertRunGroups>[number], incidentId: string): StartRunRequest {
+  const primary = group.primary;
+  const multi = group.affectedWorkloads.length > 1;
+  return {
+    incidentId,
+    triggeredBy: 'commander',
+    triggeredAt: new Date().toISOString(),
+    namespace: primary.namespace,
+    resourceKind: primary.resourceKind,
+    resourceName: primary.resourceName,
+    podName: primary.podName,
+    mode: 'diagnose',
+    eventReason: group.eventReason,
+    eventMessage: group.eventMessage,
+    platform: NOTIFY_CHANNEL_ID ? NOTIFY_PLATFORM : undefined,
+    channelId: NOTIFY_CHANNEL_ID || undefined,
+    rawMessage: multi
+      ? `AlertManager correlated incident (${group.affectedWorkloads.length} workloads): ${group.eventMessage}`
+      : `AlertManager: ${group.eventMessage}`,
+    investigateScope: multi ? 'incident' : 'workload',
+    correlationKey: group.correlationKey,
+    affectedWorkloads: group.affectedWorkloads,
+  };
+}
+
 export async function alertmanagerWebhookHandler(req: Request, res: Response): Promise<void> {
   if (!verifySecret(req)) {
     res.status(401).json({ error: 'Invalid alert webhook token' });
@@ -99,44 +208,47 @@ export async function alertmanagerWebhookHandler(req: Request, res: Response): P
   }
 
   const payload = req.body as AlertmanagerPayload;
-  const alerts = payload.alerts ?? [];
+  const parsed = await enrichWithGraphBindings(parseFiringAlerts(payload));
   const started: string[] = [];
+  const skipped: string[] = [];
 
-  for (const alert of alerts) {
-    if (alert.status !== 'firing') continue;
+  const groups = CORRELATION_ENABLED
+    ? buildAlertRunGroups(parsed, { minGroupSize: MIN_GROUP_SIZE })
+    : parsed.map((alert) => ({
+        correlationKey: `workload:${alert.namespace}/${alert.resourceName}`,
+        primary: {
+          namespace: alert.namespace,
+          resourceKind: alert.resourceKind,
+          resourceName: alert.resourceName,
+          podName: alert.podName,
+          alertname: alert.alertname,
+          summary: alert.summary,
+        },
+        affectedWorkloads: [
+          {
+            namespace: alert.namespace,
+            resourceKind: alert.resourceKind,
+            resourceName: alert.resourceName,
+            podName: alert.podName,
+            alertname: alert.alertname,
+            summary: alert.summary,
+          },
+        ],
+        eventReason: alert.alertname,
+        eventMessage: alert.summary,
+      }));
 
-    const labels = { ...(payload.commonLabels ?? {}), ...(alert.labels ?? {}) };
-    const annotations = { ...(payload.commonAnnotations ?? {}), ...(alert.annotations ?? {}) };
-    const target = workloadFromLabels(labels);
-    if (!target) {
-      log('info', AGENT, 'Skipping alert — no namespace/workload labels', {
-        alertname: labels['alertname'],
-      });
-      continue;
-    }
+  const { groups: toStart, reuseIncidentIds } = CORRELATION_ENABLED
+    ? mergeWithRecentCorrelation(groups, recentCorrelations, CORRELATION_WINDOW_MS)
+    : { groups, reuseIncidentIds: new Map<string, string>() };
 
-    const fingerprint =
-      alert.fingerprint ?? `${labels['alertname'] ?? 'alert'}:${target.namespace}/${target.resourceName}`;
-    if (shouldThrottle(fingerprint)) continue;
+  for (const [, incidentId] of reuseIncidentIds) {
+    skipped.push(incidentId);
+  }
 
+  for (const group of toStart) {
     const incidentId = uuidv4();
-    const summary = annotations['summary'] ?? annotations['description'] ?? labels['alertname'] ?? 'Alert firing';
-    const startPayload: StartRunRequest = {
-      incidentId,
-      triggeredBy: 'commander',
-      triggeredAt: new Date().toISOString(),
-      namespace: target.namespace,
-      resourceKind: target.resourceKind,
-      resourceName: target.resourceName,
-      podName: target.podName,
-      mode: 'diagnose',
-      eventReason: labels['alertname'] ?? 'AlertManager',
-      eventMessage: summary,
-      platform: NOTIFY_CHANNEL_ID ? NOTIFY_PLATFORM : undefined,
-      channelId: NOTIFY_CHANNEL_ID || undefined,
-      rawMessage: `AlertManager: ${summary}`,
-      investigateScope: 'workload',
-    };
+    const startPayload = buildStartPayload(group, incidentId);
 
     try {
       await postWithRetry({
@@ -145,21 +257,29 @@ export async function alertmanagerWebhookHandler(req: Request, res: Response): P
         incidentId,
         callerAgent: AGENT,
       });
-      alertCooldown.set(fingerprint, Date.now());
+      if (CORRELATION_ENABLED) {
+        recordCorrelationWindow(recentCorrelations, group.correlationKey, incidentId, CORRELATION_WINDOW_MS);
+      }
       started.push(incidentId);
       log('info', AGENT, 'Started diagnose run from alert', {
         incidentId,
-        alertname: labels['alertname'],
-        namespace: target.namespace,
-        resourceName: target.resourceName,
+        correlationKey: group.correlationKey,
+        workloadCount: group.affectedWorkloads.length,
+        namespace: group.primary.namespace,
+        resourceName: group.primary.resourceName,
       });
     } catch (err) {
       log('error', AGENT, 'Failed to start run from alert', {
         error: String(err),
-        alertname: labels['alertname'],
+        correlationKey: group.correlationKey,
       });
     }
   }
 
-  res.json({ ok: true, started: started.length, incidentIds: started });
+  res.json({
+    ok: true,
+    started: started.length,
+    skippedCorrelated: skipped.length,
+    incidentIds: started,
+  });
 }

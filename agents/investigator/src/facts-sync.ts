@@ -97,6 +97,8 @@ export async function gatherFactsSync(opts: {
   investigateScope?: InvestigateScope;
   rawMessage?: string;
   deployProvenance?: Partial<DeployProvenance>;
+  correlationKey?: string;
+  affectedWorkloads?: import('../../../shared/src/alert-correlation.js').CorrelatedWorkloadRef[];
 }): Promise<DiagnosisContext> {
   if (opts.mode === 'pre-deploy' && (opts.githubRepo || opts.containerImage || opts.helmRemote)) {
     const pre = await gatherPreDeployFacts({
@@ -211,6 +213,51 @@ export async function gatherFactsSync(opts: {
 
     const base = envelopeFromPartial(opts, partial);
     return enrichFactsWithPrimaryFailure(base);
+  }
+
+  if (scope === 'incident') {
+    const affected = opts.affectedWorkloads ?? [];
+    let namespace = opts.namespace === '_all' ? 'default' : opts.namespace;
+    let resourceName = opts.resourceName;
+    let resourceKind = opts.resourceKind;
+    let podName = opts.podName || resourceName;
+
+    const k8sFacts = await gatherWorkloadPodFacts(
+      namespace,
+      resourceName,
+      resourceKind,
+      opts.incidentId
+    );
+    const deepRca = await enrichWithDeepRca({
+      incidentId: opts.incidentId,
+      namespace,
+      resourceName,
+      podName,
+      k8sFacts,
+      specialistDiagnostics: [],
+    });
+
+    const correlatedSummary =
+      affected.length > 1
+        ? `Correlated incident (${affected.length} workloads): ${affected
+            .map((w) => `${w.namespace}/${w.resourceName}`)
+            .join(', ')}`
+        : undefined;
+
+    const base = envelopeFromPartial(opts, {
+      ...k8sFacts,
+      currentLogs: [correlatedSummary, deepRca.enrichedCurrentLogs].filter(Boolean).join('\n\n'),
+      previousLogs: deepRca.enrichedPreviousLogs,
+      rcaPointers: deepRca.rcaPointers,
+      observabilitySummary: deepRca.observabilitySummary,
+    });
+
+    return enrichFactsWithPrimaryFailure({
+      ...base,
+      correlationKey: opts.correlationKey,
+      affectedWorkloads: affected,
+      priorActionSummary: correlatedSummary,
+    });
   }
 
   let namespace = opts.namespace === '_all' ? 'default' : opts.namespace;

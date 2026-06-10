@@ -222,6 +222,10 @@ export async function gatherFacts(req: StartRunRequest): Promise<DiagnosisContex
   if (req.gitRef) params.set('gitRef', req.gitRef);
   if (req.investigateScope) params.set('investigateScope', req.investigateScope);
   if (req.rawMessage) params.set('rawMessage', req.rawMessage);
+  if (req.correlationKey) params.set('correlationKey', req.correlationKey);
+  if (req.affectedWorkloads?.length) {
+    params.set('affectedWorkloads', JSON.stringify(req.affectedWorkloads));
+  }
   if (req.deployProvenance) {
     params.set('deployProvenance', JSON.stringify(req.deployProvenance));
   }
@@ -495,13 +499,14 @@ export async function verifyWorkload(
   namespace: string,
   resourceName: string,
   incidentId: string,
-  opts?: { workloads?: DeployWorkloadRef[] }
+  opts?: { workloads?: DeployWorkloadRef[]; playbookMarkdown?: string }
 ): Promise<VerifyResult> {
   const body = {
     namespace,
     resourceName,
     incidentId,
     workloads: opts?.workloads?.length ? opts.workloads : undefined,
+    playbookMarkdown: opts?.playbookMarkdown,
   };
   const res = await fetch(`${INVESTIGATOR_URL}/verify`, {
     method: 'POST',
@@ -540,10 +545,14 @@ export async function verifyAfterRemediation(
     remediationAction?: RemediationAction;
     afterImagePatch?: boolean;
     onProgress?: (message: string) => void | Promise<void>;
+    playbookMarkdown?: string;
   }
 ): Promise<VerifyResult> {
   const workloads = await workloadsFromRun(opts.runId);
-  const verifyOpts = workloads?.length ? { workloads } : undefined;
+  const verifyOpts = {
+    ...(workloads?.length ? { workloads } : {}),
+    ...(opts.playbookMarkdown ? { playbookMarkdown: opts.playbookMarkdown } : {}),
+  };
 
   if (!opts.waitForRollout) {
     return verifyWorkload(namespace, resourceName, incidentId, verifyOpts);

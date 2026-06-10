@@ -212,12 +212,22 @@ async function executeToolCallOnce(
       success: boolean;
       error?: string;
       gitCommitUrl?: string;
+      gitCommitSha?: string;
+      previousGitCommitSha?: string;
       appRepoCommitUrl?: string;
       deployReleaseTargets?: DeployReleaseTargets;
     }>(`${GITOPS_URL}/remediate`, cmdWithOpts, cmd.incidentId);
     const urls = [result.gitCommitUrl, result.appRepoCommitUrl].filter(Boolean) as string[];
     if (result.success && result.deployReleaseTargets) {
       await persistDeployReleaseTargets(cmd.runId, result.deployReleaseTargets);
+    }
+    if (result.success && cmd.runId && result.gitCommitSha) {
+      await mergeRunMetadata(cmd.runId, {
+        deployGitRollback: {
+          previousGitCommitSha: result.previousGitCommitSha,
+          deployGitCommitSha: result.gitCommitSha,
+        },
+      });
     }
     return {
       success: result.success,
@@ -230,6 +240,7 @@ async function executeToolCallOnce(
   if (call.name === 'investigator.verify_health') {
     const input = call.input as { namespace: string; resourceName: string };
     let workloads: import('../../../shared/src/deploy-workloads.js').DeployWorkloadRef[] | undefined;
+    let playbookMarkdown: string | undefined;
     if (cmd.runId) {
       const { getRun } = await import('./run-store.js');
       const { flattenDeployWorkloads, parseDeployReleaseTargets } = await import(
@@ -237,12 +248,16 @@ async function executeToolCallOnce(
       );
       const run = await getRun(cmd.runId);
       workloads = flattenDeployWorkloads(parseDeployReleaseTargets(run?.metadata));
+      playbookMarkdown =
+        (run?.metadata?.retrievedPlaybook as string | undefined) ??
+        (run?.metadata?.playbookMarkdown as string | undefined);
     }
     const verifyBody = {
       namespace: input.namespace,
       resourceName: input.resourceName,
       incidentId: cmd.incidentId,
       workloads: workloads?.length ? workloads : undefined,
+      playbookMarkdown,
     };
     const res = await fetch(`${INVESTIGATOR_URL}/verify`, {
       method: 'POST',

@@ -113,7 +113,7 @@ Details: [CI-CODE-REMEDIATION-ROADMAP.md](./CI-CODE-REMEDIATION-ROADMAP.md)
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
 | **PLAT-6a/b** | Scheduled health checks + post-deploy hook | Pending | |
-| **PLAT-7a/b** | AlertManager / PagerDuty webhooks | Pending | |
+| **PLAT-7a/b** | AlertManager / PagerDuty webhooks | **Partial** | AlertManager + correlation shipped; PagerDuty pending |
 | **WATCH-1** | Watcher cooldown + ignore list | **Done** | |
 
 ---

@@ -32,7 +32,7 @@ import {
   getMirrorStatus,
 } from './git-mirror.js';
 import { gatherFactsSync } from './facts-sync.js';
-import { verifyDeployment } from './verify.js';
+import { verifyDeployment, verifyWithPlaybooks } from './verify.js';
 import { discoverReleaseWorkloads } from './release-workloads.js';
 import type { DeployWorkloadRef } from '../../../shared/src/deploy-workloads.js';
 import { queryLogs, queryMetrics } from './observability.js';
@@ -85,6 +85,25 @@ app.get('/health', (_req: Request, res: Response) => {
       ...agentModeHealthPayload(),
     });
   });
+});
+
+app.post('/alert-correlation/bindings', async (req: Request, res: Response) => {
+  const body = req.body as {
+    workloads?: Array<{ namespace: string; resourceKind: string; resourceName: string }>;
+  };
+  const workloads = (body.workloads ?? []).map((w) => ({
+    namespace: w.namespace,
+    resourceKind: w.resourceKind as import('../../../shared/src/types.js').ResourceKind,
+    resourceName: w.resourceName,
+  }));
+  try {
+    const { resolveGraphBindingsForWorkloads } = await import('./alert-graph-bindings.js');
+    const bindings = await resolveGraphBindingsForWorkloads(workloads);
+    res.json({ bindings: Object.fromEntries(bindings) });
+  } catch (err) {
+    log('error', AGENT, 'alert-correlation bindings failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 app.post('/agent-step', async (req: Request, res: Response) => {
@@ -153,6 +172,15 @@ app.get('/facts', async (req: Request, res: Response) => {
       deployProvenance = undefined;
     }
   }
+  let affectedWorkloads: import('../../../shared/src/alert-correlation.js').CorrelatedWorkloadRef[] | undefined;
+  if (req.query.affectedWorkloads) {
+    try {
+      affectedWorkloads = JSON.parse(String(req.query.affectedWorkloads)) as typeof affectedWorkloads;
+    } catch {
+      affectedWorkloads = undefined;
+    }
+  }
+  const correlationKey = req.query.correlationKey ? String(req.query.correlationKey) : undefined;
 
   if (!resourceName) {
     res.status(400).json({ error: 'resourceName required' });
@@ -174,6 +202,8 @@ app.get('/facts', async (req: Request, res: Response) => {
       investigateScope,
       rawMessage,
       deployProvenance,
+      correlationKey,
+      affectedWorkloads,
     });
     res.json(facts);
   } catch (err) {
@@ -429,12 +459,18 @@ app.get('/verify', async (req: Request, res: Response) => {
     }
   }
 
+  const playbookMarkdown =
+    typeof req.query.playbookMarkdown === 'string' ? req.query.playbookMarkdown : undefined;
+
   if (!resourceName) {
     res.status(400).json({ error: 'resourceName required' });
     return;
   }
 
-  const result = await verifyDeployment(namespace, resourceName, incidentId, { workloads });
+  const result = await verifyWithPlaybooks(namespace, resourceName, incidentId, {
+    workloads,
+    playbookMarkdown,
+  });
   res.json(result);
 });
 
@@ -444,6 +480,7 @@ app.post('/verify', async (req: Request, res: Response) => {
     resourceName?: string;
     incidentId?: string;
     workloads?: DeployWorkloadRef[];
+    playbookMarkdown?: string;
   };
   const namespace = body.namespace ?? 'default';
   const resourceName = body.resourceName ?? '';
@@ -454,8 +491,9 @@ app.post('/verify', async (req: Request, res: Response) => {
     return;
   }
 
-  const result = await verifyDeployment(namespace, resourceName, incidentId, {
+  const result = await verifyWithPlaybooks(namespace, resourceName, incidentId, {
     workloads: body.workloads,
+    playbookMarkdown: body.playbookMarkdown,
   });
   res.json(result);
 });

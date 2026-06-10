@@ -37,6 +37,8 @@ export function actionOutcomeLabel(action: RemediationAction): string {
       return 'restart the workload';
     case 'git_patch':
       return 'patch the deployment';
+    case 'git_revert':
+      return 'revert the failed deploy commit';
     case 'escalate_human':
       return 'escalate to a human';
     case 'noop':

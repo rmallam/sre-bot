@@ -11,7 +11,7 @@ export type { RolloutPhase } from './rollout-phase.js';
 export type Platform = 'slack' | 'telegram' | 'teams' | 'web';
 export type ResourceKind = 'Deployment' | 'StatefulSet' | 'Pod' | 'Job' | 'DaemonSet';
 export type IncidentMode = 'diagnose' | 'pre-deploy' | 'rollback' | 'ci-failure';
-export type InvestigateScope = 'workload' | 'namespace' | 'cluster' | 'app';
+export type InvestigateScope = 'workload' | 'namespace' | 'cluster' | 'app' | 'incident';
 export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type ApprovalStatus =
   | 'PENDING'
@@ -42,6 +42,7 @@ export type RemediationAction =
   | 'cicd_code_pr'
   | 'coding_agent_handoff'
   | 'escalate_human'
+  | 'git_revert'
   | 'noop';
 
 export type AutonomyMode = 'full' | 'low_risk_only' | 'hil_all';
@@ -192,6 +193,9 @@ export interface DiagnosisContext extends IncidentEnvelope {
   };
   /** Populated in ci-failure mode from cicd-agent. */
   ciRun?: CiRunFacts;
+  /** Cross-workload correlation from AlertManager grouping. */
+  correlationKey?: string;
+  affectedWorkloads?: import('./alert-correlation.js').CorrelatedWorkloadRef[];
   /** How this workload was deployed — drives fix routing. */
   deployProvenance?: DeployProvenance;
 }
@@ -341,6 +345,8 @@ export interface RemediationResult extends IncidentEnvelope {
   success: boolean;
   gitCommitUrl?: string;
   gitCommitSha?: string;
+  /** Git HEAD before this remediation commit (last-known-good). */
+  previousGitCommitSha?: string;
   appRepoCommitUrl?: string;
   argoCDSyncStatus?: 'Synced' | 'OutOfSync' | 'Degraded' | 'Unknown' | 'Pending';
   argoCDAppUrl?: string;
@@ -376,6 +382,9 @@ export interface VerifyResult {
   podPhases?: string[];
   recentWarningCount?: number;
   message: string;
+  /** Custom RAG playbook verification checks. */
+  playbookChecks?: import('./playbook-verify.js').PlaybookVerifyCheckResult[];
+  allPlaybookChecksPassed?: boolean;
 }
 
 export interface SanitizeForLlmRequest {
@@ -453,6 +462,10 @@ export interface StartRunRequest extends IncidentEnvelope {
   deployProvenance?: Partial<DeployProvenance>;
   /** Allow temporary cluster-only patch when Git source is unknown. */
   allowClusterHotFix?: boolean;
+  /** Shared dependency / symptom key for correlated incidents. */
+  correlationKey?: string;
+  /** Downstream workloads affected by the same root cause. */
+  affectedWorkloads?: import('./alert-correlation.js').CorrelatedWorkloadRef[];
 }
 
 export interface StartRunResponse {

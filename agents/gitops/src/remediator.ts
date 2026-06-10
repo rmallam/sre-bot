@@ -157,8 +157,12 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
   let argoCDSyncStatus: RemediationResult['argoCDSyncStatus'] = undefined;
   let dryRunPassed: boolean | undefined;
   let deployReleaseTargets: RemediationResult['deployReleaseTargets'];
+  let previousGitCommitSha: string | undefined;
 
   try {
+    if (repoMirror && (plan.action === 'git_patch' || plan.action === 'helm_deploy')) {
+      previousGitCommitSha = await repoMirror.getHeadSha();
+    }
     if (plan.action === 'repo_apply') {
       await applyRepoDirect({
         incidentId,
@@ -446,6 +450,7 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
     success,
     dryRunPassed,
     gitCommitSha: commitSha,
+    previousGitCommitSha: commitSha ? previousGitCommitSha : undefined,
     gitCommitUrl: commitUrl,
     appRepoCommitUrl,
     argoCDSyncStatus,
@@ -475,4 +480,46 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
   }
 
   return result;
+}
+
+export async function handleRevertDeploy(body: {
+  incidentId: string;
+  namespace: string;
+  resourceName: string;
+  deployGitCommitSha?: string;
+  previousGitCommitSha?: string;
+  reason?: string;
+}): Promise<RemediationResult> {
+  const incidentId = body.incidentId;
+  const resultBase: Omit<RemediationResult, 'success' | 'error'> = {
+    incidentId,
+    triggeredBy: 'commander',
+    triggeredAt: new Date().toISOString(),
+    namespace: body.namespace,
+    resourceKind: 'Deployment',
+    resourceName: body.resourceName,
+    mode: 'pre-deploy',
+  };
+
+  if (!repoMirror) {
+    return { ...resultBase, success: false, error: 'RepoMirror not initialised' };
+  }
+
+  try {
+    const revert = await repoMirror.revertDeployCommit({
+      incidentId,
+      deployGitCommitSha: body.deployGitCommitSha,
+      previousGitCommitSha: body.previousGitCommitSha,
+      reason: body.reason ?? 'deploy verification failed',
+    });
+    return {
+      ...resultBase,
+      success: true,
+      gitCommitSha: revert.commitSha,
+      gitCommitUrl: revert.commitUrl,
+      previousGitCommitSha: body.previousGitCommitSha,
+    };
+  } catch (err) {
+    return { ...resultBase, success: false, error: String(err) };
+  }
 }

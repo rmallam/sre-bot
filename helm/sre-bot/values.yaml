@@ -120,12 +120,19 @@ commander:
   alertmanagerNotifyPlatform: telegram
   alertmanagerNotifyChannelId: ""
   alertmanagerCooldownMs: "900000"
+  alertCorrelationEnabled: true
+  alertCorrelationUseAppGraph: true
+  alertCorrelationWindowMs: "300000"
+  alertCorrelationMinGroup: "2"
 
 orchestrator:
   autonomyMode: low_risk_only
   maxIterations: 5
   namespaceRunLimit: 5
   namespaceQueueDrainMs: 15000
+  autoGitRollbackEnabled: false
+  autoGitRollbackRequireHil: true
+  autoGitRollbackBlockNamespaces: "kube-system,production,prod"
   useCapabilityPlanner: ""
   perToolHil: false
   registryDryRun: "true"
@@ -148,6 +155,7 @@ investigator:
   deepRcaEnabled: true
   lokiUrl: ""
   prometheusUrl: ""
+  playbookVerifyUrlAllowlist: ""
 
 watcher:
   cooldownMinutes: 2

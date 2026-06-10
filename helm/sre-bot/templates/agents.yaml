@@ -161,6 +161,14 @@ spec:
               value: {{ .Values.commander.alertmanagerNotifyChannelId | quote }}
             - name: ALERTMANAGER_COOLDOWN_MS
               value: {{ .Values.commander.alertmanagerCooldownMs | quote }}
+            - name: ALERT_CORRELATION_ENABLED
+              value: {{ .Values.commander.alertCorrelationEnabled | quote }}
+            - name: ALERT_CORRELATION_USE_APP_GRAPH
+              value: {{ .Values.commander.alertCorrelationUseAppGraph | quote }}
+            - name: ALERT_CORRELATION_WINDOW_MS
+              value: {{ .Values.commander.alertCorrelationWindowMs | quote }}
+            - name: ALERT_CORRELATION_MIN_GROUP
+              value: {{ .Values.commander.alertCorrelationMinGroup | quote }}
             - name: ALLOWED_USERS
               valueFrom:
                 secretKeyRef:
@@ -276,6 +284,10 @@ spec:
             {{- if .Values.investigator.prometheusUrl }}
             - name: PROMETHEUS_URL
               value: {{ .Values.investigator.prometheusUrl | quote }}
+            {{- end }}
+            {{- if .Values.investigator.playbookVerifyUrlAllowlist }}
+            - name: PLAYBOOK_VERIFY_URL_ALLOWLIST
+              value: {{ .Values.investigator.playbookVerifyUrlAllowlist | quote }}
             {{- end }}
             {{- include "sre-bot.agentModeEnv" . | nindent 12 }}
             - name: GITOPS_REPO_URL
@@ -573,6 +585,12 @@ spec:
             {{- end }}
             - name: NAMESPACE_QUEUE_DRAIN_MS
               value: {{ .Values.orchestrator.namespaceQueueDrainMs | quote }}
+            - name: AUTO_GIT_ROLLBACK_ENABLED
+              value: {{ .Values.orchestrator.autoGitRollbackEnabled | quote }}
+            - name: AUTO_GIT_ROLLBACK_REQUIRE_HIL
+              value: {{ .Values.orchestrator.autoGitRollbackRequireHil | quote }}
+            - name: AUTO_GIT_ROLLBACK_BLOCK_NAMESPACES
+              value: {{ .Values.orchestrator.autoGitRollbackBlockNamespaces | quote }}
             - name: FAILURE_ANALYSIS_ENABLED
               value: {{ .Values.orchestrator.failureAnalysisEnabled | quote }}
             - name: CI_CODE_FIX_ENABLED

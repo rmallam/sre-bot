@@ -10,7 +10,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import { log } from '../../../shared/src/http.js';
 import type { RemediateCommand } from '../../../shared/src/types.js';
 import { RepoMirror } from './repo-mirror.js';
-import { setRepoMirror, handleRemediate } from './remediator.js';
+import { setRepoMirror, handleRemediate, handleRevertDeploy } from './remediator.js';
 import { handleArgoWaitSync, handleArgoRolloutPromote } from './argo-tools.js';
 import { undeployWorkload } from './undeploy.js';
 import { createInternalAuthMiddleware } from '../../../shared/src/internal-auth.js';
@@ -65,6 +65,20 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (action === 'git_revert') {
+      handleRevertDeploy({
+        incidentId: cmd.incidentId,
+        namespace: cmd.namespace,
+        resourceName: cmd.resourceName,
+        deployGitCommitSha: (cmd.plan as { deployGitCommitSha?: string }).deployGitCommitSha,
+        previousGitCommitSha: (cmd.plan as { previousGitCommitSha?: string }).previousGitCommitSha,
+        reason: cmd.plan.reasoning ?? 'operator approved git revert',
+      })
+        .then((result) => res.status(result.success ? 200 : 500).json(result))
+        .catch((err: unknown) => res.status(500).json({ error: String(err) }));
+      return;
+    }
+
     if (action !== 'helm_deploy' && !cmd.plan.targetManifestPath) {
       res.status(400).json({ error: 'plan.targetManifestPath required' });
       return;
@@ -89,6 +103,24 @@ async function main(): Promise<void> {
         }
       });
     return;
+  });
+
+  app.post('/revert-deploy', (req: Request, res: Response) => {
+    const body = req.body as {
+      incidentId?: string;
+      namespace?: string;
+      resourceName?: string;
+      deployGitCommitSha?: string;
+      previousGitCommitSha?: string;
+      reason?: string;
+    };
+    if (!body?.incidentId || !body.namespace || !body.resourceName) {
+      res.status(400).json({ error: 'incidentId, namespace, and resourceName are required' });
+      return;
+    }
+    handleRevertDeploy(body)
+      .then((result) => res.status(result.success ? 200 : 500).json(result))
+      .catch((err: unknown) => res.status(500).json({ error: String(err) }));
   });
 
   app.post('/undeploy', async (req: Request, res: Response) => {

@@ -14,6 +14,10 @@ function norm(text: string | undefined): string | undefined {
 }
 
 function requestsMatch(a: StartRunRequest, b: StartRunRequest): boolean {
+  const keyA = a.correlationKey?.trim();
+  const keyB = b.correlationKey?.trim();
+  if (keyA && keyB && keyA === keyB) return true;
+
   const modeA = norm(a.mode);
   const modeB = norm(b.mode);
   if (modeA !== modeB) return false;
