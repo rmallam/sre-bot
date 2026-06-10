@@ -105,8 +105,19 @@ export function agentModeHealthPayload(): Record<string, unknown> {
 /** Resolve mode for a run: request override > channel pref > env default. */
 export function resolveRunAgentMode(request?: {
   agentMode?: SreAgentMode;
+  channelAgentMode?: SreAgentMode;
 }): ResolvedAgentMode {
-  return resolveAgentMode(
-    request?.agentMode ? { agentMode: request.agentMode } : undefined
-  );
+  const agentMode = request?.agentMode ?? request?.channelAgentMode;
+  return resolveAgentMode(agentMode ? { agentMode } : undefined);
+}
+
+/** AGENT-8 — channel + optional per-run override. */
+export function resolveAgentModeForChannel(
+  channelAgentMode?: SreAgentMode,
+  requestAgentMode?: SreAgentMode
+): ResolvedAgentMode {
+  return resolveRunAgentMode({
+    agentMode: requestAgentMode,
+    channelAgentMode,
+  });
 }

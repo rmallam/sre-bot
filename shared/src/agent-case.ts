@@ -124,3 +124,43 @@ export function combinedOperatorHints(hints: string[]): string | undefined {
   if (!hints.length) return undefined;
   return hints[hints.length - 1];
 }
+
+/** AGENT-D2 — fields to seed a new run from cached case evidence. */
+export function caseEvidenceSeed(evidence: AgentCaseEvidence): {
+  cachedFacts?: Partial<DiagnosisContext>;
+  cachedFetchedTools: string[];
+} {
+  return {
+    cachedFacts: evidence.facts,
+    cachedFetchedTools: [...(evidence.fetchedTools ?? [])],
+  };
+}
+
+export function mergeCaseEvidenceTool(
+  evidence: AgentCaseEvidence,
+  toolName: string,
+  factsPatch?: Partial<DiagnosisContext>
+): AgentCaseEvidence {
+  const fetchedTools = evidence.fetchedTools.includes(toolName)
+    ? evidence.fetchedTools
+    : [...evidence.fetchedTools, toolName];
+  const facts = factsPatch
+    ? { ...(evidence.facts ?? {}), ...factsPatch }
+    : evidence.facts;
+  return { ...evidence, fetchedTools, facts };
+}
+
+export function mergeCaseEvidenceFromDiagnosis(
+  evidence: AgentCaseEvidence,
+  facts: Partial<DiagnosisContext>,
+  toolNames: string[] = []
+): AgentCaseEvidence {
+  let next = evidence;
+  for (const tool of toolNames) {
+    next = mergeCaseEvidenceTool(next, tool);
+  }
+  if (Object.keys(facts).length > 0) {
+    next = { ...next, facts: { ...(next.facts ?? {}), ...facts } };
+  }
+  return next;
+}

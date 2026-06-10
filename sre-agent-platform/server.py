@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import logging
 import os
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -81,6 +83,7 @@ class RagQueryResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    dedup_task = None
     if os.getenv("SRE_RAG_AUTO_MIGRATE", "true").lower() == "true":
         try:
             from scripts.bootstrap_rag import bootstrap
@@ -88,7 +91,18 @@ async def lifespan(app: FastAPI):
             bootstrap()
         except Exception:
             logger.exception("RAG bootstrap skipped or failed — routing still available")
+    if os.getenv("SRE_RAG_DEDUP_ENABLED", "true").lower() in ("1", "true", "yes"):
+        try:
+            from rag.dedup_worker import run_dedup_loop
+
+            dedup_task = asyncio.create_task(run_dedup_loop())
+        except Exception:
+            logger.exception("RAG dedup worker failed to start")
     yield
+    if dedup_task is not None:
+        dedup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await dedup_task
 
 
 app = FastAPI(title="SRE Platform Agent", version="0.1.0", lifespan=lifespan)

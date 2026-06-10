@@ -80,6 +80,8 @@ import { assessDeployCollision } from '../../../shared/src/deploy/collision-poli
 import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
 import { modeOutcomeLabel, runStatusOutcomeLabel } from '../../../shared/src/user-outcomes.js';
 import { deployHeader, sendDeployProgress } from '../../../shared/src/deploy-notify.js';
+import { flattenDeployWorkloads, parseDeployReleaseTargets } from '../../../shared/src/deploy-workloads.js';
+import { formatRunEndState } from '../../../shared/src/run-end-state.js';
 import {
   deployReadySuccessMessage,
   watchDeployReadinessAndNotify,
@@ -105,6 +107,7 @@ import {
   isAgenticDiagnose,
 } from './agent-graph-nodes.js';
 import { groundRunbookFromFacts } from './rag-grounding.js';
+import { runRagTriageGate } from './rag-triage-gate.js';
 import { ragGroundingEnabled } from '../../../shared/src/platform-client.js';
 import {
   adjustPlanForPrimaryFailure,
@@ -159,6 +162,9 @@ const RunAnnotation = Annotation.Root({
   retrievedPlaybook: Annotation<string | undefined>,
   detectedErrorSignature: Annotation<string | undefined>,
   targetComponent: Annotation<string | undefined>,
+  ragBypassReact: Annotation<boolean>,
+  ragDirectPlan: Annotation<boolean>,
+  ragTriageSimilarity: Annotation<number | undefined>,
 });
 
 type GraphState = typeof RunAnnotation.State;
@@ -447,6 +453,64 @@ function agentNotify(state: GraphState) {
   };
 }
 
+async function ragTriageGraphNode(state: GraphState): Promise<Partial<GraphState>> {
+  if (!isAgenticDiagnose(state.request, state.mode)) {
+    return {};
+  }
+
+  const triage = await runRagTriageGate({
+    request: state.request,
+    runId: state.runId,
+    mode: state.mode,
+  });
+
+  if (
+    state.request.platform &&
+    state.request.channelId &&
+    triage.ragBypassReact &&
+    triage.ragTriageSimilarity != null
+  ) {
+    const pct = Math.round(triage.ragTriageSimilarity * 100);
+    const mode = triage.ragDirectPlan ? 'direct plan' : 'single plan step';
+    await notifyUserUpdate(runCtx(state), {
+      kind: 'agent_step',
+      incidentId: state.incidentId,
+      runId: state.runId,
+      mode: state.mode,
+      progressStep: `⚡ Runbook match ${pct}% — skipping investigation loop (${mode})`,
+      namespace: state.namespace,
+      resourceName: state.resourceName,
+    });
+  }
+
+  if (triage.ragTriageReason) {
+    await mergeRunMetadata(state.runId, {
+      ragTriage: {
+        reason: triage.ragTriageReason,
+        similarity: triage.ragTriageSimilarity,
+        bypassReact: triage.ragBypassReact,
+        directPlan: triage.ragDirectPlan,
+      },
+    }).catch(() => undefined);
+  }
+
+  return {
+    ragBypassReact: triage.ragBypassReact,
+    ragDirectPlan: triage.ragDirectPlan,
+    ragTriageSimilarity: triage.ragTriageSimilarity,
+    factsRaw: triage.factsRaw ?? state.factsRaw,
+    pendingPlan: triage.pendingPlan ?? state.pendingPlan,
+    agentEvidence: triage.agentEvidence ?? state.agentEvidence,
+    agentSteps: triage.agentSteps?.length ? triage.agentSteps : state.agentSteps,
+    agentFetchedTools: triage.agentFetchedTools?.length
+      ? triage.agentFetchedTools
+      : state.agentFetchedTools,
+    retrievedPlaybook: triage.retrievedPlaybook ?? state.retrievedPlaybook,
+    detectedErrorSignature: triage.detectedErrorSignature ?? state.detectedErrorSignature,
+    targetComponent: triage.targetComponent ?? state.targetComponent,
+  };
+}
+
 async function agentDecideGraphNode(state: GraphState): Promise<Partial<GraphState>> {
   if (
     state.mode === 'diagnose' &&
@@ -487,6 +551,21 @@ async function sanitizeNode(state: GraphState): Promise<Partial<GraphState>> {
 async function ragGroundingNode(state: GraphState): Promise<Partial<GraphState>> {
   if (state.mode !== 'diagnose' || !state.factsSanitized || !ragGroundingEnabled()) {
     return {};
+  }
+
+  if (state.retrievedPlaybook?.trim() && state.detectedErrorSignature) {
+    const factsSanitized: SanitizedFacts = {
+      ...state.factsSanitized,
+      retrievedPlaybook: state.retrievedPlaybook,
+      detectedErrorSignature: state.detectedErrorSignature,
+      targetComponent: state.targetComponent ?? state.factsSanitized.targetComponent,
+    };
+    return {
+      factsSanitized,
+      retrievedPlaybook: state.retrievedPlaybook,
+      detectedErrorSignature: state.detectedErrorSignature,
+      targetComponent: state.targetComponent,
+    };
   }
 
   const queryText =
@@ -557,6 +636,22 @@ async function sourceBuildNode(state: GraphState): Promise<Partial<GraphState>> 
 
 async function planNode(state: GraphState): Promise<Partial<GraphState>> {
   if (!state.factsSanitized) return { status: 'failed', lastError: 'No sanitized facts' };
+
+  if (state.ragDirectPlan && state.pendingPlan) {
+    await persistSuggestedPlan(state.runId, state.pendingPlan);
+    if (state.mode === 'diagnose' && state.request.platform && state.request.channelId) {
+      await notifyUserUpdate(runCtx(state), {
+        kind: 'agent_step',
+        incidentId: state.incidentId,
+        runId: state.runId,
+        mode: state.mode,
+        progressStep: `📋 Using verified runbook plan: ${state.pendingPlan.action.replace(/_/g, ' ')}`,
+        namespace: state.namespace,
+        resourceName: state.resourceName,
+      });
+    }
+    return { pendingPlan: state.pendingPlan };
+  }
 
   const operatorHint =
     state.request.userHints?.join('; ') ||
@@ -1164,8 +1259,16 @@ async function executeStackDeployment(
         error: result.error ?? `Failed deploying ${serviceName}`,
       };
     }
+    if (result.deployReleaseTargets) {
+      const { persistDeployReleaseTargets } = await import('./deploy-workload-meta.js');
+      await persistDeployReleaseTargets(state.runId, result.deployReleaseTargets);
+    }
 
-    const verify = await verifyWorkload(state.namespace, serviceName, state.incidentId);
+    const stored = await getRun(state.runId);
+    const workloads = flattenDeployWorkloads(parseDeployReleaseTargets(stored?.metadata));
+    const verify = await verifyWorkload(state.namespace, serviceName, state.incidentId, {
+      workloads: workloads.length ? workloads : undefined,
+    });
     if (!verify.healthy) {
       return {
         success: false,
@@ -1382,6 +1485,7 @@ async function verifyNode(state: GraphState): Promise<Partial<GraphState>> {
       ? { healthy: fromTranscript.success, message: fromTranscript.summary ?? fromTranscript.error ?? '' }
       : await verifyAfterRemediation(state.namespace, state.resourceName, state.incidentId, {
           waitForRollout: needsRolloutWait,
+          runId: state.runId,
           remediationAction: lastAction?.action,
           afterImagePatch:
             lastAction?.action === 'git_patch' &&
@@ -1409,6 +1513,17 @@ async function verifyNode(state: GraphState): Promise<Partial<GraphState>> {
       : undefined;
 
   if (verify.healthy) {
+    await mergeRunMetadata(state.runId, {
+      verifySnapshot: {
+        healthy: true,
+        namespace: state.namespace,
+        releaseName: state.resourceName,
+        message: verify.message,
+        readyReplicas: verify.readyReplicas,
+        desiredReplicas: verify.desiredReplicas,
+        recordedAt: new Date().toISOString(),
+      },
+    });
     if (state.mode === 'pre-deploy' && deployNotify) {
       await sendDeployProgress(
         deployNotify,
@@ -1444,11 +1559,17 @@ async function verifyNode(state: GraphState): Promise<Partial<GraphState>> {
         }
       }
       if (deployNotify) {
+        const storedForWatch = await getRun(state.runId);
+        const watchWorkloads = flattenDeployWorkloads(
+          parseDeployReleaseTargets(storedForWatch?.metadata)
+        );
         watchDeployReadinessAndNotify({
-          target: deployNotify,
+          target: { ...deployNotify, runId: state.runId },
           namespace: state.namespace,
           resourceName: state.resourceName,
           sendPromise: false,
+          runId: state.runId,
+          workloads: watchWorkloads.length ? watchWorkloads : undefined,
         });
       }
       return { status: 'succeeded', actionHistory: history };
@@ -1588,7 +1709,14 @@ function routeAfterPreflight(state: GraphState): string {
 }
 
 function routeAfterPolicy(state: GraphState): string {
-  if (state.status === 'awaiting_human' || state.status === 'failed' || state.status === 'escalated') return END;
+  if (
+    state.status === 'awaiting_human' ||
+    state.status === 'failed' ||
+    state.status === 'escalated' ||
+    state.status === 'succeeded'
+  ) {
+    return END;
+  }
   return 'act';
 }
 
@@ -1628,9 +1756,19 @@ function routeAfterVerify(state: GraphState): string {
   return 'observe';
 }
 
+function routeAfterRagTriage(state: GraphState): string {
+  if (state.status === 'escalated' || state.status === 'failed' || state.status === 'awaiting_human') {
+    return END;
+  }
+  if (state.ragBypassReact && state.factsRaw) {
+    return 'sanitize';
+  }
+  return 'agentDecide';
+}
+
 function routeAtStart(state: GraphState): string {
   if (isAgenticDiagnose(state.request, state.mode)) {
-    return 'agentDecide';
+    return 'ragTriage';
   }
   return 'observe';
 }
@@ -1653,6 +1791,7 @@ const checkpointer = new MemorySaver();
 export function buildGraph() {
   return new StateGraph(RunAnnotation)
     .addNode('observe', observeNode)
+    .addNode('ragTriage', ragTriageGraphNode)
     .addNode('agentDecide', agentDecideGraphNode)
     .addNode('agentRead', agentReadGraphNode)
     .addNode('agentFinalize', agentFinalizeGraphNode)
@@ -1669,7 +1808,12 @@ export function buildGraph() {
     .addNode('verify', verifyNode)
     .addConditionalEdges(START, routeAtStart, {
       observe: 'observe',
+      ragTriage: 'ragTriage',
+    })
+    .addConditionalEdges('ragTriage', routeAfterRagTriage, {
+      sanitize: 'sanitize',
       agentDecide: 'agentDecide',
+      [END]: END,
     })
     .addEdge('observe', 'sanitize')
     .addConditionalEdges('agentDecide', routeAfterAgentDecide, {
@@ -1732,6 +1876,22 @@ export async function startRun(
   request: StartRunRequest
 ): Promise<{ runId: string; status: RunStatus; lastError?: string }> {
   const runId = uuidv4();
+  await initRun(runId, request.incidentId, { mode: request.mode, request });
+  return executeRunGraph(runId, request);
+}
+
+/** Resume a run previously queued with status pending_throttled. */
+export async function startQueuedRun(
+  runId: string,
+  request: StartRunRequest
+): Promise<{ runId: string; status: RunStatus; lastError?: string }> {
+  return executeRunGraph(runId, request);
+}
+
+async function executeRunGraph(
+  runId: string,
+  request: StartRunRequest
+): Promise<{ runId: string; status: RunStatus; lastError?: string }> {
   const initial: GraphState = {
     runId,
     incidentId: request.incidentId,
@@ -1758,17 +1918,20 @@ export async function startRun(
     postDeployRecoveryUsed: false,
     preflightAttempts: 0,
     stackDeployPlan: undefined,
-    agentEvidence: undefined,
+    agentEvidence: request.cachedFacts ?? undefined,
     agentSteps: [],
-    agentFetchedTools: [],
+    agentFetchedTools: [...(request.cachedFetchedTools ?? [])],
     agentTurns: 0,
     pendingReadTool: undefined,
     agentGoal: undefined,
     agentFocusGoal: undefined,
     agentInvestigateComplete: false,
     retrievedPlaybook: undefined,
-    detectedErrorSignature: undefined,
-    targetComponent: undefined,
+    detectedErrorSignature: request.cachedFacts?.detectedErrorSignature,
+    targetComponent: request.cachedFacts?.targetComponent,
+    ragBypassReact: false,
+    ragDirectPlan: false,
+    ragTriageSimilarity: undefined,
   };
 
   log('info', AGENT, 'Starting run', {
@@ -1777,42 +1940,57 @@ export async function startRun(
     agentMode: resolveRunAgentMode(request).agentMode,
     caseId: request.caseId,
   });
-  await initRun(runId, request.incidentId, { mode: request.mode, request });
 
-  if (await isRunRequestIgnored(request)) {
-    await setRunStatus(runId, 'cancelled');
-    log('info', AGENT, 'Run skipped — resource on ignore list', {
+  try {
+    if (await isRunRequestIgnored(request)) {
+      await setRunStatus(runId, 'cancelled');
+      log('info', AGENT, 'Run skipped — resource on ignore list', {
+        runId,
+        incidentId: request.incidentId,
+        namespace: request.namespace,
+        resourceName: request.resourceName,
+      });
+      return { runId, status: 'cancelled', lastError: 'Resource is ignored' };
+    }
+
+    const compiled = buildGraph();
+    const final = await compiled.invoke(initial, {
+      configurable: { thread_id: runId },
+      recursionLimit: graphRecursionLimit(),
+    });
+    const status = final.status as RunStatus;
+    const lastError = final.lastError as string | undefined;
+    await setRunStatus(runId, status);
+    await snapshotRunOutcome(runId, final as GraphState);
+
+    await notifyRunOutcome(
+      {
+        ...initial,
+        ...(final as GraphState),
+        runId,
+        status,
+        lastError,
+        pendingPlan: (final as GraphState).pendingPlan ?? initial.pendingPlan,
+      },
+      (final as GraphState).actionHistory ?? []
+    );
+
+    return { runId, status, lastError };
+  } catch (err) {
+    const lastError = err instanceof Error ? err.message : String(err);
+    log('error', AGENT, 'Run graph failed', {
       runId,
       incidentId: request.incidentId,
-      namespace: request.namespace,
-      resourceName: request.resourceName,
+      error: lastError,
     });
-    return { runId, status: 'cancelled', lastError: 'Resource is ignored' };
-  }
-
-  const compiled = buildGraph();
-  const final = await compiled.invoke(initial, {
-    configurable: { thread_id: runId },
-    recursionLimit: graphRecursionLimit(),
-  });
-  const status = final.status as RunStatus;
-  const lastError = final.lastError as string | undefined;
-  await setRunStatus(runId, status);
-  await snapshotRunOutcome(runId, final as GraphState);
-
-  await notifyRunOutcome(
-    {
-      ...initial,
-      ...(final as GraphState),
-      runId,
-      status,
+    await setRunStatus(runId, 'failed').catch(() => undefined);
+    await persistRunOutcome(runId, {
+      status: 'failed',
       lastError,
-      pendingPlan: (final as GraphState).pendingPlan ?? initial.pendingPlan,
-    },
-    (final as GraphState).actionHistory ?? []
-  );
-
-  return { runId, status, lastError };
+      actionHistory: [],
+    }).catch(() => undefined);
+    throw err;
+  }
 }
 
 async function notifyRunOutcome(
@@ -1841,6 +2019,25 @@ async function notifyRunOutcome(
       mode: state.mode,
       detailAvailable: true,
       technicalMessage: humanizeOperatorError(detail),
+    });
+    return;
+  }
+
+  if (state.status === 'succeeded' && state.mode === 'pre-deploy') {
+    const stored = await getRun(state.runId);
+    const endState =
+      (stored && formatRunEndState(stored)) ||
+      `Deploy completed for **${state.resourceName}** in namespace **${state.namespace}**. ` +
+        `Check workloads with \`kubectl get pods -n ${state.namespace}\`.`;
+    await notifyUserUpdate(ctx, {
+      kind: 'deploy_ready',
+      incidentId: state.incidentId,
+      runId: state.runId,
+      mode: state.mode,
+      namespace: state.namespace,
+      resourceName: state.resourceName,
+      detailAvailable: true,
+      technicalMessage: endState,
     });
     return;
   }

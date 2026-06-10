@@ -47,6 +47,12 @@ async function start() {
     }
   );
 
+  app.post('/webhooks/alertmanager', express.json(), (req, res) => {
+    void import('./alertmanager-webhook.js').then(({ alertmanagerWebhookHandler }) =>
+      alertmanagerWebhookHandler(req, res)
+    );
+  });
+
   app.use(express.json());
 
   // ── Express Endpoints ──────────────────────────────────────────────────────
@@ -111,6 +117,8 @@ async function start() {
             update: merged,
             quickActions: actions,
           });
+          const { onRunUpdateForCase } = await import('./case-run-sync.js');
+          await onRunUpdateForCase(platform, channelId, merged).catch(() => undefined);
           res.json({ ok: true });
           return;
         }
@@ -128,6 +136,8 @@ async function start() {
         }
 
         await postNotify(platform, channelId, text, incidentId ?? 'N/A', actions);
+        const { onRunUpdateForCase } = await import('./case-run-sync.js');
+        await onRunUpdateForCase(platform, channelId, merged).catch(() => undefined);
         res.json({ ok: true });
         return;
       }
@@ -146,10 +156,19 @@ async function start() {
 
       if (platform === 'web') {
         const { deliverWebChatUpdate } = await import('./chat-web-notify.js');
+        const iid = incidentId ?? 'N/A';
         await deliverWebChatUpdate({
           channelId,
           text,
-          incidentId: incidentId ?? 'N/A',
+          incidentId: iid,
+          update:
+            iid !== 'N/A'
+              ? {
+                  kind: 'deploy_progress',
+                  incidentId: iid,
+                  progressStep: text,
+                }
+              : undefined,
           quickActions,
         });
         res.json({ ok: true });

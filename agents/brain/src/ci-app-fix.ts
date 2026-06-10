@@ -9,6 +9,7 @@ import { log } from '../../../shared/src/http.js';
 import { resolveBrainLlm } from '../../../shared/src/llm-config.js';
 import { openRouterChat, stripJsonFences } from '../../../shared/src/openrouter.js';
 import { skillsSystemAppendix } from '../../../shared/src/skills-loader.js';
+import { parseSafeTestCommand } from '../../../shared/src/safe-test-command.js';
 
 const AGENT = 'brain-agent';
 
@@ -104,7 +105,11 @@ function validateResponse(raw: unknown): CiAppFixPlanResponse {
     body: typeof o['body'] === 'string' ? o['body'] : '',
     reasoning: typeof o['reasoning'] === 'string' ? o['reasoning'] : '',
     confidence: typeof o['confidence'] === 'number' ? o['confidence'] : 0.5,
-    testCommand: typeof o['testCommand'] === 'string' ? o['testCommand'] : undefined,
+    testCommand: (() => {
+      const raw = typeof o['testCommand'] === 'string' ? o['testCommand'].trim() : '';
+      if (!raw) return undefined;
+      return parseSafeTestCommand(raw) ? raw : undefined;
+    })(),
   };
 }
 

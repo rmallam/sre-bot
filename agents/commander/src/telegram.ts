@@ -104,6 +104,16 @@ function ackMessage(incidentId: string, type: string, parsed?: import('./parser.
         `I'll send step-by-step updates here.`
       );
     }
+    if (parsed.helmRemote) {
+      return (
+        `🚀 Deploy started — tracking \`${incidentId}\`\n` +
+        `Helm chart: ${parsed.helmRemote.chartRef}\n` +
+        `App: ${parsed.appName ?? parsed.helmRemote.releaseName ?? 'app'}\n` +
+        `Namespace: ${parsed.namespace}\n` +
+        `Mode: direct apply (published Helm chart)\n\n` +
+        `I'll send step-by-step updates here.`
+      );
+    }
     return (
       `🚀 Deploy started — tracking \`${incidentId}\`\n` +
       `Repo: ${parsed.githubRepo} @ ${parsed.gitRef}\n` +

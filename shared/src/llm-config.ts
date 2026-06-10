@@ -6,6 +6,7 @@
  *   OPENROUTER_API_KEY        primary for production
  *   OPENROUTER_BRAIN_MODEL    rich planner (default: anthropic/claude-sonnet-4)
  *   OPENROUTER_COMMANDER_MODEL fast router (default: google/gemini-2.5-flash)
+ *   OPENROUTER_TOOL_SELECT_MODEL ReAct read-tool + reflect (default: commander model)
  *   OPENROUTER_MODEL          legacy fallback for both roles
  *   GEMINI_API_KEY            optional native fallback
  *   GEMINI_BRAIN_MODEL / GEMINI_COMMANDER_MODEL / GEMINI_MODEL
@@ -17,7 +18,7 @@ export type LlmBackend = 'openrouter' | 'gemini';
 export interface ResolvedLlm {
   backend: LlmBackend;
   model: string;
-  role: 'brain' | 'commander';
+  role: 'brain' | 'commander' | 'tool_select';
 }
 
 const DEFAULTS = {
@@ -61,12 +62,20 @@ function pickBackend(pref: LlmProviderPreference): LlmBackend | null {
   return null;
 }
 
-function openRouterModel(role: 'brain' | 'commander'): string {
+function openRouterModel(role: ResolvedLlm['role']): string {
   if (role === 'brain') {
     return (
       process.env['OPENROUTER_BRAIN_MODEL'] ??
       process.env['OPENROUTER_MODEL'] ??
       DEFAULTS.openrouter.brain
+    );
+  }
+  if (role === 'tool_select') {
+    return (
+      process.env['OPENROUTER_TOOL_SELECT_MODEL'] ??
+      process.env['OPENROUTER_COMMANDER_MODEL'] ??
+      process.env['OPENROUTER_MODEL'] ??
+      DEFAULTS.openrouter.commander
     );
   }
   return (
@@ -76,12 +85,20 @@ function openRouterModel(role: 'brain' | 'commander'): string {
   );
 }
 
-function geminiModel(role: 'brain' | 'commander'): string {
+function geminiModel(role: ResolvedLlm['role']): string {
   if (role === 'brain') {
     return (
       process.env['GEMINI_BRAIN_MODEL'] ??
       process.env['GEMINI_MODEL'] ??
       DEFAULTS.gemini.brain
+    );
+  }
+  if (role === 'tool_select') {
+    return (
+      process.env['GEMINI_TOOL_SELECT_MODEL'] ??
+      process.env['GEMINI_COMMANDER_MODEL'] ??
+      process.env['GEMINI_MODEL'] ??
+      DEFAULTS.gemini.commander
     );
   }
   return (
@@ -122,13 +139,32 @@ export function resolveCommanderLlm(): ResolvedLlm {
   };
 }
 
+/** Fast model for ReAct read-tool selection and post-verify reflection. */
+export function resolveToolSelectLlm(): ResolvedLlm {
+  const pref = getLlmProviderPreference();
+  const backend = pickBackend(pref);
+  if (!backend) {
+    throw new Error(
+      'No LLM configured for tool-select: set OPENROUTER_API_KEY (recommended) or GEMINI_API_KEY'
+    );
+  }
+  return {
+    role: 'tool_select',
+    backend,
+    model:
+      backend === 'openrouter' ? openRouterModel('tool_select') : geminiModel('tool_select'),
+  };
+}
+
 export function llmConfigSummary(): {
   provider: LlmProviderPreference;
   brain: ResolvedLlm | null;
   commander: ResolvedLlm | null;
+  toolSelect: ResolvedLlm | null;
 } {
   let brain: ResolvedLlm | null = null;
   let commander: ResolvedLlm | null = null;
+  let toolSelect: ResolvedLlm | null = null;
   try {
     brain = resolveBrainLlm();
   } catch {
@@ -139,5 +175,10 @@ export function llmConfigSummary(): {
   } catch {
     /* not configured */
   }
-  return { provider: getLlmProviderPreference(), brain, commander };
+  try {
+    toolSelect = resolveToolSelectLlm();
+  } catch {
+    /* not configured */
+  }
+  return { provider: getLlmProviderPreference(), brain, commander, toolSelect };
 }

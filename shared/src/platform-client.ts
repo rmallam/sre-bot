@@ -4,28 +4,36 @@
 
 import { log } from './http.js';
 
-const PLATFORM_URL = (process.env['SRE_PLATFORM_URL'] ?? process.env['PLATFORM_URL'] ?? '').replace(
-  /\/$/,
-  ''
-);
-const PLATFORM_ROUTING = (process.env['SRE_PLATFORM_ROUTING'] ?? 'true').toLowerCase() === 'true';
-const RAG_GROUNDING = (process.env['SRE_RAG_GROUNDING'] ?? 'true').toLowerCase() === 'true';
-const RAG_LEARNING = (process.env['SRE_RAG_LEARNING'] ?? 'true').toLowerCase() === 'true';
+function platformUrl(): string {
+  return (process.env['SRE_PLATFORM_URL'] ?? process.env['PLATFORM_URL'] ?? '').replace(/\/$/, '');
+}
+
+function platformRoutingFlag(): boolean {
+  return (process.env['SRE_PLATFORM_ROUTING'] ?? 'true').toLowerCase() === 'true';
+}
+
+function ragGroundingFlag(): boolean {
+  return (process.env['SRE_RAG_GROUNDING'] ?? 'true').toLowerCase() === 'true';
+}
+
+function ragLearningFlag(): boolean {
+  return (process.env['SRE_RAG_LEARNING'] ?? 'true').toLowerCase() === 'true';
+}
 
 export function platformEnabled(): boolean {
-  return Boolean(PLATFORM_URL);
+  return Boolean(platformUrl());
 }
 
 export function platformRoutingEnabled(): boolean {
-  return platformEnabled() && PLATFORM_ROUTING;
+  return platformEnabled() && platformRoutingFlag();
 }
 
 export function ragGroundingEnabled(): boolean {
-  return platformEnabled() && RAG_GROUNDING;
+  return platformEnabled() && ragGroundingFlag();
 }
 
 export function ragLearningEnabled(): boolean {
-  return platformEnabled() && RAG_LEARNING;
+  return platformEnabled() && ragLearningFlag();
 }
 
 export interface PlatformRouteResult {
@@ -65,8 +73,9 @@ export interface PlatformRagQueryResult {
 }
 
 async function postJson<T>(path: string, body: unknown, incidentId: string): Promise<T | null> {
-  if (!PLATFORM_URL) return null;
-  const url = `${PLATFORM_URL}${path}`;
+  const baseUrl = platformUrl();
+  if (!baseUrl) return null;
+  const url = `${baseUrl}${path}`;
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -222,9 +231,10 @@ export async function platformRagLearn(opts: {
 }
 
 export async function platformHealth(): Promise<Record<string, unknown> | null> {
-  if (!PLATFORM_URL) return null;
+  const baseUrl = platformUrl();
+  if (!baseUrl) return null;
   try {
-    const res = await fetch(`${PLATFORM_URL}/health`, { signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return null;
     return (await res.json()) as Record<string, unknown>;
   } catch {

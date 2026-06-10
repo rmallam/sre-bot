@@ -24,6 +24,7 @@ import {
 } from './patch-strategy.js';
 import { sendDeployProgress } from '../../../shared/src/deploy-notify.js';
 import { humanizeOperatorError } from '../../../shared/src/user-errors.js';
+import { captureDeployReleaseTargets } from './capture-workloads.js';
 
 const AGENT = 'gitops-agent';
 
@@ -155,6 +156,7 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
   let appRepoCommitUrl: string | undefined;
   let argoCDSyncStatus: RemediationResult['argoCDSyncStatus'] = undefined;
   let dryRunPassed: boolean | undefined;
+  let deployReleaseTargets: RemediationResult['deployReleaseTargets'];
 
   try {
     if (plan.action === 'repo_apply') {
@@ -409,6 +411,13 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
           },
         }).catch(() => undefined);
       }
+      if (plan.action === 'repo_apply' || plan.action === 'helm_deploy') {
+        deployReleaseTargets = await captureDeployReleaseTargets({
+          namespace,
+          releaseName: resourceName,
+          incidentId,
+        });
+      }
     }
   } catch (err: unknown) {
     error = String(err);
@@ -443,6 +452,7 @@ export async function handleRemediate(cmd: RemediateCommand): Promise<Remediatio
     argoCDAppUrl: ARGOCD_URL && commitSha
       ? `${ARGOCD_URL.replace(/\/$/, '')}/applications/${namespace}-${resourceName}`
       : undefined,
+    deployReleaseTargets,
     ...(error ? { error } : {}),
   };
 

@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { formatFetchError, postWithRetry, log } from '../../../shared/src/http.js';
+import { internalAuthHeaders } from '../../../shared/src/internal-auth.js';
 import type { DeployRequest, DiagnosisContext, Platform, StartRunRequest } from '../../../shared/src/types.js';
 import type { HealthOutcome, AppReviewOutcome, UndeployOutcomePayload } from '../../../shared/src/command-outcome.js';
 import type { ParsedCommand } from './parser.js';
@@ -15,13 +16,15 @@ import { formatRcaPointersForPlan } from '../../../shared/src/rca-pointers.js';
 import { buildEventInvestigation } from '../../../shared/src/k8s-event-investigation.js';
 import type { ClusterHealthSnapshot } from '../../../shared/src/cluster-health.js';
 import type { AppReviewResult } from '../../../shared/src/app-graph.js';
-import { subjectFromInvestigate, subjectFromDeploy } from '../../../shared/src/agent-case.js';
-import { resolveAgentMode } from '../../../shared/src/agent-mode.js';
+import { subjectFromInvestigate, subjectFromDeploy, caseEvidenceSeed } from '../../../shared/src/agent-case.js';
+import type { AgentCase } from '../../../shared/src/agent-case.js';
+import { resolveAgentModeForChannel } from '../../../shared/src/agent-mode.js';
 import {
   openOrResumeCase,
   bindRunToCase,
   operatorMessageFromCase,
 } from './case-manager.js';
+import { findActiveRunForCase } from './case-run-sync.js';
 import {
   validateDeployCommand,
   validateStartRunRequest,
@@ -70,7 +73,7 @@ async function dispatchRun(payload: StartRunRequest, incidentId: string): Promis
     const url = `${ORCHESTRATOR_URL}/runs`;
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15_000),
     });
@@ -128,6 +131,60 @@ async function dispatchRun(payload: StartRunRequest, incidentId: string): Promis
 
 function isActiveRunStatus(status?: string): boolean {
   return status === 'running' || status === 'awaiting_human';
+}
+
+function resolveChannelAgentMode(platform: Platform, channelId: string) {
+  return resolveAgentModeForChannel(getChannelPref(platform, channelId).agentMode);
+}
+
+function caseRunExtras(agentCase: AgentCase, platform: Platform, channelId: string) {
+  const mode = resolveChannelAgentMode(platform, channelId);
+  const seed = caseEvidenceSeed(agentCase.evidence);
+  return {
+    caseId: agentCase.caseId,
+    agentMode: mode.agentMode,
+    userHints: agentCase.evidence.userHints,
+    cachedFacts: seed.cachedFacts,
+    cachedFetchedTools: seed.cachedFetchedTools,
+  };
+}
+
+async function handleInvestigateDedupeReturn(
+  dispatch: DispatchRunResult,
+  parsed: import('./parser.js').InvestigateCmd,
+  platform: Platform,
+  channelId: string,
+  userId: string,
+  agentCase: AgentCase,
+  fallbackIncidentId: string
+): Promise<CommandHandleResult> {
+  if (agentCase.caseId && dispatch.existingIncidentId) {
+    await bindRunToCase(
+      platform,
+      channelId,
+      userId,
+      agentCase.caseId,
+      dispatch.existingIncidentId,
+      dispatch.existingRunId
+    );
+  }
+  const quickActions = await hilQuickActionsForRun(
+    dispatch.existingIncidentId,
+    dispatch.existingRunId
+  );
+  const viewRunAction = dispatch.existingRunId
+    ? [
+        { id: `view_run_${dispatch.existingRunId}`, label: 'View run' },
+        { id: `cancel_run_${dispatch.existingRunId}`, label: 'Cancel stuck run' },
+      ]
+    : [];
+  return {
+    incidentId: dispatch.existingIncidentId ?? fallbackIncidentId,
+    immediateReply: await buildDedupeRunReply(dispatch, parsed),
+    quickActions: [...viewRunAction, ...(quickActions ?? [])],
+    existingRunId: dispatch.existingRunId,
+    waitingForRun: isActiveRunStatus(dispatch.existingStatus),
+  };
 }
 
 async function buildDedupeRunReply(
@@ -630,7 +687,8 @@ export async function handleCommand(
         }),
         userHint: rawMessage,
       });
-      const mode = resolveAgentMode();
+      const mode = resolveChannelAgentMode(platform, channelId);
+      const seed = caseEvidenceSeed(agentCase.evidence);
       const payload: StartRunRequest = {
         incidentId,
         triggeredBy: 'commander',
@@ -641,6 +699,7 @@ export async function handleCommand(
         mode: 'pre-deploy',
         githubRepo: deploy.githubRepo || undefined,
         containerImage: deploy.containerImage,
+        helmRemote: deploy.helmRemote,
         gitRef: deploy.gitRef,
         deployStrategy: deploy.deployStrategy,
         createNamespace: deploy.createNamespace,
@@ -652,6 +711,8 @@ export async function handleCommand(
         caseId: agentCase.caseId,
         agentMode: mode.agentMode,
         userHints: agentCase.evidence.userHints,
+        cachedFacts: seed.cachedFacts,
+        cachedFetchedTools: seed.cachedFetchedTools,
       };
       await dispatchRun(payload, incidentId);
       await bindRunToCase(platform, channelId, userId, agentCase.caseId, incidentId);
@@ -659,6 +720,14 @@ export async function handleCommand(
         lastIncidentId: incidentId,
         lastMode: 'pre-deploy',
         activeCaseId: agentCase.caseId,
+        activeTopic: {
+          kind: 'deploy',
+          resourceName: appName,
+          namespace: deploy.namespace,
+          githubRepo: deploy.githubRepo || undefined,
+          label: deploy.githubRepo || appName,
+          updatedAt: new Date().toISOString(),
+        },
       });
       void linkRunToSession(platform, channelId, userId, incidentId);
       await rememberDeployDraft(platform, channelId, userId, deploy);
@@ -734,7 +803,8 @@ export async function handleCommand(
             }),
             userHint: rawMessage,
           });
-          const mode = resolveAgentMode();
+          const mode = resolveChannelAgentMode(platform, channelId);
+          const seed = caseEvidenceSeed(agentCase.evidence);
           const payload: StartRunRequest = {
             incidentId,
             triggeredBy: 'commander',
@@ -754,6 +824,8 @@ export async function handleCommand(
             caseId: agentCase.caseId,
             agentMode: mode.agentMode,
             userHints: agentCase.evidence.userHints,
+            cachedFacts: seed.cachedFacts,
+            cachedFetchedTools: seed.cachedFetchedTools,
             deployProvenance: parsed.deployProvenance,
             allowClusterHotFix: parsed.allowClusterHotFix,
           };
@@ -788,7 +860,32 @@ export async function handleCommand(
         userHint: parsed.operatorSuggestion ?? rawMessage,
       });
       const opMsg = operatorMessageFromCase(agentCase, parsed.operatorSuggestion ?? rawMessage);
-      const mode = resolveAgentMode();
+      const extras = caseRunExtras(agentCase, platform, channelId);
+
+      const existingRun = await findActiveRunForCase(
+        platform,
+        channelId,
+        userId,
+        agentCase.caseId
+      );
+      if (existingRun?.active && existingRun.incidentId) {
+        return handleInvestigateDedupeReturn(
+          {
+            started: false,
+            deduplicated: true,
+            existingRunId: existingRun.runId,
+            existingIncidentId: existingRun.incidentId,
+            existingStatus: existingRun.status,
+          },
+          parsed,
+          platform,
+          channelId,
+          userId,
+          agentCase,
+          incidentId
+        );
+      }
+
       const payload: StartRunRequest = {
         incidentId,
         triggeredBy: 'commander',
@@ -806,31 +903,21 @@ export async function handleCommand(
         rawMessage: opMsg ?? rawMessage,
         investigateScope: parsed.scope,
         investigationLabel: parsed.label,
-        caseId: agentCase.caseId,
-        agentMode: mode.agentMode,
-        userHints: agentCase.evidence.userHints,
+        ...extras,
         deployProvenance: parsed.deployProvenance,
         allowClusterHotFix: parsed.allowClusterHotFix,
       };
       const dispatch = await dispatchRun(payload, incidentId);
       if (dispatch.deduplicated) {
-        const quickActions = await hilQuickActionsForRun(
-          dispatch.existingIncidentId,
-          dispatch.existingRunId
+        return handleInvestigateDedupeReturn(
+          dispatch,
+          parsed,
+          platform,
+          channelId,
+          userId,
+          agentCase,
+          incidentId
         );
-        const viewRunAction = dispatch.existingRunId
-          ? [
-              { id: `view_run_${dispatch.existingRunId}`, label: 'View run' },
-              { id: `cancel_run_${dispatch.existingRunId}`, label: 'Cancel stuck run' },
-            ]
-          : [];
-        return {
-          incidentId: dispatch.existingIncidentId ?? incidentId,
-          immediateReply: await buildDedupeRunReply(dispatch, parsed),
-          quickActions: [...viewRunAction, ...(quickActions ?? [])],
-          existingRunId: dispatch.existingRunId,
-          waitingForRun: isActiveRunStatus(dispatch.existingStatus),
-        };
       }
       await bindRunToCase(platform, channelId, userId, agentCase.caseId, incidentId);
       await setSession(platform, channelId, userId, {

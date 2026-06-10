@@ -14,9 +14,9 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
-import { existsSync } from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import { postWithRetry, log } from '../../../shared/src/http.js';
+import { buildKubeConfig } from '../../../shared/src/kube-config.js';
 import type { AnomalyDetected } from '../../../shared/src/types.js';
 
 // ── Configuration ──────────────────────────────────────────────────────────────
@@ -167,25 +167,6 @@ async function refreshIgnoreCache(): Promise<Set<string>> {
 async function isIgnoredResource(namespace: string, resourceName: string): Promise<boolean> {
   const keys = await refreshIgnoreCache();
   return keys.has(`${namespace}/${resourceName}`);
-}
-
-// ── Kubernetes client setup ────────────────────────────────────────────────────
-
-function buildKubeConfig(): k8s.KubeConfig {
-  const kc = new k8s.KubeConfig();
-  const hasToken = existsSync('/var/run/secrets/kubernetes.io/serviceaccount/token');
-  if (hasToken) {
-    try {
-      kc.loadFromCluster();
-      log('info', AGENT_NAME, 'Loaded in-cluster kubeconfig');
-      return kc;
-    } catch (err) {
-      log('warn', AGENT_NAME, 'Failed to load in-cluster kubeconfig, falling back to default', { error: String(err) });
-    }
-  }
-  kc.loadFromDefault();
-  log('info', AGENT_NAME, 'Loaded default kubeconfig (local dev)');
-  return kc;
 }
 
 // ── Fire anomaly to investigator ───────────────────────────────────────────────
@@ -487,5 +468,7 @@ export async function startWatcher(): Promise<void> {
   const coreApi = kc.makeApiClient(k8s.CoreV1Api);
 
   // Start both watch strategies concurrently
+  const { startHealthCheckScheduler } = await import('./health-check-scheduler.js');
+  startHealthCheckScheduler();
   await Promise.all([watchEvents(kc), pollPods(coreApi)]);
 }

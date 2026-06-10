@@ -10,32 +10,15 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
-import { existsSync } from 'node:fs';
 import type { DiagnosisContext, KubeEvent } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
+import { buildKubeConfig } from '../../../shared/src/kube-config.js';
 
 const AGENT = 'investigator';
 const SAFE_MODE = (process.env['INVESTIGATOR_SAFE_MODE'] ?? 'true').toLowerCase() === 'true';
 const SAFE_MAX_LOG_BYTES = parseInt(process.env['INVESTIGATOR_SAFE_MAX_LOG_BYTES'] ?? '4096', 10);
 
 // ── Kubernetes client setup ──────────────────────────────────────────────────
-
-function buildKubeConfig(): k8s.KubeConfig {
-  const kc = new k8s.KubeConfig();
-  const hasToken = existsSync('/var/run/secrets/kubernetes.io/serviceaccount/token');
-  if (hasToken) {
-    try {
-      kc.loadFromCluster();
-      log('info', AGENT, 'Loaded Kubernetes config from in-cluster ServiceAccount');
-      return kc;
-    } catch (err) {
-      log('warn', AGENT, 'Failed to load in-cluster config, falling back to default', { error: String(err) });
-    }
-  }
-  kc.loadFromDefault();
-  log('info', AGENT, 'Loaded Kubernetes config from default kubeconfig');
-  return kc;
-}
 
 const kc = buildKubeConfig();
 const coreV1Api = kc.makeApiClient(k8s.CoreV1Api);

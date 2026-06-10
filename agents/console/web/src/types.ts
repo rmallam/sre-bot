@@ -62,6 +62,8 @@ export interface RunListItem {
   resourceKey?: string;
   displayName?: string;
   outcome?: RemediationOutcome;
+  isStale?: boolean;
+  suggestedActionLabel?: string;
 }
 
 export interface RemediationActionTaken {
@@ -224,11 +226,38 @@ export interface AppListEntry {
   appId: string;
   namespace: string;
   deploymentCount: number;
-  source: 'annotation' | 'deployment-name';
+  source:
+    | 'annotation'
+    | 'helm-instance'
+    | 'part-of'
+    | 'deployment-name'
+    | 'catalog'
+    | 'auto'
+    | 'user';
+  displayName?: string;
+  userEdited?: boolean;
+  memberNames?: string[];
+}
+
+export interface AppCatalogMember {
+  resourceKind: string;
+  resourceName: string;
+}
+
+export interface AppCatalogEntry {
+  appId: string;
+  namespace: string;
+  displayName?: string;
+  source: string;
+  members: AppCatalogMember[];
+  dependsOn?: string[];
+  updatedAt: string;
+  userEdited?: boolean;
 }
 
 export interface AppsListResult {
   apps: AppListEntry[];
+  namespaces: string[];
   clusterReachable: boolean;
   error?: string;
 }

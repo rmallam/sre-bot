@@ -49,6 +49,12 @@ spec:
               value: {{ .Values.watcher.cooldownMinutes | quote }}
             - name: WATCH_NAMESPACES
               value: {{ .Values.watcher.watchNamespaces | quote }}
+            - name: HEALTH_CHECK_ENABLED
+              value: {{ .Values.watcher.healthCheckEnabled | quote }}
+            - name: HEALTH_CHECK_INTERVAL_MS
+              value: {{ .Values.watcher.healthCheckIntervalMs | quote }}
+            - name: HEALTH_CHECK_COOLDOWN_MS
+              value: {{ .Values.watcher.healthCheckCooldownMs | quote }}
           livenessProbe:
             httpGet:
               path: /health
@@ -143,6 +149,18 @@ spec:
               value: {{ .Values.commander.githubWebhookNotifyPlatform | quote }}
             - name: GITHUB_WEBHOOK_NOTIFY_CHANNEL_ID
               value: {{ .Values.commander.githubWebhookNotifyChannelId | quote }}
+            - name: ALERTMANAGER_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: alertmanager_webhook_secret
+                  optional: true
+            - name: ALERTMANAGER_NOTIFY_PLATFORM
+              value: {{ .Values.commander.alertmanagerNotifyPlatform | quote }}
+            - name: ALERTMANAGER_NOTIFY_CHANNEL_ID
+              value: {{ .Values.commander.alertmanagerNotifyChannelId | quote }}
+            - name: ALERTMANAGER_COOLDOWN_MS
+              value: {{ .Values.commander.alertmanagerCooldownMs | quote }}
             - name: ALLOWED_USERS
               valueFrom:
                 secretKeyRef:
@@ -455,6 +473,7 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /health
@@ -509,6 +528,7 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
             - name: INVESTIGATOR_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "investigator" "root" .) | quote }}
             {{- if .Values.agents.cicd.enabled }}
@@ -539,10 +559,20 @@ spec:
               value: {{ .Values.agentMode.ragGrounding | quote }}
             - name: SRE_RAG_LEARNING
               value: {{ .Values.agentMode.ragLearning | quote }}
+            - name: SRE_RAG_BYPASS_REACT
+              value: {{ .Values.agentMode.ragBypassReact | quote }}
+            - name: SRE_RAG_BYPASS_THRESHOLD
+              value: {{ .Values.agentMode.ragBypassThreshold | quote }}
             - name: AUTONOMY_MODE
               value: {{ .Values.orchestrator.autonomyMode | quote }}
             - name: AUTONOMY_MAX_ITERATIONS
               value: {{ .Values.orchestrator.maxIterations | quote }}
+            {{- if .Values.orchestrator.namespaceRunLimit }}
+            - name: NAMESPACE_RUN_LIMIT
+              value: {{ .Values.orchestrator.namespaceRunLimit | quote }}
+            {{- end }}
+            - name: NAMESPACE_QUEUE_DRAIN_MS
+              value: {{ .Values.orchestrator.namespaceQueueDrainMs | quote }}
             - name: FAILURE_ANALYSIS_ENABLED
               value: {{ .Values.orchestrator.failureAnalysisEnabled | quote }}
             - name: CI_CODE_FIX_ENABLED
@@ -743,6 +773,7 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
             - name: COMMANDER_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "commander" "root" .) | quote }}
             - name: HIL_URL
@@ -826,6 +857,83 @@ metadata:
 spec:
   selector:
     app: gitops-agent
+  ports:
+    - port: 8080
+      targetPort: http
+{{- end }}
+
+{{- if .Values.agents.debugMcp.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: debug-mcp-agent
+  namespace: {{ $ns }}
+  annotations:
+    sre.bot/app-id: debug-mcp
+    sre.bot/human-only: "true"
+spec:
+  replicas: {{ .Values.agents.debugMcp.replicas }}
+  selector:
+    matchLabels:
+      app: debug-mcp-agent
+  template:
+    metadata:
+      labels:
+        app: debug-mcp-agent
+        sre-bot/agent: debug-mcp
+    spec:
+      serviceAccountName: debug-mcp-agent
+      {{- include "sre-bot.imagePullSecrets" . }}
+      containers:
+        - name: debug-mcp
+          image: {{ include "sre-bot.image" (dict "root" . "agent" "debug-mcp") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DEBUG_MCP_ENABLED
+              value: {{ .Values.debugMcp.enabled | quote }}
+            - name: DEBUG_MCP_MAX_LOG_BYTES
+              value: {{ .Values.debugMcp.maxLogBytes | quote }}
+            {{- if .Values.debugMcp.token }}
+            - name: DEBUG_MCP_TOKEN
+              value: {{ .Values.debugMcp.token | quote }}
+            {{- end }}
+            {{- if .Values.debugMcp.lokiUrl }}
+            - name: LOKI_URL
+              value: {{ .Values.debugMcp.lokiUrl | quote }}
+            {{- else if .Values.investigator.lokiUrl }}
+            - name: LOKI_URL
+              value: {{ .Values.investigator.lokiUrl | quote }}
+            {{- end }}
+            {{- if .Values.debugMcp.prometheusUrl }}
+            - name: PROMETHEUS_URL
+              value: {{ .Values.debugMcp.prometheusUrl | quote }}
+            {{- else if .Values.investigator.prometheusUrl }}
+            - name: PROMETHEUS_URL
+              value: {{ .Values.investigator.prometheusUrl | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.agents.debugMcp.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: debug-mcp-agent
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app: debug-mcp-agent
   ports:
     - port: 8080
       targetPort: http

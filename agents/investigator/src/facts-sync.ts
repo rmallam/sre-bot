@@ -18,7 +18,7 @@ import {
   resolveDeploymentByHint,
 } from './cluster-facts.js';
 import { resolvePodForWorkload } from './workload-resolve.js';
-import { enrichWithDeepRca } from './rca-enrich.js';
+import { enrichWithDeepRca, enrichScopeWithDeepRca } from './rca-enrich.js';
 import { resolveDeployProvenance } from './deploy-provenance-resolve.js';
 import type { DeployProvenance } from '../../../shared/src/deploy-provenance.js';
 import { appReviewToDiagnosisContext } from '../../../shared/src/app-graph.js';
@@ -93,11 +93,12 @@ export async function gatherFactsSync(opts: {
   githubRepo?: string;
   gitRef?: string;
   containerImage?: string;
+  helmRemote?: import('../../../shared/src/deploy/readme-install-hints.js').RemoteHelmInstall;
   investigateScope?: InvestigateScope;
   rawMessage?: string;
   deployProvenance?: Partial<DeployProvenance>;
 }): Promise<DiagnosisContext> {
-  if (opts.mode === 'pre-deploy' && (opts.githubRepo || opts.containerImage)) {
+  if (opts.mode === 'pre-deploy' && (opts.githubRepo || opts.containerImage || opts.helmRemote)) {
     const pre = await gatherPreDeployFacts({
       incidentId: opts.incidentId,
       triggeredBy: 'commander',
@@ -108,6 +109,7 @@ export async function gatherFactsSync(opts: {
       mode: 'pre-deploy',
       githubRepo: opts.githubRepo,
       containerImage: opts.containerImage,
+      helmRemote: opts.helmRemote,
       gitRef: opts.gitRef ?? 'main',
       requestedBy: 'orchestrator',
       platform: 'web',
@@ -131,13 +133,47 @@ export async function gatherFactsSync(opts: {
 
   if (scope === 'cluster' || opts.resourceName === '_cluster') {
     const clusterFacts = await gatherClusterHealthFacts(opts.incidentId);
-    return envelopeFromPartial(opts, clusterFacts);
+    const ns = clusterFacts.namespace ?? 'default';
+    const resourceName = clusterFacts.resourceName ?? '_cluster';
+    const deepRca = await enrichScopeWithDeepRca({
+      incidentId: opts.incidentId,
+      scope: 'cluster',
+      namespace: ns,
+      resourceName,
+      podName: resourceName,
+      k8sFacts: clusterFacts,
+    });
+    return {
+      ...envelopeFromPartial(opts, clusterFacts),
+      currentLogs: deepRca.enrichedCurrentLogs,
+      previousLogs: deepRca.enrichedPreviousLogs,
+      rcaPointers: deepRca.rcaPointers,
+      observabilitySummary: deepRca.observabilitySummary,
+      clusterReachable: clusterFacts.clusterReachable,
+      scopeHealth: clusterFacts.scopeHealth,
+    };
   }
 
   if (scope === 'namespace' || opts.resourceName === '_namespace') {
     const ns = opts.namespace === '_all' ? 'default' : opts.namespace;
     const nsFacts = await gatherNamespaceHealthFacts(ns, opts.incidentId);
-    return envelopeFromPartial(opts, { ...nsFacts, namespace: ns });
+    const resourceName = nsFacts.resourceName ?? '_namespace';
+    const deepRca = await enrichScopeWithDeepRca({
+      incidentId: opts.incidentId,
+      scope: 'namespace',
+      namespace: ns,
+      resourceName,
+      podName: resourceName,
+      k8sFacts: nsFacts,
+    });
+    return {
+      ...envelopeFromPartial(opts, { ...nsFacts, namespace: ns }),
+      currentLogs: deepRca.enrichedCurrentLogs,
+      previousLogs: deepRca.enrichedPreviousLogs,
+      rcaPointers: deepRca.rcaPointers,
+      observabilitySummary: deepRca.observabilitySummary,
+      scopeHealth: nsFacts.scopeHealth,
+    };
   }
 
   if (scope === 'app') {

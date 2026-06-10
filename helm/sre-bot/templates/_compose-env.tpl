@@ -72,3 +72,47 @@ volumes:
       name: {{ .Values.skills.configMapName | quote }}
 {{- end }}
 {{- end }}
+
+{{- define "sre-bot.consoleAuthEnv" -}}
+- name: CONSOLE_AUTH_ENABLED
+  value: {{ .Values.consoleAuth.enabled | quote }}
+{{- if .Values.consoleAuth.issuer }}
+- name: OIDC_ISSUER
+  value: {{ .Values.consoleAuth.issuer | quote }}
+{{- end }}
+{{- if .Values.consoleAuth.clientId }}
+- name: OIDC_CLIENT_ID
+  value: {{ .Values.consoleAuth.clientId | quote }}
+{{- end }}
+{{- if .Values.consoleAuth.audience }}
+- name: OIDC_AUDIENCE
+  value: {{ .Values.consoleAuth.audience | quote }}
+{{- end }}
+- name: OIDC_GROUPS_CLAIM
+  value: {{ .Values.consoleAuth.groupsClaim | quote }}
+{{- if .Values.consoleAuth.redirectUri }}
+- name: OIDC_REDIRECT_URI
+  value: {{ .Values.consoleAuth.redirectUri | quote }}
+{{- end }}
+{{- if .Values.consoleAuth.namespaceRbac }}
+- name: CONSOLE_NAMESPACE_RBAC
+  value: {{ .Values.consoleAuth.namespaceRbac | toJson | quote }}
+{{- end }}
+- name: CONSOLE_SESSION_TTL_SEC
+  value: {{ .Values.consoleAuth.sessionTtlSec | quote }}
+- name: CONSOLE_COOKIE_SECURE
+  value: {{ .Values.consoleAuth.cookieSecure | quote }}
+- name: CONSOLE_SESSION_BACKEND
+  value: {{ .Values.consoleAuth.sessionBackend | quote }}
+{{- if eq .Values.consoleAuth.sessionBackend "redis" }}
+- name: REDIS_URL
+  value: {{ include "sre-bot.redisUrl" . | quote }}
+{{- end }}
+{{- if .Values.secrets.oidcClientSecret }}
+- name: OIDC_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "sre-bot.secretName" . }}
+      key: oidc_client_secret
+{{- end }}
+{{- end }}

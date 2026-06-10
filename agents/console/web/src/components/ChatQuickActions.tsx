@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { approveIncident, rejectIncident, cancelRun } from '../api';
+import { approveIncident, rejectIncident, cancelRun, fetchRunSummary } from '../api';
 
 export interface ChatQuickAction {
   id: string;
@@ -11,9 +11,10 @@ interface Props {
   actions: ChatQuickAction[];
   incidentId?: string;
   onAction?: () => void;
+  onShowLogs?: (text: string, runId: string) => void;
 }
 
-export function ChatQuickActions({ actions, incidentId, onAction }: Props) {
+export function ChatQuickActions({ actions, incidentId, onAction, onShowLogs }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const navigate = useNavigate();
 
@@ -33,6 +34,21 @@ export function ChatQuickActions({ actions, incidentId, onAction }: Props) {
       try {
         await cancelRun(cancelMatch[1]);
         onAction?.();
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+
+    const showDetailsMatch = action.id.match(/^show_details_(.+)$/);
+    if (showDetailsMatch?.[1]) {
+      const runId = showDetailsMatch[1];
+      setBusy(action.id);
+      try {
+        const data = await fetchRunSummary(runId, true);
+        onShowLogs?.(data.text || 'No logs available for this run.', runId);
+      } catch (err) {
+        onShowLogs?.(`Could not load logs: ${String(err)}`, runId);
       } finally {
         setBusy(null);
       }

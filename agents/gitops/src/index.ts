@@ -13,6 +13,7 @@ import { RepoMirror } from './repo-mirror.js';
 import { setRepoMirror, handleRemediate } from './remediator.js';
 import { handleArgoWaitSync, handleArgoRolloutPromote } from './argo-tools.js';
 import { undeployWorkload } from './undeploy.js';
+import { createInternalAuthMiddleware } from '../../../shared/src/internal-auth.js';
 
 const AGENT = 'gitops-agent';
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
@@ -36,6 +37,7 @@ async function main(): Promise<void> {
   // ── Express app ────────────────────────────────────────────────────────────
   const app = express();
   app.use(express.json({ limit: '2mb' }));
+  app.use(createInternalAuthMiddleware());
 
   // ── Health probe ───────────────────────────────────────────────────────────
   app.get('/health', (_req: Request, res: Response) => {

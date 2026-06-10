@@ -125,6 +125,41 @@ subjects:
     name: investigator-agent
     namespace: {{ $ns }}
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: debug-mcp-agent
+  namespace: {{ $ns }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-bot-debug-mcp
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - events
+      - namespaces
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-bot-debug-mcp-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sre-bot-debug-mcp
+subjects:
+  - kind: ServiceAccount
+    name: debug-mcp-agent
+    namespace: {{ $ns }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

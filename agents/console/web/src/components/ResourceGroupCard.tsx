@@ -2,11 +2,19 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { ResourceRunGroup, RunListItem } from '../types';
 import { StatusBadge } from './StatusBadge';
-import { OutcomeBadge, formatAction } from './OutcomeBadge';
+import { OutcomeBadge, formatAction, formatSuggestedFix } from './OutcomeBadge';
 import { formatSkillSnippet } from '../skill-format';
 
 interface Props {
   group: ResourceRunGroup;
+}
+
+function hasSkillContent(run: RunListItem): boolean {
+  const o = run.outcome;
+  if (!o) return false;
+  if (o.rootCause || o.reasoning) return true;
+  if (o.suggestedAction && o.suggestedAction !== 'unknown') return true;
+  return (o.actionsTaken?.length ?? 0) > 0;
 }
 
 function AttemptRow({ run, onCopySkill }: { run: RunListItem; onCopySkill: (md: string) => void }) {
@@ -19,32 +27,34 @@ function AttemptRow({ run, onCopySkill }: { run: RunListItem; onCopySkill: (md: 
         <button type="button" className="link-btn mono" onClick={() => navigate(`/runs/${run.runId}`)}>
           {run.runId.slice(0, 8)}…
         </button>
-        <StatusBadge status={run.status} />
-        <OutcomeBadge worked={o?.worked} />
+        <StatusBadge status={run.isStale ? 'stale' : run.status} />
+        <OutcomeBadge
+          worked={o?.worked}
+          suggestedAction={o?.suggestedAction}
+          finalStatus={o?.finalStatus}
+        />
         <span className="attempt-time">{new Date(run.updatedAt).toLocaleString()}</span>
       </div>
 
       {o && (
         <div className="attempt-body">
           <div className="attempt-grid">
-            {o.suggestedAction ? (
-              <div>
-                <label>Suggested fix</label>
-                <p>
-                  <strong>{formatAction(o.suggestedAction)}</strong>
-                  {o.planSource === 'human' && (
-                    <span className="tag-human" style={{ marginLeft: 8 }}>
-                      human
-                    </span>
-                  )}
-                </p>
-                {o.rootCause && (
-                  <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.8125rem' }}>
-                    {o.rootCause}
-                  </p>
+            <div>
+              <label>Suggested fix</label>
+              <p>
+                <strong>{formatSuggestedFix(run)}</strong>
+                {o.planSource === 'human' && (
+                  <span className="tag-human" style={{ marginLeft: 8 }}>
+                    human
+                  </span>
                 )}
-              </div>
-            ) : null}
+              </p>
+              {o.rootCause && (
+                <p className="muted" style={{ margin: '0.35rem 0 0', fontSize: '0.8125rem' }}>
+                  {o.rootCause}
+                </p>
+              )}
+            </div>
             <div>
               <label>Mode</label>
               <p>{run.mode?.replace(/-/g, ' ') ?? '—'}</p>
@@ -80,6 +90,12 @@ function AttemptRow({ run, onCopySkill }: { run: RunListItem; onCopySkill: (md: 
             <button
               type="button"
               className="btn btn-sm"
+              disabled={!hasSkillContent(run)}
+              title={
+                hasSkillContent(run)
+                  ? 'Copy markdown for manual RAG import or review'
+                  : 'No outcome recorded yet — nothing useful to export'
+              }
               onClick={() => onCopySkill(formatSkillSnippet(run, run.displayName))}
             >
               Copy skill snippet
@@ -117,7 +133,13 @@ export function ResourceGroupCard({ group, onCopySkill }: Props & { onCopySkill:
         </div>
         <div className="resource-group-meta">
           <StatusBadge status={group.latestStatus} />
-          {latestOutcome && <OutcomeBadge worked={latestOutcome.worked} />}
+          {latestOutcome && (
+            <OutcomeBadge
+              worked={latestOutcome.worked}
+              suggestedAction={latestOutcome.suggestedAction}
+              finalStatus={latestOutcome.finalStatus}
+            />
+          )}
           <span className="attempt-count">
             {group.attemptCount} attempt{group.attemptCount !== 1 ? 's' : ''}
             {group.successCount > 0 && ` · ${group.successCount} worked`}

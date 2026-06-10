@@ -23,6 +23,8 @@ export interface ChatTurn {
   /** Approve / reject / show logs buttons when orchestrator needs HIL. */
   quickActions?: ChatTurnQuickAction[];
   updateKind?: string;
+  /** Web UI: replace this bubble on subsequent run updates (same incidentId). */
+  liveUpdate?: boolean;
 }
 
 export interface StatusSubject {
@@ -160,6 +162,7 @@ export async function resetWebChatSession(channelId: string, userId: string): Pr
     pendingClarification: undefined,
     pendingQuestion: undefined,
     lastStatusSubject: undefined,
+    waitingForRun: false,
   });
 }
 

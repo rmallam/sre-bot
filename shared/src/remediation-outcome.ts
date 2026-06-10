@@ -11,6 +11,7 @@ import type {
   ToolTranscriptEntry,
 } from './types.js';
 import { actionOutcomeLabel, runStatusOutcomeLabel } from './user-outcomes.js';
+import { formatSuggestedActionLabel, isStaleRunningRun } from './stale-run.js';
 
 export type HumanDecision = 'approved' | 'rejected' | 'ignored' | 'auto' | 'pending';
 
@@ -55,6 +56,10 @@ export interface EnrichedRunSummary {
   resourceKey: string;
   displayName: string;
   outcome?: RemediationOutcome;
+  /** True when a running row looks orphaned (no recent progress). */
+  isStale?: boolean;
+  /** Human-readable suggested fix label for console display. */
+  suggestedActionLabel?: string;
 }
 
 export interface ResourceRunGroup {
@@ -100,6 +105,49 @@ export function runDisplayName(run: StoredRun): string {
   return run.runId.slice(0, 8);
 }
 
+export function isNoopInvestigationOutcome(
+  status: RunStatus,
+  suggestedAction: string | undefined
+): boolean {
+  return status === 'succeeded' && suggestedAction === 'noop';
+}
+
+const NOOP_ACTION_ARTIFACT_SUMMARIES = [
+  'No tool calls in capability plan',
+  'No operation required',
+  'No executable tool mapping for plan action',
+];
+
+export function isNoopActionArtifact(action: RemediationActionTaken): boolean {
+  if (action.action !== 'noop') return false;
+  const summary = action.summary?.trim() ?? '';
+  if (!summary) return true;
+  return NOOP_ACTION_ARTIFACT_SUMMARIES.some((s) => summary.includes(s));
+}
+
+export function filterDisplayActionsTaken(
+  plan: RemediationPlan | undefined,
+  actionsTaken: RemediationActionTaken[]
+): RemediationActionTaken[] {
+  if (plan?.action === 'noop') return [];
+  return actionsTaken.filter((a) => !isNoopActionArtifact(a));
+}
+
+export function noopOutcomeLabel(): string {
+  return 'No action taken';
+}
+
+export function inferOutcomeWorkedLabel(
+  worked: boolean | null,
+  status: RunStatus,
+  suggestedAction: string | undefined
+): string {
+  if (isNoopInvestigationOutcome(status, suggestedAction)) return noopOutcomeLabel();
+  if (worked === true) return 'Worked';
+  if (worked === false) return 'Did not work';
+  return 'Pending';
+}
+
 export function buildRemediationOutcome(params: {
   run: StoredRun;
   status: RunStatus;
@@ -111,7 +159,7 @@ export function buildRemediationOutcome(params: {
   const { run, status, lastError, actionHistory = [], plan, humanDecision } = params;
   const resourceKey = runResourceKey(run);
   const suggestedAction = plan?.action ?? inferActionFromHistory(actionHistory) ?? 'unknown';
-  const actionsTaken = actionHistory.map((a) => ({
+  const rawActionsTaken = actionHistory.map((a) => ({
     action: a.action,
     success: a.success,
     summary: a.summary,
@@ -119,15 +167,22 @@ export function buildRemediationOutcome(params: {
     commitUrls: a.commitUrls,
     at: a.at,
   }));
+  const actionsTaken = filterDisplayActionsTaken(plan, rawActionsTaken);
 
-  const worked = inferWorked(status, actionHistory, humanDecision);
-  const followUp = buildFollowUp(status, lastError, actionHistory, humanDecision);
+  const worked = inferWorked(status, actionHistory, humanDecision, suggestedAction);
+  const followUp = buildFollowUp(status, lastError, actionHistory, humanDecision, suggestedAction);
 
   const skillSummary = [
     plan?.rootCause?.slice(0, 80) ?? 'incident',
     '→',
     actionOutcomeLabel(suggestedAction as RemediationPlan['action']),
-    worked === true ? '(worked)' : worked === false ? '(failed)' : '(pending)',
+    isNoopInvestigationOutcome(status, suggestedAction)
+      ? '(no action)'
+      : worked === true
+        ? '(worked)'
+        : worked === false
+          ? '(failed)'
+          : '(pending)',
   ].join(' ');
 
   return {
@@ -155,11 +210,13 @@ function inferActionFromHistory(history: ActionRecord[]): string | undefined {
 function inferWorked(
   status: RunStatus,
   history: ActionRecord[],
-  humanDecision?: HumanDecision
+  humanDecision?: HumanDecision,
+  suggestedAction?: string
 ): boolean | null {
   if (humanDecision === 'rejected' || humanDecision === 'ignored') return false;
-  if (status === 'running' || status === 'awaiting_human') return null;
+  if (status === 'running' || status === 'awaiting_human' || status === 'pending_throttled') return null;
   if (status === 'cancelled') return null;
+  if (isNoopInvestigationOutcome(status, suggestedAction)) return null;
   if (status === 'succeeded') {
     const last = [...history].reverse().find((a) => a.action !== 'noop');
     if (!last) return true;
@@ -174,27 +231,56 @@ function buildFollowUp(
   status: RunStatus,
   lastError: string | undefined,
   history: ActionRecord[],
-  humanDecision?: HumanDecision
+  humanDecision?: HumanDecision,
+  suggestedAction?: string
 ): string | undefined {
   if (humanDecision === 'rejected') return 'Operator rejected the suggested remediation.';
   if (humanDecision === 'ignored') return 'Resource added to ignore list — no remediation attempted.';
-  if (lastError) return lastError;
+  if (isNoopInvestigationOutcome(status, suggestedAction)) {
+    return 'Investigation completed — no automated fix was recommended.';
+  }
+  if (lastError && !isNoopCapabilityArtifactError(lastError)) return lastError;
   const last = history[history.length - 1];
-  if (status === 'succeeded' && last?.summary) return last.summary;
+  if (status === 'succeeded' && last?.summary && !isNoopActionArtifact({
+    action: last.action,
+    success: last.success,
+    summary: last.summary,
+  })) {
+    return last.summary;
+  }
   if (status === 'awaiting_human') return 'Waiting for operator approval before applying the fix.';
+  if (status === 'pending_throttled') {
+    return 'Queued — waiting for other remediations in this namespace to finish.';
+  }
   return runStatusOutcomeLabel(status);
+}
+
+function isNoopCapabilityArtifactError(message: string): boolean {
+  return NOOP_ACTION_ARTIFACT_SUMMARIES.some((s) => message.includes(s));
+}
+
+const GENERIC_CAPABILITY_ROOT_CAUSE = 'Capability planner selected tool pipeline';
+
+function preferDisplayRootCause(
+  stored?: string,
+  plan?: string,
+  fresh?: string
+): string | undefined {
+  const candidates = [stored, plan, fresh].filter(Boolean) as string[];
+  for (const c of candidates) {
+    if (c.trim() !== GENERIC_CAPABILITY_ROOT_CAUSE) return c;
+  }
+  return candidates[0];
 }
 
 /** Best-effort outcome for runs recorded before outcome persistence. */
 export function deriveOutcomeFromStoredRun(run: StoredRun): RemediationOutcome {
   const stored = run.metadata?.remediationOutcome as RemediationOutcome | undefined;
-  if (stored?.recordedAt) return stored;
-
   const plan = run.metadata?.remediationPlan as RemediationPlan | undefined;
   const history = transcriptToActionHistory(run.transcript);
   const humanDecision = run.metadata?.humanDecision as HumanDecision | undefined;
 
-  return buildRemediationOutcome({
+  const fresh = buildRemediationOutcome({
     run,
     status: run.status,
     lastError: run.metadata?.lastError as string | undefined,
@@ -202,6 +288,19 @@ export function deriveOutcomeFromStoredRun(run: StoredRun): RemediationOutcome {
     plan,
     humanDecision,
   });
+
+  if (!stored?.recordedAt) return fresh;
+
+  // Re-normalize display fields so console UX fixes apply to persisted outcomes too.
+  return {
+    ...stored,
+    worked: fresh.worked,
+    actionsTaken: fresh.actionsTaken,
+    followUp: fresh.followUp,
+    skillSummary: fresh.skillSummary,
+    rootCause: preferDisplayRootCause(stored.rootCause, plan?.rootCause, fresh.rootCause),
+    reasoning: stored.reasoning ?? plan?.reasoning ?? fresh.reasoning,
+  };
 }
 
 function transcriptToActionHistory(transcript: ToolTranscriptEntry[]): ActionRecord[] {
@@ -226,20 +325,39 @@ function inferActionFromTool(tool: string): ActionRecord['action'] {
 export function enrichStoredRun(run: StoredRun): EnrichedRunSummary {
   const req = run.metadata?.request as Record<string, unknown> | undefined;
   const mode = (run.metadata?.mode as string | undefined) ?? (req?.mode as string | undefined);
+  const toolCount = run.transcript.length;
+  const isStale = isStaleRunningRun({
+    status: run.status,
+    transcript: run.transcript,
+    updatedAt: run.updatedAt,
+    startedAt: run.startedAt,
+  });
+  const outcome = deriveOutcomeFromStoredRun(run);
+  const followUp =
+    isStale && run.status === 'running'
+      ? 'Run appears orphaned (orchestrator may have restarted). Cancel and retry from chat.'
+      : outcome.followUp;
+
   return {
     runId: run.runId,
     incidentId: run.incidentId,
     status: run.status,
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
-    toolCount: run.transcript.length,
+    toolCount,
     mode,
     namespace: req?.namespace as string | undefined,
     resourceName: req?.resourceName as string | undefined,
     githubRepo: req?.githubRepo as string | undefined,
     resourceKey: runResourceKey(run),
     displayName: runDisplayName(run),
-    outcome: deriveOutcomeFromStoredRun(run),
+    outcome: followUp !== outcome.followUp ? { ...outcome, followUp } : outcome,
+    isStale,
+    suggestedActionLabel: formatSuggestedActionLabel(outcome.suggestedAction, {
+      status: run.status,
+      toolCount,
+      isStale,
+    }),
   };
 }
 
@@ -271,7 +389,7 @@ export function groupRunsByResource(runs: EnrichedRunSummary[]): ResourceRunGrou
     }
     group.runs.push(run);
     group.attemptCount += 1;
-    if (run.outcome?.worked === true || run.status === 'succeeded') group.successCount += 1;
+    if (run.outcome?.worked === true) group.successCount += 1;
     if (run.updatedAt > group.lastUpdated) {
       group.lastUpdated = run.updatedAt;
       group.latestStatus = run.status;
@@ -307,9 +425,14 @@ export function formatSkillMarkdown(
   if (o.reasoning) lines.push(`**Reasoning:** ${o.reasoning}`);
   if (o.severity) lines.push(`**Severity:** ${o.severity}`);
 
-  const workedLabel =
-    o.worked === true ? 'Yes — verified / succeeded' : o.worked === false ? 'No' : 'Pending / unknown';
-  lines.push(`**Worked:** ${workedLabel}`);
+  const workedLabel = isNoopInvestigationOutcome(o.finalStatus, o.suggestedAction)
+    ? noopOutcomeLabel()
+    : o.worked === true
+      ? 'Yes — verified / succeeded'
+      : o.worked === false
+        ? 'No'
+        : 'Pending / unknown';
+  lines.push(`**Outcome:** ${workedLabel}`);
 
   if (o.actionsTaken.length) {
     lines.push('', '**Actions taken:**');

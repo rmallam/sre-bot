@@ -364,7 +364,9 @@ Commander does **not** remediate directly; it starts runs and delivers **confirm
 | State | Where | Purpose |
 |-------|--------|---------|
 | **Run graph state** | LangGraph MemorySaver (dev) | Thread per `runId`; sanitized facts in checkpoint. |
-| **Approvals** | hil-agent in-memory store | Pending / approved / rejected. |
+| **Run records** | Postgres `sre_runs` (prod) | Transcripts, status, `pending_throttled` queue when namespace limit hit. |
+| **Console sessions** | Memory or Redis | HTTP-only OIDC sessions; use Redis for multi-replica BFF. |
+| **Approvals** | hil-agent in-memory store | Pending / approved / rejected. Optional namespace header enforcement. |
 | **Circuit breaker** | `SREIncident` CRD (cluster) | `attemptCount`, `actionHistory`, escalation. |
 | **GitOps mirror** | PVC / volume `gitops-mirror` | Persistent clone of central GitOps repo. |
 | **Audit** | Logs + optional `SIEM_ENDPOINT` | Security and act events. |
@@ -406,6 +408,8 @@ All agents share the `sre-net` bridge. Host ports exposed for local dev:
 | gitops | 8086 |
 | executor | 8087 |
 | security | 8088 |
+| console | 8091 |
+| platform | 8090 |
 
 ---
 

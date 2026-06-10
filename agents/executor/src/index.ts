@@ -1,6 +1,7 @@
 import express, { type Request, type Response } from 'express';
 import type { RemediateCommand } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
+import { createInternalAuthMiddleware } from '../../../shared/src/internal-auth.js';
 import { emitSecurityAudit } from '../../../shared/src/audit-siem.js';
 import { executeRestart } from './restart.js';
 
@@ -9,6 +10,7 @@ const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
+app.use(createInternalAuthMiddleware());
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', agent: AGENT });

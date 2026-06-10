@@ -17,6 +17,7 @@ import {
 } from './investigate-target.js';
 
 const CICD_URL = process.env['CICD_URL'] ?? 'http://cicd-agent:8080';
+const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 
 /** Build a container image ref from natural-language follow-ups after ImagePullBackOff, etc. */
 export { extractContainerImageHint as extractImageRefFromText } from './investigate-target.js';
@@ -113,6 +114,33 @@ export async function trySessionFollowUp(
     }
   }
 
+  if (/\b(is it done|done yet|is it deployed|deploy(ed)? yet|finished deploying|all good|is it complete)\b/i.test(t)) {
+    const topic = session?.activeTopic;
+    const draft = session?.lastDeployDraft;
+    const namespace =
+      topic?.kind === 'deploy' ? topic.namespace : draft?.namespace;
+    const resourceName =
+      topic?.kind === 'deploy'
+        ? topic.resourceName
+        : draft?.appName ?? draft?.githubRepo?.split('/').pop();
+    if (namespace && resourceName) {
+      const status = await fetchDeployVerifyStatus(namespace, resourceName);
+      if (status) return { type: 'reply', text: status };
+    }
+    if (session?.lastRunId) {
+      const details = await fetchRunDetailsText(session.lastRunId, { verbose: true });
+      return { type: 'reply', text: details };
+    }
+    if (session?.lastIncidentId) {
+      const details = await fetchLatestRunSummaryByIncident(session.lastIncidentId, { verbose: true });
+      if (details) return { type: 'reply', text: details };
+    }
+    return {
+      type: 'reply',
+      text: "I don't have an active deploy to check. Try asking about a specific namespace or workload.",
+    };
+  }
+
   if (/\b(what'?s happening|show progress|run status|what are you doing|status update)\b/i.test(t)) {
     if (session?.lastRunId) {
       const details = await fetchRunDetailsText(session.lastRunId, { verbose: true });
@@ -194,6 +222,36 @@ export async function trySessionFollowUp(
   }
 
   return null;
+}
+
+async function fetchDeployVerifyStatus(namespace: string, resourceName: string): Promise<string | null> {
+  try {
+    const params = new URLSearchParams({
+      namespace,
+      resourceName,
+      incidentId: 'deploy-status-check',
+    });
+    const res = await fetch(`${INVESTIGATOR_URL}/verify?${params}`, {
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) return null;
+    const verify = (await res.json()) as {
+      healthy?: boolean;
+      message?: string;
+      readyReplicas?: number;
+      desiredReplicas?: number;
+    };
+    if (verify.healthy) {
+      const replicas =
+        verify.readyReplicas != null && verify.desiredReplicas != null
+          ? ` (${verify.readyReplicas}/${verify.desiredReplicas} ready)`
+          : '';
+      return `✅ Yes — deploy looks healthy${replicas}.\n${verify.message ?? ''}`.trim();
+    }
+    return `⏳ Not fully ready yet.\n${verify.message ?? 'Workloads are still starting.'}`;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchCiRunStatus(

@@ -6,6 +6,7 @@ import type { RunUpdateKind, RunUpdatePayload, RunUpdateQuickAction } from '../.
 import { getSession, setSession } from './sessions.js';
 import { trimTranscript } from './chat-transcript.js';
 import type { ChatTurn } from './sessions.js';
+import { filterTranscriptAfterClear } from '../../../shared/src/chat-waiting-state.js';
 
 const WEB_USER_ID = 'console';
 
@@ -31,8 +32,38 @@ const STILL_WAITING_KINDS = new Set<RunUpdateKind>([
   'coding_agent_handoff',
 ]);
 
+const LIVE_UPDATE_KINDS = new Set<RunUpdateKind>([
+  'progress',
+  'deploy_progress',
+  'coding_agent_progress',
+  'agent_step',
+  'deploy_ready',
+  'deploy_failed',
+  'run_succeeded',
+  'run_failed',
+  'run_escalated',
+  'generic',
+]);
+
 function stripStatusForIncident(turns: ChatTurn[], incidentId: string): ChatTurn[] {
   return turns.filter((t) => !(t.role === 'status' && t.incidentId === incidentId));
+}
+
+function upsertLiveRunTurn(
+  prev: ChatTurn[],
+  incidentId: string,
+  turn: ChatTurn
+): ChatTurn[] {
+  const withoutStatus = stripStatusForIncident(prev, incidentId);
+  const liveIdx = withoutStatus.findLastIndex(
+    (t) => t.role === 'assistant' && t.incidentId === incidentId && t.liveUpdate
+  );
+  if (liveIdx >= 0) {
+    const copy = [...withoutStatus];
+    copy[liveIdx] = { ...copy[liveIdx]!, ...turn, at: new Date().toISOString() };
+    return trimTranscript(copy);
+  }
+  return trimTranscript([...withoutStatus, turn]);
 }
 
 function resolveQuickActions(
@@ -71,51 +102,53 @@ export async function deliverWebChatUpdate(opts: {
   const terminal = !!(kind && TERMINAL_KINDS.has(kind));
   const actions = resolveQuickActions(quickActions, update, stillWaiting);
 
-  if (kind === 'progress' || kind === 'deploy_progress' || kind === 'coding_agent_progress' || kind === 'agent_step') {
-    const step = update?.progressStep ?? body;
-    const withoutOld = stripStatusForIncident(prev, incidentId);
+  const useLiveBubble = !kind || LIVE_UPDATE_KINDS.has(kind);
+
+  if (useLiveBubble) {
+    const turn: ChatTurn = {
+      role: 'assistant',
+      content: body,
+      at: new Date().toISOString(),
+      incidentId,
+      runId,
+      quickActions: actions,
+      updateKind: kind,
+      liveUpdate: !terminal && !stillWaiting,
+    };
     await setSession('web', channelId, userId, {
-      transcript: [
-        ...withoutOld,
+      transcript: upsertLiveRunTurn(prev, incidentId, turn),
+      waitingForRun: stillWaiting ? true : terminal || kind === 'generic' ? false : session?.waitingForRun,
+      lastIncidentId: incidentId,
+      lastRunId: runId,
+      lastMode: update?.mode ?? session?.lastMode,
+      pendingQuestion: kind === 'deploy_source_required' ? body : session?.pendingQuestion,
+    });
+  } else {
+    const withoutStatus = stripStatusForIncident(prev, incidentId);
+    await setSession('web', channelId, userId, {
+      transcript: trimTranscript([
+        ...withoutStatus,
         {
-          role: 'status',
-          content: step,
+          role: 'assistant',
+          content: body,
           at: new Date().toISOString(),
           incidentId,
           runId,
+          quickActions: actions,
+          updateKind: kind,
         },
-      ],
-      waitingForRun: true,
+      ]),
+      waitingForRun: stillWaiting
+        ? true
+        : terminal || kind === 'generic'
+          ? false
+          : session?.waitingForRun,
       lastIncidentId: incidentId,
       lastRunId: runId,
+      lastMode: update?.mode ?? session?.lastMode,
+      pendingQuestion: kind === 'deploy_source_required' ? body : session?.pendingQuestion,
     });
-    return;
   }
-
-  const withoutStatus = stripStatusForIncident(prev, incidentId);
-  await setSession('web', channelId, userId, {
-    transcript: trimTranscript([
-      ...withoutStatus,
-      {
-        role: 'assistant',
-        content: body,
-        at: new Date().toISOString(),
-        incidentId,
-        runId,
-        quickActions: actions,
-        updateKind: kind,
-      },
-    ]),
-    waitingForRun: stillWaiting
-      ? true
-      : terminal || kind === 'generic'
-        ? false
-        : session?.waitingForRun,
-    lastIncidentId: incidentId,
-    lastRunId: runId,
-    lastMode: update?.mode ?? session?.lastMode,
-    pendingQuestion: kind === 'deploy_source_required' ? body : session?.pendingQuestion,
-  });
 
   if (kind === 'deploy_source_required' && runId) {
     const { armDeploySourceClarification } = await import('./deploy-source-followup.js');
@@ -139,17 +172,18 @@ export async function appendWebStatusStep(
   const session = await getSession('web', channelId, userId);
   const prev = session?.transcript ?? [];
   const iid = incidentId ?? session?.lastIncidentId ?? 'pending';
-  const withoutOld = stripStatusForIncident(prev, iid);
+  const turn: ChatTurn = {
+    role: 'assistant',
+    content,
+    at: new Date().toISOString(),
+    incidentId: iid,
+    runId: session?.lastRunId,
+    liveUpdate: true,
+  };
   await setSession('web', channelId, userId, {
-    transcript: [
-      ...withoutOld,
-      {
-        role: 'status',
-        content,
-        at: new Date().toISOString(),
-        incidentId: iid,
-      },
-    ],
+    transcript: upsertLiveRunTurn(prev, iid, turn),
+    waitingForRun: true,
+    lastIncidentId: iid,
   });
 }
 
@@ -165,12 +199,23 @@ export async function markWebRunWaiting(
   });
 }
 
-export async function clearWebStatus(channelId: string, incidentId: string): Promise<void> {
+export async function clearWebStatus(
+  channelId: string,
+  incidentId: string,
+  opts?: { keepWaiting?: boolean }
+): Promise<void> {
   const session = await getSession('web', channelId, WEB_USER_ID);
-  if (!session?.transcript) return;
-  const transcript =
-    incidentId === 'pending'
-      ? session.transcript.filter((t) => t.role !== 'status')
-      : stripStatusForIncident(session.transcript, incidentId);
-  await setSession('web', channelId, WEB_USER_ID, { transcript });
+  const patch: Partial<import('./sessions.js').ChatSession> = opts?.keepWaiting
+    ? {}
+    : { waitingForRun: false };
+
+  if (!session?.transcript?.length) {
+    if (!opts?.keepWaiting) {
+      await setSession('web', channelId, WEB_USER_ID, patch);
+    }
+    return;
+  }
+
+  const transcript = filterTranscriptAfterClear(session.transcript, incidentId) as ChatTurn[];
+  await setSession('web', channelId, WEB_USER_ID, { transcript, ...patch });
 }

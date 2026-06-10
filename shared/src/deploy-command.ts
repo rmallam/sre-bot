@@ -3,6 +3,7 @@
  */
 
 import type { StartRunRequest } from './types.js';
+import type { RemoteHelmInstall } from './deploy/readme-install-hints.js';
 import { normalizeGithubRepoSlug } from './git-ref.js';
 
 /** Minimal deploy fields — mirrors commander DeployCmd without importing commander. */
@@ -15,6 +16,8 @@ export interface DeployCommandInput {
   deployStrategyExplicit: boolean;
   createNamespace?: boolean;
   containerImage?: string;
+  /** Published Helm chart from the built-in catalog (no Git clone). */
+  helmRemote?: RemoteHelmInstall;
   appName?: string;
   stackServices?: Array<{ name: string; githubRepo: string; gitRef?: string }>;
 }
@@ -33,10 +36,13 @@ export interface DeployValidationError {
 
 /** App / Deployment name for a Git-based deploy. */
 export function deriveDeployAppName(
-  deploy: Pick<DeployCommandInput, 'githubRepo' | 'appName' | 'containerImage'>
+  deploy: Pick<DeployCommandInput, 'githubRepo' | 'appName' | 'containerImage' | 'helmRemote'>
 ): string {
   const explicit = deploy.appName?.trim();
   if (explicit) return explicit;
+
+  const helmRelease = deploy.helmRemote?.releaseName?.trim();
+  if (helmRelease) return helmRelease;
 
   const repoSlug = deploy.githubRepo
     ?.replace(/^https?:\/\//, '')
@@ -90,7 +96,7 @@ export function validateDeployCommand(
   const normalized = normalizeDeployCommand(deploy);
   const missing: DeployValidationError['missing'] = [];
 
-  if (!normalized.containerImage && !normalized.githubRepo) {
+  if (!normalized.containerImage && !normalized.githubRepo && !normalized.helmRemote) {
     missing.push('githubRepo');
   }
   if (!normalized.namespace?.trim()) {
@@ -118,8 +124,9 @@ export function buildDeployMissingFieldsMessage(
 ): string {
   if (missing.includes('githubRepo')) {
     return (
-      'I need a **GitHub repository** to deploy from.\n\n' +
+      'I need a **GitHub repository** or a **built-in tool name** to deploy.\n\n' +
       'Try:\n' +
+      '• `deploy argocd` or `deploy redis in my-ns namespace`\n' +
       '• `deploy github.com/org/my-app to staging namespace`\n' +
       '• `deploy https://github.com/org/my-app on branch main`'
     );

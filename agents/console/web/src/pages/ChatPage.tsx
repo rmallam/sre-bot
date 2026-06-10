@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   createChatSession,
@@ -10,15 +10,39 @@ import {
   type ChatTurn,
 } from '../api';
 import { ChatMessageBubble } from '../components/ChatMessageBubble';
+import { ChatHistoryPanel } from '../components/ChatHistoryPanel';
+import { ChatSessionTabs } from '../components/ChatSessionTabs';
 
 const STORAGE_KEY = 'sre-console-active-channel';
+const TABS_KEY = 'sre-console-chat-tabs';
 
 function turnKey(turn: ChatTurn, index: number): string {
+  if (turn.updateKind === 'run_logs' && turn.runId) {
+    return `logs-${turn.runId}`;
+  }
+  if (turn.liveUpdate && turn.incidentId) {
+    return `live-${turn.incidentId}`;
+  }
   return `${turn.at}-${turn.role}-${index}`;
 }
 
-function formatSessionTitle(s: ChatSessionSummary): string {
-  return s.sessionLabel ?? `Chat ${s.channelId.slice(0, 8)}`;
+function loadOpenTabs(): string[] {
+  try {
+    const raw = localStorage.getItem(TABS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveOpenTabs(tabs: string[]): void {
+  try {
+    localStorage.setItem(TABS_KEY, JSON.stringify(tabs));
+  } catch {
+    /* ignore */
+  }
 }
 
 export function ChatPage() {
@@ -26,6 +50,8 @@ export function ChatPage() {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [channelId, setChannelId] = useState<string | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
+  /** Local-only panels (run logs) — not overwritten by transcript polling. */
+  const [ephemeralTurns, setEphemeralTurns] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
@@ -37,6 +63,8 @@ export function ChatPage() {
   const seenTurnKeysRef = useRef<Set<string>>(new Set());
   const prevTurnCountRef = useRef(0);
   const [animatingKey, setAnimatingKey] = useState<string | null>(null);
+  const [openTabs, setOpenTabs] = useState<string[]>(() => loadOpenTabs());
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const markTurnsSeen = useCallback((list: ChatTurn[], upToIndex?: number) => {
     const limit = upToIndex ?? list.length;
@@ -58,6 +86,9 @@ export function ChatPage() {
           const t = list[i]!;
           if (t.role === 'assistant') {
             const key = turnKey(t, i);
+            if (t.liveUpdate && seenTurnKeysRef.current.has(key)) {
+              continue;
+            }
             if (!seenTurnKeysRef.current.has(key)) {
               nextAnimate = key;
             }
@@ -75,6 +106,29 @@ export function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
+  const displayTurns = useMemo(() => [...turns, ...ephemeralTurns], [turns, ephemeralTurns]);
+
+  const handleShowLogs = useCallback(
+    (text: string, runId: string) => {
+      const content = text.trim() || 'No logs available for this run.';
+      setEphemeralTurns((prev) => {
+        const rest = prev.filter((t) => !(t.updateKind === 'run_logs' && t.runId === runId));
+        return [
+          ...rest,
+          {
+            role: 'assistant' as const,
+            content,
+            at: new Date().toISOString(),
+            runId,
+            updateKind: 'run_logs',
+          },
+        ];
+      });
+      scrollDown();
+    },
+    [scrollDown]
+  );
+
   const loadTranscript = useCallback(async (cid: string) => {
     const data = await fetchChatSession(cid);
     applyTranscript(data.transcript);
@@ -89,21 +143,52 @@ export function ChatPage() {
     return data.sessions;
   }, []);
 
+  const addToTabs = useCallback((cid: string) => {
+    setOpenTabs((prev) => {
+      if (prev.includes(cid)) return prev;
+      const next = [...prev, cid];
+      saveOpenTabs(next);
+      return next;
+    });
+  }, []);
+
   const selectChannel = useCallback(
     async (cid: string) => {
       setChannelId(cid);
+      addToTabs(cid);
       localStorage.setItem(STORAGE_KEY, cid);
       setSearchParams({}, { replace: true });
       setError(null);
       seenTurnKeysRef.current = new Set();
       prevTurnCountRef.current = 0;
       setAnimatingKey(null);
+      setEphemeralTurns([]);
       const data = await fetchChatSession(cid);
       applyTranscript(data.transcript, { markAllSeen: true });
       setWaitingForRun(data.waitingForRun);
       setActiveRunId(data.lastRunId ?? null);
     },
-    [applyTranscript, setSearchParams]
+    [applyTranscript, setSearchParams, addToTabs]
+  );
+
+  const closeTab = useCallback(
+    (cid: string) => {
+      setOpenTabs((prev) => {
+        const next = prev.filter((id) => id !== cid);
+        saveOpenTabs(next);
+        if (cid === channelId) {
+          const fallback = next[next.length - 1];
+          if (fallback) {
+            void selectChannel(fallback);
+          } else {
+            setChannelId(null);
+            setTurns([]);
+          }
+        }
+        return next;
+      });
+    },
+    [channelId, selectChannel]
   );
 
   const startNewChat = useCallback(
@@ -172,7 +257,7 @@ export function ChatPage() {
 
   useEffect(() => {
     scrollDown();
-  }, [turns, animatingKey, scrollDown]);
+  }, [displayTurns, animatingKey, scrollDown]);
 
   useEffect(() => {
     if (!channelId || !waitingForRun) return;
@@ -238,6 +323,7 @@ export function ChatPage() {
       seenTurnKeysRef.current = new Set();
       prevTurnCountRef.current = 0;
       setAnimatingKey(null);
+      setEphemeralTurns([]);
       applyTranscript(data.transcript, { markAllSeen: true });
     } catch (err) {
       setError(String(err));
@@ -248,33 +334,72 @@ export function ChatPage() {
 
   return (
     <div className="chat-layout">
-      <aside className="chat-sidebar">
-        <div className="chat-sidebar-header">
-          <h3>Conversations</h3>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void startNewChat()}>
-            New
-          </button>
-        </div>
-        <ul className="chat-session-list">
-          {sessions.map((s) => (
-            <li key={s.channelId}>
-              <button
-                type="button"
-                className={`chat-session-item ${s.channelId === channelId ? 'active' : ''}`}
-                onClick={() => void selectChannel(s.channelId)}
-              >
-                <span className="chat-session-title">{formatSessionTitle(s)}</span>
-                {s.preview && <span className="chat-session-preview">{s.preview}</span>}
-              </button>
-            </li>
-          ))}
-        </ul>
-        <p className="chat-sidebar-foot">
-          <Link to="/">← Back to overview</Link>
-        </p>
-      </aside>
+      <ChatHistoryPanel
+        open={historyOpen}
+        sessions={sessions}
+        activeChannelId={channelId}
+        onSelect={(cid) => void selectChannel(cid)}
+        onClose={() => setHistoryOpen(false)}
+      />
 
       <div className="chat-main">
+        <ChatSessionTabs
+          tabs={openTabs.length > 0 ? openTabs : channelId ? [channelId] : []}
+          activeChannelId={channelId}
+          sessions={sessions}
+          onSelect={(cid) => void selectChannel(cid)}
+          onClose={closeTab}
+        />
+
+        {!bootstrapping && (
+          <div className="chat-toolbar">
+            {activeRunId && waitingForRun && (
+              <Link
+                className="chat-active-run-link"
+                to={`/runs/${encodeURIComponent(activeRunId)}`}
+              >
+                Run in progress — view details
+              </Link>
+            )}
+            <div className="chat-toolbar-actions">
+              <button
+                type="button"
+                className={`chat-toolbar-icon-btn${historyOpen ? ' active' : ''}`}
+                onClick={() => setHistoryOpen((o) => !o)}
+                title="Chat history"
+                aria-label="Chat history"
+                aria-pressed={historyOpen}
+              >
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.35" aria-hidden>
+                  <circle cx="8" cy="8" r="5.5" />
+                  <path d="M8 4.5V8l2.5 1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="chat-toolbar-icon-btn"
+                onClick={() => void startNewChat()}
+                title="New chat"
+                aria-label="New chat"
+              >
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+                  <path d="M8 3v10M3 8h10" strokeLinecap="round" />
+                </svg>
+              </button>
+              {channelId && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm chat-toolbar-action"
+                  disabled={loading}
+                  onClick={() => void onClearChat()}
+                >
+                  Clear thread
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {bootstrapping ? (
           <div className="chat-empty">Starting assistant…</div>
         ) : !channelId ? (
@@ -310,30 +435,8 @@ export function ChatPage() {
           </div>
         ) : (
           <div className="chat-panel">
-            <div className="chat-toolbar">
-              <span className="chat-toolbar-title">
-                {sessions.find((s) => s.channelId === channelId)?.sessionLabel ?? 'Assistant'}
-              </span>
-              {activeRunId && waitingForRun && (
-                <Link
-                  className="chat-active-run-link"
-                  to={`/runs/${encodeURIComponent(activeRunId)}`}
-                >
-                  Run in progress — view details
-                </Link>
-              )}
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                disabled={loading}
-                onClick={() => void onClearChat()}
-              >
-                Clear thread
-              </button>
-            </div>
-
             <div className="chat-thread" role="log" aria-live="polite">
-              {turns.length === 0 && !loading && (
+              {displayTurns.length === 0 && !loading && (
                 <div className="chat-empty">
                   <p>Ask anything about your cluster, deployments, or incidents.</p>
                   <div className="chat-empty-suggestions">
@@ -357,9 +460,12 @@ export function ChatPage() {
                   </div>
                 </div>
               )}
-              {turns.map((turn, i) => {
+              {displayTurns.map((turn, i) => {
                 const key = turnKey(turn, i);
-                const shouldAnimate = turn.role === 'assistant' && animatingKey === key;
+                const shouldAnimate =
+                  turn.role === 'assistant' &&
+                  turn.updateKind !== 'run_logs' &&
+                  animatingKey === key;
                 return (
                   <ChatMessageBubble
                     key={key}
@@ -371,10 +477,13 @@ export function ChatPage() {
                     }}
                     onQuickAction={() => {
                       if (channelId) {
-                        setWaitingForRun(true);
-                        void loadTranscript(channelId);
+                        void loadTranscript(channelId).then((data) => {
+                          setWaitingForRun(data.waitingForRun);
+                          setActiveRunId(data.lastRunId ?? null);
+                        });
                       }
                     }}
+                    onShowLogs={handleShowLogs}
                   />
                 );
               })}

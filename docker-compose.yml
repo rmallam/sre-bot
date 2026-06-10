@@ -4,6 +4,10 @@ name: sre-bot
 # Use ./scripts/compose-up.sh for a clean start.
 
 # HTTP health probe (Node 22 image — no curl required)
+x-internal-auth-env: &internal-auth-env
+  SRE_INTERNAL_TOKEN: ${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+  SRE_AUTH_STRICT: ${SRE_AUTH_STRICT:-false}
+
 x-agent-healthcheck: &agent-healthcheck
   test:
     [
@@ -80,7 +84,7 @@ services:
       rag-postgres:
         condition: service_healthy
     ports:
-      - "8090:8080"
+      - "127.0.0.1:8090:8080"
     healthcheck:
       test:
         [
@@ -94,18 +98,25 @@ services:
       retries: 12
       start_period: 120s
     environment:
-      - SRE_RAG_DATABASE_URL=postgresql://sre:sre@rag-postgres:5432/sre_rag
-      - SRE_RAG_ENABLED=true
-      - SRE_RAG_AUTO_MIGRATE=true
-      - SRE_RAG_LEARNING=${SRE_RAG_LEARNING:-true}
-      - SRE_ROUTER_ENCODER=openai
-      - SRE_EMBEDDING_PROVIDER=openai
-      - SRE_ROUTER_SCORE_THRESHOLD=${SRE_ROUTER_SCORE_THRESHOLD:-0.70}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
-      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      <<: *internal-auth-env
+      SRE_RAG_DATABASE_URL: postgresql://sre:sre@rag-postgres:5432/sre_rag
+      SRE_RAG_ENABLED: "true"
+      SRE_RAG_AUTO_MIGRATE: "true"
+      SRE_RAG_LEARNING: ${SRE_RAG_LEARNING:-true}
+      SRE_RAG_DEDUP_ENABLED: ${SRE_RAG_DEDUP_ENABLED:-true}
+      SRE_RAG_DEDUP_INTERVAL_SEC: ${SRE_RAG_DEDUP_INTERVAL_SEC:-3600}
+      SRE_RAG_DEDUP_SIMILARITY: ${SRE_RAG_DEDUP_SIMILARITY:-0.92}
+      SRE_RAG_DEDUP_LLM_MERGE: ${SRE_RAG_DEDUP_LLM_MERGE:-true}
+      SRE_RAG_DEDUP_LLM_MODEL: ${SRE_RAG_DEDUP_LLM_MODEL:-google/gemini-2.5-flash}
+      SRE_RAG_PREMERGE_SIMILARITY: ${SRE_RAG_PREMERGE_SIMILARITY:-0.95}
+      SRE_ROUTER_ENCODER: openai
+      SRE_EMBEDDING_PROVIDER: openai
+      SRE_ROUTER_SCORE_THRESHOLD: ${SRE_ROUTER_SCORE_THRESHOLD:-0.70}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
 
   # Optional: in-compose kubectl proxy. Default stack uses host.containers.internal instead
   # (Podman Desktop API e.g. https://127.0.0.1:50750 on the Mac).
@@ -159,6 +170,8 @@ services:
       - COOLDOWN_MINUTES=2
       - WATCH_NAMESPACES=${WATCH_NAMESPACES:-}
       - KUBECONFIG=/tmp/kube/config
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
     volumes:
       - ~/.kube:/root/.kube:ro
 
@@ -168,7 +181,7 @@ services:
       dockerfile: agents/commander/Dockerfile
     networks: [sre-net]
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
     depends_on:
       - investigator-agent
       - security-agent
@@ -208,6 +221,8 @@ services:
       - CASE_TTL_SECONDS=${CASE_TTL_SECONDS:-604800}
       - SRE_PLATFORM_URL=http://platform-agent:8080
       - SRE_PLATFORM_ROUTING=${SRE_PLATFORM_ROUTING:-true}
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
 
   investigator-agent:
     container_name: sre-bot-investigator
@@ -217,8 +232,6 @@ services:
     networks: [sre-net]
     healthcheck: *agent-healthcheck
     entrypoint: ["/app/scripts/container-entrypoint.sh"]
-    ports:
-      - "8082:8080"
     environment:
       - AGENT_DIR=investigator
       - KUBE_API_HOST=host.containers.internal
@@ -236,6 +249,8 @@ services:
       - KUBECONFIG=/tmp/kube/config
       - SRE_AGENT_MODE=${SRE_AGENT_MODE:-classic}
       - INVESTIGATE_GATHER_MODE=${INVESTIGATE_GATHER_MODE:-}
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
     volumes:
       - ~/.kube:/root/.kube:ro
       - ~/.ssh:/root/.ssh:ro
@@ -248,8 +263,6 @@ services:
     depends_on:
       - platform-agent
     entrypoint: ["/app/scripts/container-entrypoint.sh"]
-    ports:
-      - "8083:8080"
     environment:
       - AGENT_DIR=brain
       - KUBE_API_HOST=host.containers.internal
@@ -259,6 +272,7 @@ services:
       - LLM_PROVIDER=${LLM_PROVIDER:-openrouter}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_BRAIN_MODEL=${OPENROUTER_BRAIN_MODEL:-anthropic/claude-sonnet-4}
+      - OPENROUTER_TOOL_SELECT_MODEL=${OPENROUTER_TOOL_SELECT_MODEL:-google/gemini-2.5-flash}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_BRAIN_MODEL=${GEMINI_BRAIN_MODEL:-gemini-2.5-pro}
       - CIRCUIT_BREAKER_LIMIT=3
@@ -268,6 +282,8 @@ services:
       - AGENTIC_LLM_REFLECT=${AGENTIC_LLM_REFLECT:-}
       - SRE_PLATFORM_URL=http://platform-agent:8080
       - SRE_RAG_GROUNDING=${SRE_RAG_GROUNDING:-true}
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
     volumes:
       - ~/.kube:/root/.kube:ro
 
@@ -276,8 +292,6 @@ services:
       context: .
       dockerfile: agents/orchestrator/Dockerfile
     networks: [sre-net]
-    ports:
-      - "8084:8080"
     depends_on:
       - postgres
       - investigator-agent
@@ -319,7 +333,13 @@ services:
       - SRE_PLATFORM_URL=http://platform-agent:8080
       - SRE_RAG_GROUNDING=${SRE_RAG_GROUNDING:-true}
       - SRE_RAG_LEARNING=${SRE_RAG_LEARNING:-true}
+      - SRE_RAG_BYPASS_REACT=${SRE_RAG_BYPASS_REACT:-true}
+      - SRE_RAG_BYPASS_THRESHOLD=${SRE_RAG_BYPASS_THRESHOLD:-0.90}
+      - NAMESPACE_RUN_LIMIT=${NAMESPACE_RUN_LIMIT:-5}
+      - NAMESPACE_QUEUE_DRAIN_MS=${NAMESPACE_QUEUE_DRAIN_MS:-15000}
       - CI_VERIFY_AFTER_PR=${CI_VERIFY_AFTER_PR:-true}
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
     volumes:
       - run-data:/data/runs
 
@@ -328,13 +348,13 @@ services:
       context: .
       dockerfile: agents/security/Dockerfile
     networks: [sre-net]
-    ports:
-      - "8088:8080"
     healthcheck: *agent-healthcheck
     environment:
       - PORT=8080
       - SECURITY_BLOCK_ON_FINDINGS=true
       - SECURITY_MAX_LOG_BYTES=16384
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
 
   executor-agent:
     build:
@@ -342,14 +362,14 @@ services:
       dockerfile: agents/executor/Dockerfile
     networks: [sre-net]
     entrypoint: ["/app/scripts/container-entrypoint.sh"]
-    ports:
-      - "8087:8080"
     environment:
       - AGENT_DIR=executor
       - KUBE_API_HOST=host.containers.internal
       - NODE_TLS_REJECT_UNAUTHORIZED=0
       - PORT=8080
       - KUBECONFIG=/tmp/kube/config
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
     volumes:
       - ~/.kube:/root/.kube:ro
 
@@ -358,8 +378,6 @@ services:
       context: .
       dockerfile: agents/hil/Dockerfile
     networks: [sre-net]
-    ports:
-      - "8085:8080"
     environment:
       - PORT=8080
       - GITOPS_URL=http://gitops-agent:8080
@@ -375,6 +393,9 @@ services:
       - ORCHESTRATOR_URL=http://orchestrator-agent:8080
       - COMMANDER_URL=http://commander-agent:8080
       - IGNORE_STORE_PATH=/data/ignored-resources.json
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
+      - HIL_ENFORCE_CONSOLE_RBAC=${HIL_ENFORCE_CONSOLE_RBAC:-false}
     volumes:
       - hil-data:/data
 
@@ -384,7 +405,7 @@ services:
       dockerfile: agents/console/Dockerfile
     networks: [sre-net]
     ports:
-      - "8091:8080"
+      - "127.0.0.1:8091:8080"
     depends_on:
       - hil-agent
       - orchestrator-agent
@@ -399,6 +420,20 @@ services:
       - BRAIN_URL=http://brain-agent:8080
       - CICD_URL=http://cicd-agent:8080
       - CODING_AGENT_URL=http://coding-agent:8080
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
+      - CONSOLE_AUTH_ENABLED=${CONSOLE_AUTH_ENABLED:-false}
+      - OIDC_ISSUER=${OIDC_ISSUER:-}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-}
+      - OIDC_AUDIENCE=${OIDC_AUDIENCE:-}
+      - OIDC_GROUPS_CLAIM=${OIDC_GROUPS_CLAIM:-groups}
+      - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI:-http://127.0.0.1:8091/api/auth/callback}
+      - CONSOLE_NAMESPACE_RBAC=${CONSOLE_NAMESPACE_RBAC:-}
+      - CONSOLE_SESSION_TTL_SEC=${CONSOLE_SESSION_TTL_SEC:-28800}
+      - CONSOLE_COOKIE_SECURE=${CONSOLE_COOKIE_SECURE:-false}
+      - CONSOLE_SESSION_BACKEND=${CONSOLE_SESSION_BACKEND:-memory}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
 
   gitops-agent:
     build:
@@ -406,8 +441,6 @@ services:
       dockerfile: agents/gitops/Dockerfile
     networks: [sre-net]
     entrypoint: ["/app/scripts/container-entrypoint.sh"]
-    ports:
-      - "8086:8080"
     environment:
       - AGENT_DIR=gitops
       - KUBE_API_HOST=host.containers.internal
@@ -428,6 +461,8 @@ services:
       - ARGOCD_TOKEN=${ARGOCD_TOKEN}
       - KUBECONFIG=/tmp/kube/config
       - DIRECT_DEPLOY_DRY_RUN=${DIRECT_DEPLOY_DRY_RUN:-false}
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
     volumes:
       - gitops-mirror:/data/gitops-mirror
       - ~/.kube:/root/.kube:ro
@@ -439,8 +474,6 @@ services:
       context: .
       dockerfile: agents/cicd-agent/Dockerfile
     networks: [sre-net]
-    ports:
-      - "8089:8080"
     healthcheck: *agent-healthcheck
     environment:
       - PORT=8080
@@ -451,6 +484,8 @@ services:
       - CI_VERIFY_INITIAL_DELAY_MS=${CI_VERIFY_INITIAL_DELAY_MS:-45000}
       - CI_VERIFY_POLL_MS=${CI_VERIFY_POLL_MS:-20000}
       - CI_VERIFY_TIMEOUT_MS=${CI_VERIFY_TIMEOUT_MS:-1200000}
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
 
   coding-agent:
     container_name: sre-bot-coding-agent
@@ -462,8 +497,6 @@ services:
       - brain-agent
       - cicd-agent
       - commander-agent
-    ports:
-      - "8092:8080"
     healthcheck: *agent-healthcheck
     environment:
       - PORT=8080
@@ -474,6 +507,32 @@ services:
       - DEPLOY_APP_REPO_WRITE_TOKEN=${DEPLOY_APP_REPO_WRITE_TOKEN:-}
       - CODING_AGENT_ENABLED=${CODING_AGENT_ENABLED:-true}
       - CODING_AGENT_MAX_ITERATIONS=${CODING_AGENT_MAX_ITERATIONS:-5}
+      - SRE_INTERNAL_TOKEN=${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}
+      - SRE_AUTH_STRICT=${SRE_AUTH_STRICT:-false}
+
+  # PLAT-11: read-only debug MCP — human power-user only (disabled by default)
+  debug-mcp-agent:
+    build:
+      context: .
+      dockerfile: agents/debug-mcp/Dockerfile
+    networks: [sre-net]
+    entrypoint: ["/app/scripts/container-entrypoint.sh"]
+    profiles: ["debug-mcp"]
+    ports:
+      - "127.0.0.1:8093:8080"
+    environment:
+      - AGENT_DIR=debug-mcp
+      - KUBE_API_HOST=host.containers.internal
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
+      - PORT=8080
+      - DEBUG_MCP_ENABLED=${DEBUG_MCP_ENABLED:-false}
+      - DEBUG_MCP_TOKEN=${DEBUG_MCP_TOKEN:-}
+      - DEBUG_MCP_MAX_LOG_BYTES=8192
+      - LOKI_URL=${LOKI_URL:-}
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-}
+      - KUBECONFIG=/tmp/kube/config
+    volumes:
+      - ~/.kube:/root/.kube:ro
 
   # v2: optional AI gateway (enable AI_GATEWAY_URL in orchestrator/brain)
   ai-gateway:

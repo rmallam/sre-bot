@@ -4,6 +4,11 @@
  */
 
 import { pickSignalLogLines } from './log-excerpt.js';
+import {
+  LOKI_MAX_LINES,
+  PROM_MAX_FINDINGS,
+  PROM_MAX_SAMPLES,
+} from './observability-limits.js';
 
 export interface LogQueryRequest {
   namespace?: string;
@@ -37,7 +42,6 @@ export interface MetricsQueryResult {
 
 const LOKI_URL = process.env['LOKI_URL'] ?? '';
 const PROMETHEUS_URL = process.env['PROMETHEUS_URL'] ?? '';
-const LOKI_MAX_LINES = parseInt(process.env['LOKI_MAX_LINES'] ?? '120', 10);
 
 function lokiBase(): string {
   return LOKI_URL.replace(/\/$/, '');
@@ -126,13 +130,14 @@ export async function queryPrometheusMetrics(req: MetricsQueryRequest): Promise<
   for (const q of queries) {
     const rows = await promInstant(q.promql);
     for (const row of rows.slice(0, 5)) {
+      if (samples.length >= PROM_MAX_SAMPLES) break;
       const label = row.labels.deployment ?? row.labels.pod ?? q.name;
       samples.push({ metric: `${q.name}/${label}`, value: row.value });
       const num = parseFloat(row.value);
-      if (q.name === 'replicas_unavailable' && num > 0) {
+      if (findings.length < PROM_MAX_FINDINGS && q.name === 'replicas_unavailable' && num > 0) {
         findings.push(`${label}: ${num} unavailable replica(s)`);
       }
-      if (q.name === 'container_restarts' && num > 0) {
+      if (findings.length < PROM_MAX_FINDINGS && q.name === 'container_restarts' && num > 0) {
         findings.push(`${label}: ${num} container restart(s) (Prometheus)`);
       }
     }

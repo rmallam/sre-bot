@@ -15,6 +15,10 @@ import {
   ciFixHeadBranch,
 } from '../../../shared/src/ci-pr-verify-watch.js';
 import { mergeRunMetadata } from './run-store.js';
+import { persistDeployReleaseTargets } from './deploy-workload-meta.js';
+import type { DeployReleaseTargets } from '../../../shared/src/deploy-workloads.js';
+import { formatToolSummaryDetail } from '../../../shared/src/tool-user-labels.js';
+import { internalAuthHeaders } from '../../../shared/src/internal-auth.js';
 
 const AGENT = 'orchestrator-tool-runtime';
 
@@ -55,7 +59,7 @@ export interface ExecuteCompiledPlanOptions {
 async function postJson<T>(url: string, payload: unknown, incidentId: string): Promise<T> {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(120_000),
   });
@@ -209,8 +213,12 @@ async function executeToolCallOnce(
       error?: string;
       gitCommitUrl?: string;
       appRepoCommitUrl?: string;
+      deployReleaseTargets?: DeployReleaseTargets;
     }>(`${GITOPS_URL}/remediate`, cmdWithOpts, cmd.incidentId);
     const urls = [result.gitCommitUrl, result.appRepoCommitUrl].filter(Boolean) as string[];
+    if (result.success && result.deployReleaseTargets) {
+      await persistDeployReleaseTargets(cmd.runId, result.deployReleaseTargets);
+    }
     return {
       success: result.success,
       error: result.error,
@@ -221,18 +229,53 @@ async function executeToolCallOnce(
 
   if (call.name === 'investigator.verify_health') {
     const input = call.input as { namespace: string; resourceName: string };
-    const res = await fetch(
-      `${INVESTIGATOR_URL}/verify?namespace=${encodeURIComponent(input.namespace)}&resourceName=${encodeURIComponent(input.resourceName)}&incidentId=${encodeURIComponent(cmd.incidentId)}`,
-      { signal: AbortSignal.timeout(30_000) }
-    );
+    let workloads: import('../../../shared/src/deploy-workloads.js').DeployWorkloadRef[] | undefined;
+    if (cmd.runId) {
+      const { getRun } = await import('./run-store.js');
+      const { flattenDeployWorkloads, parseDeployReleaseTargets } = await import(
+        '../../../shared/src/deploy-workloads.js'
+      );
+      const run = await getRun(cmd.runId);
+      workloads = flattenDeployWorkloads(parseDeployReleaseTargets(run?.metadata));
+    }
+    const verifyBody = {
+      namespace: input.namespace,
+      resourceName: input.resourceName,
+      incidentId: cmd.incidentId,
+      workloads: workloads?.length ? workloads : undefined,
+    };
+    const res = await fetch(`${INVESTIGATOR_URL}/verify`, {
+      method: 'POST',
+      headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(verifyBody),
+      signal: AbortSignal.timeout(30_000),
+    });
     if (!res.ok) {
       return { success: false, error: `Verify HTTP ${res.status}`, summary: 'verify' };
     }
-    const body = (await res.json()) as { healthy: boolean; message: string };
+    const body = (await res.json()) as {
+      healthy: boolean;
+      message: string;
+      readyReplicas?: number;
+      desiredReplicas?: number;
+    };
+    if (cmd.runId) {
+      await mergeRunMetadata(cmd.runId, {
+        verifySnapshot: {
+          healthy: body.healthy,
+          namespace: input.namespace,
+          releaseName: input.resourceName,
+          message: body.message,
+          readyReplicas: body.readyReplicas,
+          desiredReplicas: body.desiredReplicas,
+          recordedAt: new Date().toISOString(),
+        },
+      });
+    }
     return {
       success: body.healthy,
       error: body.healthy ? undefined : body.message,
-      summary: body.healthy ? 'healthy' : 'degraded',
+      summary: body.healthy ? body.message : 'degraded',
     };
   }
 
@@ -315,7 +358,7 @@ async function executeToolCallOnce(
     try {
       const res = await fetch(`${CICD_URL}/rerun`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ repo, runId, incidentId: cmd.incidentId }),
         signal: AbortSignal.timeout(60_000),
       });
@@ -348,7 +391,7 @@ async function executeToolCallOnce(
     try {
       const res = await fetch(`${CICD_URL}/open-pr`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           repo,
           branch: input.branch ?? 'main',
@@ -402,7 +445,7 @@ async function executeToolCallOnce(
     try {
       const res = await fetch(`${CICD_URL}/open-code-pr`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           repo,
           branch: input.branch ?? 'main',
@@ -453,7 +496,7 @@ async function executeToolCallOnce(
     try {
       const startRes = await fetch(`${CODING_AGENT_URL}/run-fix`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           incidentId: input.incidentId,
           runId: input.runId,
@@ -554,7 +597,7 @@ async function executeToolCallOnce(
     try {
       const res = await fetch(`${INVESTIGATOR_URL}/observability/logs`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(input),
         signal: AbortSignal.timeout(60_000),
       });
@@ -573,7 +616,7 @@ async function executeToolCallOnce(
     try {
       const res = await fetch(`${INVESTIGATOR_URL}/observability/metrics`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(input),
         signal: AbortSignal.timeout(30_000),
       });
@@ -679,7 +722,8 @@ export async function executeCompiledPlan(
       tool: call.name,
       attempt,
       success: result.success,
-      summary: result.summary,
+      summary:
+        formatToolSummaryDetail(call.name, result.summary, cmd.plan?.action) ?? result.summary,
       error: result.error,
       durationMs: Date.now() - started,
       idempotencyKey: idempotencyKey(cmd.incidentId, call.name, attempt),

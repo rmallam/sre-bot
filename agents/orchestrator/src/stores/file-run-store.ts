@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { RunStore, StoredRun } from '../../../../shared/src/run-persistence.js';
 import type { RunStatus, ToolTranscriptEntry } from '../../../../shared/src/types.js';
@@ -27,12 +27,17 @@ export class FileRunStore implements RunStore {
     await writeFile(this.path(run.runId), JSON.stringify(run, null, 2), 'utf-8');
   }
 
-  async initRun(runId: string, incidentId: string, metadata?: Record<string, unknown>): Promise<void> {
+  async initRun(
+    runId: string,
+    incidentId: string,
+    metadata?: Record<string, unknown>,
+    options?: { status?: RunStatus }
+  ): Promise<void> {
     const now = new Date().toISOString();
     await this.write({
       runId,
       incidentId,
-      status: 'running',
+      status: options?.status ?? 'running',
       transcript: [],
       startedAt: now,
       updatedAt: now,
@@ -111,6 +116,33 @@ export class FileRunStore implements RunStore {
     if (!run) return;
     run.metadata = { ...(run.metadata ?? {}), ...patch };
     await this.write(run);
+  }
+
+  async listPendingThrottledRuns(limit = 50): Promise<StoredRun[]> {
+    const runs = await this.listRuns({ limit: 500 });
+    return runs
+      .filter((r) => r.status === 'pending_throttled')
+      .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+      .slice(0, limit);
+  }
+
+  async claimThrottledRun(runId: string): Promise<boolean> {
+    const lockPath = join(this.basePath, `.${runId}.claim.lock`);
+    try {
+      const fh = await open(lockPath, 'wx');
+      await fh.close();
+    } catch {
+      return false;
+    }
+    try {
+      const run = await this.read(runId);
+      if (!run || run.status !== 'pending_throttled') return false;
+      run.status = 'running';
+      await this.write(run);
+      return true;
+    } finally {
+      await unlink(lockPath).catch(() => undefined);
+    }
   }
 
   async close(): Promise<void> {}

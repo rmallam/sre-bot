@@ -54,6 +54,8 @@ export function runStatusOutcomeLabel(status: string): string {
       return 'did not complete';
     case 'awaiting_human':
       return 'waiting for your approval';
+    case 'pending_throttled':
+      return 'queued — waiting for namespace capacity';
     case 'running':
       return 'still in progress';
     case 'cancelled':

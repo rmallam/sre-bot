@@ -6,6 +6,7 @@ import type { DiagnosisContext, StartRunRequest } from '../../../shared/src/type
 import type { AgentReadToolCall, AgentStepRecord } from '../../../shared/src/agent-read-tools.js';
 import { mergeAgentEvidence } from '../../../shared/src/agent-evidence.js';
 import { sanitizeFacts } from './tools.js';
+import { internalAuthHeaders } from '../../../shared/src/internal-auth.js';
 
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 const BRAIN_URL = process.env['BRAIN_URL'] ?? 'http://brain-agent:8080';
@@ -13,7 +14,7 @@ const BRAIN_URL = process.env['BRAIN_URL'] ?? 'http://brain-agent:8080';
 async function postJson<T>(url: string, payload: unknown): Promise<T> {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(120_000),
   });

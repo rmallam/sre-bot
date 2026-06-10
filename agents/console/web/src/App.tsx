@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { AuthProvider } from './auth/AuthContext';
+import { AuthGate } from './components/AuthGate';
 import { Layout } from './components/Layout';
 import { ToastProvider } from './components/Toast';
 import { OverviewPage } from './pages/OverviewPage';
@@ -49,9 +51,13 @@ function Shell() {
 export default function App() {
   return (
     <ToastProvider>
-      <BrowserRouter>
-        <Shell />
-      </BrowserRouter>
+      <AuthProvider>
+        <BrowserRouter>
+          <AuthGate>
+            <Shell />
+          </AuthGate>
+        </BrowserRouter>
+      </AuthProvider>
     </ToastProvider>
   );
 }

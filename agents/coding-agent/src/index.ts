@@ -16,6 +16,7 @@ import type { Platform } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
 import { runFixLoop } from './fix-loop.js';
 import { cancelJob, createJob, getJob, listJobs } from './job-store.js';
+import { createInternalAuthMiddleware } from '../../../shared/src/internal-auth.js';
 
 const AGENT = 'coding-agent';
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
@@ -23,6 +24,7 @@ const ENABLED = (process.env['CODING_AGENT_ENABLED'] ?? 'true').toLowerCase() ==
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
+app.use(createInternalAuthMiddleware());
 
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', agent: AGENT, enabled: ENABLED });

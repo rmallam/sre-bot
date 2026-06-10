@@ -39,7 +39,7 @@ Do **not** replatform on Holmes-style LLM MCP writes. Adopt Holmes **investigati
 | 4 | **CI-2** | Coding agent service (Phase 2) | Application-code CI failures |
 | 5 | **AGENT-1–2** | Case model + commander case bind | Follow-up continuity |
 | 6 | **PLAT-4** | Observability investigator plugins (Prom / Loki) | Holmes-style RCA |
-| 7 | **CON-2** | Console auth (SSO or basic) | Production console — **deferred (POC)** |
+| 7 | **CON-2** | Console auth (SSO or basic) | Production console — **shipped (OIDC + RBAC)** |
 | 8 | **AGENT-3–5** | Investigator tool loop + ReAct graph + `SRE_AGENT_MODE` | Full LLM-driven flow (opt-in) |
 | 9 | **CI-3** | Post-PR CI verify + notify | Close CI remediation loop |
 | 10 | **PLAT-8** | Auto-sync skills + ranked brain injection | Learning loop |
@@ -71,7 +71,7 @@ Do **not** replatform on Holmes-style LLM MCP writes. Adopt Holmes **investigati
 | ID | Item | Status | Notes |
 |----|------|--------|-------|
 | **CON-1** | Grouped resources + remediation outcomes + skill export | **Done** | |
-| **CON-2** | Console auth (OAuth / basic / SSO proxy) | **Deferred** | POC — open `:8091` acceptable for now |
+| **CON-2** | OIDC auth + namespace RBAC + HTTP-only sessions | **Done** | Okta/Auth0/Azure via discovery; Redis sessions optional |
 | **CON-3** | Keyboard shortcuts (approve/reject on focus) | **Done** | A/R/I + J/K on Approvals |
 | **CON-4** | Unified activity feed (Telegram + web + HIL) | **Done** | `/activity` timeline |
 | **CON-5** | “Latest only” default filter on Resources page | **Done** | Runs page default |
@@ -165,7 +165,7 @@ Enable agentic: `SRE_AGENT_MODE=agentic` — see [AGENT-MODE-DESIGN.md](./AGENT-
 
 | Item | Reason |
 |------|--------|
-| **CON-2 Console auth** | Deferred until production exposure |
+| **CON-2 Console auth** | Shipped — enable with `CONSOLE_AUTH_ENABLED` + OIDC env |
 | Replace sre-bot with HolmesGPT | Loses remediation loop, HIL, GitOps |
 | LLM kubernetes-remediation MCP | Bypasses security model |
 | Auto-merge CI PRs without HIL | Enterprise safety |

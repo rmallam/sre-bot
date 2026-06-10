@@ -43,6 +43,18 @@ class RunbookRecord:
     similarity: float
 
 
+@dataclass(frozen=True, slots=True)
+class StoredRunbook:
+    """Full runbook row for dedup / maintenance."""
+
+    id: str
+    error_signature: str
+    target_component: str
+    playbook_markdown: str
+    embedding: list[float]
+    proven_count: int
+
+
 class PgVectorStore:
     """
     Connection pool to external EDB Postgres with pgvector enabled.
@@ -234,3 +246,82 @@ class PgVectorStore:
         except psycopg.Error:
             logger.exception("RAG database health check failed")
             return False
+
+    def list_all_runbooks(self) -> list[StoredRunbook]:
+        table = self._table
+        sql = f"""
+            SELECT
+                id::text AS id,
+                error_signature,
+                target_component,
+                playbook_markdown,
+                embedding,
+                COALESCE(proven_count, 1) AS proven_count
+            FROM {table}
+            ORDER BY target_component, error_signature
+        """
+        with self._connection() as conn:
+            register_vector(conn)
+            rows = conn.execute(sql).fetchall()
+        out: list[StoredRunbook] = []
+        for row in rows:
+            emb = row["embedding"]
+            out.append(
+                StoredRunbook(
+                    id=str(row["id"]),
+                    error_signature=str(row["error_signature"]),
+                    target_component=str(row["target_component"]),
+                    playbook_markdown=str(row["playbook_markdown"]),
+                    embedding=list(emb) if emb is not None else [],
+                    proven_count=int(row["proven_count"] or 1),
+                )
+            )
+        return out
+
+    @staticmethod
+    def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b, strict=True))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+    def update_runbook(
+        self,
+        *,
+        runbook_id: str,
+        playbook_markdown: str,
+        embedding: Sequence[float],
+        proven_count: int,
+    ) -> None:
+        table = self._table
+        sql = f"""
+            UPDATE {table}
+            SET playbook_markdown = %(markdown)s,
+                embedding = %(embedding)s::vector,
+                proven_count = %(proven_count)s,
+                updated_at = now()
+            WHERE id = %(id)s::uuid
+        """
+        with self._connection() as conn:
+            register_vector(conn)
+            conn.execute(
+                sql,
+                {
+                    "id": runbook_id,
+                    "markdown": playbook_markdown,
+                    "embedding": list(embedding),
+                    "proven_count": proven_count,
+                },
+            )
+
+    def delete_runbook(self, runbook_id: str) -> None:
+        table = self._table
+        with self._connection() as conn:
+            conn.execute(
+                f"DELETE FROM {table} WHERE id = %(id)s::uuid",
+                {"id": runbook_id},
+            )

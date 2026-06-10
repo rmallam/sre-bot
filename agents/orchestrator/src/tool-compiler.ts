@@ -219,7 +219,7 @@ export function compileFromToolCalls(calls: ToolCall[], ctx: RuntimeToolContext)
     confidence,
     riskLevel,
     validation,
-    fallbackReason: calls.length === 0 ? 'No tool calls in capability plan' : fallbackReason(ctx, calls),
+    fallbackReason: fallbackReason(ctx, calls),
   };
 }
 

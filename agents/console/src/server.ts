@@ -6,6 +6,29 @@ import express from 'express';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { internalAuthHeaders } from '../../../shared/src/internal-auth.js';
+import { consoleRbacHeaders } from '../../../shared/src/console-rbac-enforcement.js';
+import type { ConsoleUser } from '../../../shared/src/console-auth.js';
+import { filterByNamespaceAccess } from '../../../shared/src/namespace-rbac.js';
+import {
+  authConfigPayload,
+  buildOidcLoginUrl,
+  createConsoleAuthMiddleware,
+  establishSessionFromTokens,
+  exchangeOidcCode,
+  getConsoleUser,
+  logoutSession,
+} from './auth-middleware.js';
+import { initSessionStore } from './session-store.js';
+import {
+  filterApprovalsResponse,
+  filterGroupedRunsResponse,
+  filterRunsResponse,
+  guardApprovalMutation,
+  guardNamespace,
+  guardRunMutation,
+  namespaceAccessErrorResponse,
+} from './rbac-helpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
@@ -29,10 +52,20 @@ const AGENT_HEALTH_URLS: Record<string, string> = {
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
+app.use(createConsoleAuthMiddleware());
 
-async function proxyJson(url: string, init?: RequestInit): Promise<Response> {
+async function proxyJson(url: string, init?: RequestInit, user?: ConsoleUser): Promise<Response> {
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(60_000) });
+    const headers = new Headers(init?.headers);
+    for (const [k, v] of Object.entries(internalAuthHeaders())) {
+      if (!headers.has(k)) headers.set(k, v);
+    }
+    if (user) {
+      for (const [k, v] of Object.entries(consoleRbacHeaders(user))) {
+        headers.set(k, v);
+      }
+    }
+    return await fetch(url, { ...init, headers, signal: AbortSignal.timeout(60_000) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[console] upstream fetch failed: ${url} — ${msg}`);
@@ -49,6 +82,56 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', agent: 'console' });
+});
+
+app.get('/api/auth/config', (_req, res) => {
+  res.json(authConfigPayload());
+});
+
+app.get('/api/auth/login', async (req, res) => {
+  try {
+    const redirectUri =
+      typeof req.query.redirectUri === 'string'
+        ? req.query.redirectUri
+        : authConfigPayload().redirectUri;
+    res.redirect(await buildOidcLoginUrl(redirectUri));
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get('/api/auth/callback', async (req, res) => {
+  try {
+    const code = String(req.query.code ?? '');
+    const redirectUri = authConfigPayload().redirectUri;
+    if (!code) {
+      res.status(400).send('Missing authorization code');
+      return;
+    }
+    const tokens = await exchangeOidcCode(code, redirectUri);
+    await establishSessionFromTokens(res, tokens);
+    res.redirect('/');
+  } catch (err) {
+    res.status(500).type('html').send(`Login failed: ${String(err)}`);
+  }
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  await logoutSession(req, res);
+  res.json({ ok: true });
+});
+
+app.get('/api/auth/me', (req, res) => {
+  if (!authConfigPayload().enabled) {
+    res.json({ user: getConsoleUser(req), authEnabled: false });
+    return;
+  }
+  const user = getConsoleUser(req);
+  if (!user || user.userId === 'console') {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+  res.json({ user, authEnabled: true });
 });
 
 app.get('/api/agents', async (_req, res) => {
@@ -88,22 +171,70 @@ app.get('/api/app-review', async (req, res) => {
 });
 
 app.get('/api/apps', async (req, res) => {
-  const params = req.query.namespace ? `?namespace=${encodeURIComponent(String(req.query.namespace))}` : '';
+  const user = getConsoleUser(req);
+  const ns = req.query.namespace ? String(req.query.namespace) : undefined;
+  if (ns) {
+    try {
+      guardNamespace(user, ns);
+    } catch (err) {
+      const { status, body } = namespaceAccessErrorResponse(err);
+      res.status(status).json(body);
+      return;
+    }
+  }
+  const params = ns ? `?namespace=${encodeURIComponent(ns)}` : '';
   const r = await proxyJson(`${INVESTIGATOR_URL}/apps${params}`);
+  const body = await r.json();
+  if (r.ok && body && typeof body === 'object' && 'apps' in body) {
+    const apps = filterByNamespaceAccess(
+      user,
+      (body as { apps: Array<{ namespace?: string }> }).apps ?? [],
+      (a) => a.namespace
+    );
+    res.status(r.status).json({ ...(body as object), apps });
+    return;
+  }
+  res.status(r.status).json(body);
+});
+
+app.get('/api/apps/catalog', async (_req, res) => {
+  const r = await proxyJson(`${INVESTIGATOR_URL}/apps/catalog`);
   const body = await r.text();
   res.status(r.status).type('application/json').send(body);
 });
 
-app.get('/api/overview', async (_req, res) => {
+app.put('/api/apps/catalog', async (req, res) => {
+  const r = await proxyJson(`${INVESTIGATOR_URL}/apps/catalog`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req.body),
+  });
+  const body = await r.text();
+  res.status(r.status).type('application/json').send(body);
+});
+
+app.delete('/api/apps/catalog', async (req, res) => {
+  const params = new URLSearchParams();
+  if (req.query.namespace) params.set('namespace', String(req.query.namespace));
+  if (req.query.appId) params.set('appId', String(req.query.appId));
+  const r = await proxyJson(`${INVESTIGATOR_URL}/apps/catalog?${params}`, { method: 'DELETE' });
+  const body = await r.text();
+  res.status(r.status).type('application/json').send(body);
+});
+
+app.get('/api/overview', async (req, res) => {
+  const user = getConsoleUser(req);
   try {
     const [hilRes, runsRes] = await Promise.all([
       proxyJson(`${HIL_URL}/api/approvals`),
       proxyJson(`${ORCHESTRATOR_URL}/runs?limit=100`),
     ]);
-    const hil = hilRes.ok ? ((await hilRes.json()) as { pending?: number; approvals?: unknown[] }) : {};
-    const runs = runsRes.ok
+    const hilRaw = hilRes.ok ? ((await hilRes.json()) as { pending?: number; approvals?: unknown[] }) : {};
+    const hil = filterApprovalsResponse(user, hilRaw);
+    const runsRaw = runsRes.ok
       ? ((await runsRes.json()) as { runs?: Array<{ status: string }> }).runs ?? []
       : [];
+    const runs = filterRunsResponse(user, { runs: runsRaw }).runs ?? [];
 
     const byStatus = (s: string) => runs.filter((r) => r.status === s).length;
 
@@ -122,44 +253,51 @@ app.get('/api/overview', async (_req, res) => {
 });
 
 app.get('/api/activity', async (req, res) => {
+  const user = getConsoleUser(req);
   const limit = Math.min(parseInt(String(req.query.limit ?? '60'), 10) || 60, 200);
   try {
     const [runsRes, hilRes] = await Promise.all([
       proxyJson(`${ORCHESTRATOR_URL}/runs?limit=${limit}`),
       proxyJson(`${HIL_URL}/api/approvals`),
     ]);
-    const runs = runsRes.ok
-      ? ((await runsRes.json()) as {
-          runs?: Array<{
-            runId: string;
-            incidentId: string;
-            status: string;
-            updatedAt: string;
-            startedAt: string;
-            displayName?: string;
-            resourceName?: string;
-            namespace?: string;
-            mode?: string;
-          }>;
-        }).runs ?? []
-      : [];
-    const approvals = hilRes.ok
-      ? ((await hilRes.json()) as {
-          approvals?: Array<{
-            incidentId: string;
-            runId?: string;
-            status: string;
-            namespace: string;
-            resourceName: string;
-            resourceKind: string;
-            mode: string;
-            triggeredAt: string;
-            triggeredBy?: string;
-            lockedVia?: string;
-            plan?: { action?: string };
-          }>;
-        }).approvals ?? []
-      : [];
+    const runs = filterRunsResponse(
+      user,
+      runsRes.ok
+        ? ((await runsRes.json()) as {
+            runs?: Array<{
+              runId: string;
+              incidentId: string;
+              status: string;
+              updatedAt: string;
+              startedAt: string;
+              displayName?: string;
+              resourceName?: string;
+              namespace?: string;
+              mode?: string;
+            }>;
+          })
+        : {}
+    ).runs ?? [];
+    const approvals = filterApprovalsResponse(
+      user,
+      hilRes.ok
+        ? ((await hilRes.json()) as {
+            approvals?: Array<{
+              incidentId: string;
+              runId?: string;
+              status: string;
+              namespace: string;
+              resourceName: string;
+              resourceKind: string;
+              mode: string;
+              triggeredAt: string;
+              triggeredBy?: string;
+              lockedVia?: string;
+              plan?: { action?: string };
+            }>;
+          })
+        : {}
+    ).approvals ?? [];
 
     type Ev = {
       id: string;
@@ -227,10 +365,11 @@ app.get('/api/activity', async (req, res) => {
   }
 });
 
-app.get('/api/approvals', async (_req, res) => {
+app.get('/api/approvals', async (req, res) => {
+  const user = getConsoleUser(req);
   const r = await proxyJson(`${HIL_URL}/api/approvals`);
-  const body = await r.text();
-  res.status(r.status).type('application/json').send(body);
+  const body = (await r.json()) as { pending?: number; approvals?: unknown[] };
+  res.status(r.status).json(filterApprovalsResponse(user, body));
 });
 
 app.get('/api/ignored', async (_req, res) => {
@@ -245,96 +384,169 @@ app.delete('/api/ignored/:key', async (req, res) => {
 });
 
 app.post('/api/approvals/:incidentId/approve', async (req, res) => {
+  const user = getConsoleUser(req);
   const id = req.params.incidentId;
+  try {
+    await guardApprovalMutation(user, id ?? '', HIL_URL, proxyJson);
+  } catch (err) {
+    const { status, body } = namespaceAccessErrorResponse(err);
+    res.status(status).json(body);
+    return;
+  }
   const r = await proxyJson(`${HIL_URL}/api/approve/${id}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId: 'console', platform: 'web' }),
-  });
+    body: JSON.stringify({ userId: user.userId, platform: 'web' }),
+  }, user);
   res.status(r.status).json(await r.json());
 });
 
 app.post('/api/approvals/:incidentId/reject', async (req, res) => {
+  const user = getConsoleUser(req);
   const id = req.params.incidentId;
+  try {
+    await guardApprovalMutation(user, id ?? '', HIL_URL, proxyJson);
+  } catch (err) {
+    const { status, body } = namespaceAccessErrorResponse(err);
+    res.status(status).json(body);
+    return;
+  }
   const r = await proxyJson(`${HIL_URL}/api/reject/${id}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      userId: 'console',
+      userId: user.userId,
       platform: 'web',
       reason: (req.body as { reason?: string })?.reason ?? 'Rejected via console',
     }),
-  });
+  }, user);
   res.status(r.status).json(await r.json());
 });
 
 app.post('/api/approvals/:incidentId/ignore', async (req, res) => {
+  const user = getConsoleUser(req);
   const id = req.params.incidentId;
+  try {
+    await guardApprovalMutation(user, id ?? '', HIL_URL, proxyJson);
+  } catch (err) {
+    const { status, body } = namespaceAccessErrorResponse(err);
+    res.status(status).json(body);
+    return;
+  }
   const r = await proxyJson(`${HIL_URL}/api/ignore/${id}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      userId: 'console',
+      userId: user.userId,
       platform: 'web',
       reason: (req.body as { reason?: string })?.reason ?? 'Ignored via console',
     }),
-  });
+  }, user);
   res.status(r.status).json(await r.json());
 });
 
 app.post('/api/approvals/:incidentId/suggest', async (req, res) => {
+  const user = getConsoleUser(req);
   const id = req.params.incidentId;
+  try {
+    await guardApprovalMutation(user, id ?? '', HIL_URL, proxyJson);
+  } catch (err) {
+    const { status, body } = namespaceAccessErrorResponse(err);
+    res.status(status).json(body);
+    return;
+  }
   const { suggestion, applyNow } = req.body as { suggestion?: string; applyNow?: boolean };
   const r = await proxyJson(`${HIL_URL}/api/suggest-fix/${id}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       suggestion,
-      userId: 'console',
+      userId: user.userId,
       platform: 'web',
       applyNow: applyNow ?? false,
     }),
-  });
+  }, user);
   res.status(r.status).json(await r.json());
 });
 
 app.get('/api/runs', async (req, res) => {
+  const user = getConsoleUser(req);
   const limit = req.query.limit ?? '50';
   const incidentId = req.query.incidentId ? `&incidentId=${req.query.incidentId}` : '';
   const r = await proxyJson(`${ORCHESTRATOR_URL}/runs?limit=${limit}${incidentId}`);
-  res.status(r.status).json(await r.json());
+  const body = (await r.json()) as { runs?: unknown[] };
+  res.status(r.status).json(filterRunsResponse(user, body));
 });
 
 app.get('/api/runs/grouped', async (req, res) => {
+  const user = getConsoleUser(req);
   const limit = req.query.limit ?? '150';
   const r = await proxyJson(`${ORCHESTRATOR_URL}/runs/by-resource?limit=${limit}`);
-  res.status(r.status).json(await r.json());
+  const body = await r.json();
+  res.status(r.status).json(filterGroupedRunsResponse(user, body as { groups?: unknown[] }));
 });
 
 app.get('/api/skills/export', async (req, res) => {
+  const user = getConsoleUser(req);
   const limit = req.query.limit ?? '150';
   const r = await proxyJson(`${ORCHESTRATOR_URL}/runs/skills-export?limit=${limit}`);
-  res.status(r.status).json(await r.json());
+  const body = (await r.json()) as { markdown?: string; runs?: Array<{ namespace?: string }> };
+  if (r.ok && Array.isArray(body.runs)) {
+    body.runs = filterByNamespaceAccess(user, body.runs, (run) => run.namespace);
+  }
+  res.status(r.status).json(body);
 });
 
 app.get('/api/runs/:runId', async (req, res) => {
-  const r = await proxyJson(`${ORCHESTRATOR_URL}/runs/${encodeURIComponent(req.params.runId ?? '')}`);
-  res.status(r.status).json(await r.json());
+  const user = getConsoleUser(req);
+  const runId = req.params.runId ?? '';
+  const r = await proxyJson(`${ORCHESTRATOR_URL}/runs/${encodeURIComponent(runId)}`);
+  const body = (await r.json()) as {
+    namespace?: string;
+    metadata?: { request?: { namespace?: string } };
+  };
+  if (r.ok) {
+    try {
+      guardNamespace(user, body.namespace ?? body.metadata?.request?.namespace);
+    } catch (err) {
+      const { status, body: errBody } = namespaceAccessErrorResponse(err);
+      res.status(status).json(errBody);
+      return;
+    }
+  }
+  res.status(r.status).json(body);
 });
 
 app.get('/api/runs/:runId/summary', async (req, res) => {
+  const user = getConsoleUser(req);
+  const runId = req.params.runId ?? '';
+  try {
+    await guardRunMutation(user, runId, ORCHESTRATOR_URL, proxyJson);
+  } catch (err) {
+    const { status, body } = namespaceAccessErrorResponse(err);
+    res.status(status).json(body);
+    return;
+  }
   const verbose = req.query.verbose === 'true' ? '?verbose=true' : '';
   const r = await proxyJson(
-    `${ORCHESTRATOR_URL}/runs/${encodeURIComponent(req.params.runId ?? '')}/summary${verbose}`
+    `${ORCHESTRATOR_URL}/runs/${encodeURIComponent(runId)}/summary${verbose}`
   );
   res.status(r.status).json(await r.json());
 });
 
 app.post('/api/runs/:runId/cancel', async (req, res) => {
-  const r = await proxyJson(
-    `${ORCHESTRATOR_URL}/runs/${encodeURIComponent(req.params.runId ?? '')}/cancel`,
-    { method: 'POST' }
-  );
+  const user = getConsoleUser(req);
+  const runId = req.params.runId ?? '';
+  try {
+    await guardRunMutation(user, runId, ORCHESTRATOR_URL, proxyJson);
+  } catch (err) {
+    const { status, body } = namespaceAccessErrorResponse(err);
+    res.status(status).json(body);
+    return;
+  }
+  const r = await proxyJson(`${ORCHESTRATOR_URL}/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
+  });
   res.status(r.status).json(await r.json());
 });
 
@@ -354,64 +566,80 @@ app.post('/api/coding-agent/jobs/:jobId/cancel', async (req, res) => {
 });
 
 app.get('/api/chat/sessions', async (req, res) => {
-  const userId = (req.query.userId as string) ?? 'console';
-  const r = await proxyJson(`${COMMANDER_URL}/chat/sessions?userId=${encodeURIComponent(userId)}`);
+  const user = getConsoleUser(req);
+  const r = await proxyJson(
+    `${COMMANDER_URL}/chat/sessions?userId=${encodeURIComponent(user.userId)}`
+  );
   res.status(r.status).json(await r.json());
 });
 
 app.post('/api/chat/sessions', async (req, res) => {
+  const user = getConsoleUser(req);
   const r = await proxyJson(`${COMMANDER_URL}/chat/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req.body),
+    body: JSON.stringify({ ...(req.body as object), userId: user.userId }),
   });
   res.status(r.status).json(await r.json());
 });
 
 app.post('/api/chat/sessions/:channelId/reset', async (req, res) => {
+  const user = getConsoleUser(req);
   const r = await proxyJson(
     `${COMMANDER_URL}/chat/sessions/${encodeURIComponent(req.params.channelId ?? '')}/reset`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body ?? {}),
+      body: JSON.stringify({ ...(req.body as object), userId: user.userId }),
     }
   );
   res.status(r.status).json(await r.json());
 });
 
 app.post('/api/chat', async (req, res) => {
+  const user = getConsoleUser(req);
+  const payload = { ...(req.body as Record<string, unknown>), userId: user.userId };
+  const ns = payload.namespace as string | undefined;
+  if (ns) {
+    try {
+      guardNamespace(user, ns);
+    } catch (err) {
+      const { status, body } = namespaceAccessErrorResponse(err);
+      res.status(status).json(body);
+      return;
+    }
+  }
   const r = await proxyJson(`${COMMANDER_URL}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req.body),
+    body: JSON.stringify(payload),
   });
   res.status(r.status).json(await r.json());
 });
 
 app.get('/api/chat/transcript', async (req, res) => {
+  const user = getConsoleUser(req);
   const channelId = req.query.channelId as string;
-  const userId = (req.query.userId as string) ?? 'console';
   if (!channelId) {
     res.status(400).json({ error: 'channelId required' });
     return;
   }
   const r = await proxyJson(
-    `${COMMANDER_URL}/chat/session?channelId=${encodeURIComponent(channelId)}&userId=${encodeURIComponent(userId)}`
+    `${COMMANDER_URL}/chat/session?channelId=${encodeURIComponent(channelId)}&userId=${encodeURIComponent(user.userId)}`
   );
   const body = (await r.json()) as { transcript?: unknown };
   res.status(r.status).json({ transcript: body.transcript ?? [] });
 });
 
 app.get('/api/chat/session', async (req, res) => {
+  const user = getConsoleUser(req);
   const channelId = req.query.channelId as string;
-  const userId = (req.query.userId as string) ?? 'console';
   if (!channelId) {
     res.status(400).json({ error: 'channelId required' });
     return;
   }
   const r = await proxyJson(
-    `${COMMANDER_URL}/chat/session?channelId=${encodeURIComponent(channelId)}&userId=${encodeURIComponent(userId)}`
+    `${COMMANDER_URL}/chat/session?channelId=${encodeURIComponent(channelId)}&userId=${encodeURIComponent(user.userId)}`
   );
   res.status(r.status).json(await r.json());
 });
@@ -431,5 +659,12 @@ if (existsSync(webDist)) {
 }
 
 app.listen(PORT, () => {
-  console.log(`[console] listening on ${PORT}, hil=${HIL_URL}, orchestrator=${ORCHESTRATOR_URL}`);
+  void initSessionStore()
+    .then(() => {
+      console.log(`[console] listening on ${PORT}, hil=${HIL_URL}, orchestrator=${ORCHESTRATOR_URL}`);
+    })
+    .catch((err) => {
+      console.error('[console] session store init failed', err);
+      process.exit(1);
+    });
 });

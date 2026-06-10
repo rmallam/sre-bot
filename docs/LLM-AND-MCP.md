@@ -5,11 +5,12 @@ Consolidated backlog: **[PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md)**
 
 ## OpenRouter multi-model (default)
 
-sre-bot uses **two models** via one OpenRouter API key (Holmes-style `modelList`, but fixed roles):
+sre-bot uses **three model roles** via one OpenRouter API key (Holmes-style `modelList`, but fixed roles):
 
 | Role | Service | Env var | Default model |
 |------|---------|---------|----------------|
 | **Planner** | `brain` | `OPENROUTER_BRAIN_MODEL` | `anthropic/claude-sonnet-4` |
+| **ReAct tool select / reflect** | `brain` | `OPENROUTER_TOOL_SELECT_MODEL` | same as commander (Flash) |
 | **Router** | `commander` | `OPENROUTER_COMMANDER_MODEL` | `google/gemini-2.5-flash` |
 
 ```bash

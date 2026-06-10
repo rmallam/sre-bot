@@ -26,6 +26,7 @@ export type ApprovalStatus =
 export type RunStatus =
   | 'running'
   | 'awaiting_human'
+  | 'pending_throttled'
   | 'succeeded'
   | 'failed'
   | 'escalated'
@@ -80,6 +81,8 @@ export interface DeployRequest extends IncidentEnvelope {
   githubRepo?: string;
   /** Deploy from a catalog/public image without a Git repository. */
   containerImage?: string;
+  /** Install from a published Helm chart (catalog or README-parsed). */
+  helmRemote?: import('./deploy/readme-install-hints.js').RemoteHelmInstall;
   gitRef?: string;
   deployStrategy?: 'gitops' | 'direct';
   requestedBy: string;
@@ -180,6 +183,13 @@ export interface DiagnosisContext extends IncidentEnvelope {
   observabilitySummary?: string;
   /** False when the Kubernetes API is unreachable or returned no nodes. */
   clusterReachable?: boolean;
+  /** Structured rollup for cluster/namespace investigate scope (PLAT-4c). */
+  scopeHealth?: {
+    scope: 'cluster' | 'namespace';
+    nodeCount?: number;
+    notReadyNodeCount?: number;
+    unhealthyDeployments: Array<{ namespace: string; name: string; ready: number; desired: number }>;
+  };
   /** Populated in ci-failure mode from cicd-agent. */
   ciRun?: CiRunFacts;
   /** How this workload was deployed — drives fix routing. */
@@ -340,6 +350,8 @@ export interface RemediationResult extends IncidentEnvelope {
   platform?: Platform;
   channelId?: string;
   runId?: string;
+  /** Workloads discovered immediately after apply (Layer 4). */
+  deployReleaseTargets?: import('./deploy-workloads.js').DeployReleaseTargets;
 }
 
 export interface ExecutionResult extends IncidentEnvelope {
@@ -412,6 +424,8 @@ export interface StartRunRequest extends IncidentEnvelope {
   deployStrategy?: 'gitops' | 'direct';
   /** Public image deploy (e.g. httpd:2.4-alpine) when no githubRepo. */
   containerImage?: string;
+  /** Published Helm chart install (e.g. argocd from argo-helm) when no githubRepo. */
+  helmRemote?: import('./deploy/readme-install-hints.js').RemoteHelmInstall;
   requestedBy?: string;
   platform?: Platform;
   channelId?: string;
@@ -431,6 +445,10 @@ export interface StartRunRequest extends IncidentEnvelope {
   agentMode?: 'classic' | 'agentic';
   /** Merged user hints from case evidence. */
   userHints?: string[];
+  /** AGENT-D2 — cached diagnosis facts from case evidence. */
+  cachedFacts?: Partial<DiagnosisContext>;
+  /** AGENT-D2 — tool names already fetched for this case. */
+  cachedFetchedTools?: string[];
   /** User- or registry-provided deploy provenance for fix routing. */
   deployProvenance?: Partial<DeployProvenance>;
   /** Allow temporary cluster-only patch when Git source is unknown. */

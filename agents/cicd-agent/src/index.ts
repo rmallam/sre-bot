@@ -26,12 +26,14 @@ import {
 } from './github.js';
 import { gatherCiRepoContext } from './repo-context.js';
 import { watchCiAfterPr } from './ci-verify-watch.js';
+import { createInternalAuthMiddleware } from '../../../shared/src/internal-auth.js';
 
 const AGENT = 'cicd-agent';
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
 
 const app = express();
 app.use(express.json());
+app.use(createInternalAuthMiddleware());
 
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok', agent: AGENT, githubConfigured: githubConfigured() });

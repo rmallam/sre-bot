@@ -5,12 +5,14 @@ Upsert verified remediation playbooks into pgvector (learning loop).
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 
 from pgvector.psycopg import register_vector
 
 from config import get_settings
+from rag.dedup_worker import parameterize_playbook_markdown
 from rag.pg_vector_store import PgVectorStore
 from rag.retriever import EmbeddingClient
 
@@ -51,7 +53,7 @@ def upsert_verified_runbook(
     Embeds ``error_signature + playbook excerpt`` — same convention as bootstrap seed.
     """
     signature = (error_signature or "").strip()
-    markdown = (playbook_markdown or "").strip()
+    markdown = parameterize_playbook_markdown((playbook_markdown or "").strip())
     component = _normalize_component(target_component)
 
     if not signature:
@@ -73,6 +75,29 @@ def upsert_verified_runbook(
     emb = embedder or EmbeddingClient()
     embed_text = f"{signature} {markdown[:400]}"
     vector = emb.embed(embed_text)
+
+    premerge_threshold = float(os.getenv("SRE_RAG_PREMERGE_SIMILARITY", "0.95"))
+    try:
+        near = db.hybrid_search(
+            error_signature=signature,
+            target_component=component,
+            query_embedding=vector,
+            top_k=1,
+        )
+        if (
+            near
+            and near[0].similarity >= premerge_threshold
+            and near[0].error_signature.strip().lower() != signature.lower()
+        ):
+            logger.info(
+                "RAG learn pre-merge near-duplicate signature=%s -> existing=%s sim=%.3f",
+                signature,
+                near[0].error_signature,
+                near[0].similarity,
+            )
+            signature = near[0].error_signature
+    except Exception:
+        logger.exception("RAG pre-merge lookup failed — continuing with upsert")
 
     try:
         with db._connection() as conn:  # noqa: SLF001

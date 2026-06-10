@@ -24,6 +24,7 @@ import type {
 } from '../../../shared/src/types.js';
 import type { RuntimeToolContext } from '../../../shared/src/tool-contracts.js';
 import { formatFetchError, log } from '../../../shared/src/http.js';
+import { internalAuthHeaders } from '../../../shared/src/internal-auth.js';
 import { waitForWorkloadReady } from '../../../shared/src/workload-readiness-wait.js';
 import { getToolDefinition } from '../../../shared/src/tool-registry.js';
 import { isProdNamespace } from '../../../shared/src/tool-policy.js';
@@ -39,6 +40,11 @@ import {
   setPendingToolApproval,
   setRunStatus,
 } from './run-store.js';
+import {
+  flattenDeployWorkloads,
+  parseDeployReleaseTargets,
+  type DeployWorkloadRef,
+} from '../../../shared/src/deploy-workloads.js';
 
 const USE_CAPABILITY_PLANNER = (process.env['USE_CAPABILITY_PLANNER'] ?? 'false').toLowerCase() === 'true';
 const PER_TOOL_HIL = (process.env['PER_TOOL_HIL'] ?? 'false').toLowerCase() === 'true';
@@ -72,7 +78,7 @@ async function postJson<T>(url: string, payload: unknown, incidentId: string): P
   try {
     res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(120_000),
     });
@@ -163,7 +169,7 @@ export async function enhanceCiRunFacts(
   try {
     const res = await fetch(`${BRAIN_URL}/classify-ci`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ incidentId, ciRun }),
       signal: AbortSignal.timeout(45_000),
     });
@@ -212,6 +218,7 @@ export async function gatherFacts(req: StartRunRequest): Promise<DiagnosisContex
   });
   if (req.githubRepo) params.set('githubRepo', req.githubRepo);
   if (req.containerImage) params.set('containerImage', req.containerImage);
+  if (req.helmRemote) params.set('helmRemote', JSON.stringify(req.helmRemote));
   if (req.gitRef) params.set('gitRef', req.gitRef);
   if (req.investigateScope) params.set('investigateScope', req.investigateScope);
   if (req.rawMessage) params.set('rawMessage', req.rawMessage);
@@ -308,7 +315,7 @@ export async function sanitizeTextForLlm(text: string, incidentId: string): Prom
   try {
     const res = await fetch(`${SECURITY_URL}/sanitize-for-llm`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ text, incidentId }),
       signal: AbortSignal.timeout(15_000),
     });
@@ -487,16 +494,32 @@ export { compileAndValidatePlan };
 export async function verifyWorkload(
   namespace: string,
   resourceName: string,
-  incidentId: string
+  incidentId: string,
+  opts?: { workloads?: DeployWorkloadRef[] }
 ): Promise<VerifyResult> {
-  const res = await fetch(
-    `${INVESTIGATOR_URL}/verify?namespace=${encodeURIComponent(namespace)}&resourceName=${encodeURIComponent(resourceName)}&incidentId=${encodeURIComponent(incidentId)}`,
-    { signal: AbortSignal.timeout(30_000) }
-  );
+  const body = {
+    namespace,
+    resourceName,
+    incidentId,
+    workloads: opts?.workloads?.length ? opts.workloads : undefined,
+  };
+  const res = await fetch(`${INVESTIGATOR_URL}/verify`, {
+    method: 'POST',
+    headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!res.ok) {
     return { healthy: false, message: `Verify HTTP ${res.status}` };
   }
   return res.json() as Promise<VerifyResult>;
+}
+
+async function workloadsFromRun(runId?: string): Promise<DeployWorkloadRef[] | undefined> {
+  if (!runId) return undefined;
+  const run = await getRun(runId);
+  const flat = flattenDeployWorkloads(parseDeployReleaseTargets(run?.metadata));
+  return flat.length ? flat : undefined;
 }
 
 const ROLLOUT_WAIT_ACTIONS = new Set(['git_patch', 'restart', 'helm_deploy', 'repo_apply']);
@@ -513,13 +536,17 @@ export async function verifyAfterRemediation(
   incidentId: string,
   opts: {
     waitForRollout: boolean;
+    runId?: string;
     remediationAction?: RemediationAction;
     afterImagePatch?: boolean;
     onProgress?: (message: string) => void | Promise<void>;
   }
 ): Promise<VerifyResult> {
+  const workloads = await workloadsFromRun(opts.runId);
+  const verifyOpts = workloads?.length ? { workloads } : undefined;
+
   if (!opts.waitForRollout) {
-    return verifyWorkload(namespace, resourceName, incidentId);
+    return verifyWorkload(namespace, resourceName, incidentId, verifyOpts);
   }
   return waitForWorkloadReady({
     namespace,
@@ -527,7 +554,7 @@ export async function verifyAfterRemediation(
     incidentId,
     remediationAction: opts.remediationAction,
     afterImagePatch: opts.afterImagePatch,
-    fetchVerify: verifyWorkload,
+    fetchVerify: (ns, name, iid) => verifyWorkload(ns, name, iid, verifyOpts),
     onProgress: opts.onProgress,
   });
 }

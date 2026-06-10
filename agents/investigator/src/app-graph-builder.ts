@@ -14,9 +14,10 @@ import {
 } from '../../../shared/src/app-graph.js';
 import { log } from '../../../shared/src/http.js';
 import { resolveDeploymentByHint } from './cluster-facts.js';
+import { getCatalogEntry } from './app-catalog-store.js';
+import { resolveMatchedDeployments } from './app-list.js';
 
 const AGENT = 'investigator';
-const APP_ID_ANNOTATION = 'sre.bot/app-id';
 const DEPENDS_ON_ANNOTATION = 'sre.bot/depends-on';
 
 const ENV_HOST_PATTERNS = [
@@ -251,25 +252,14 @@ export async function buildAppGraph(opts: BuildAppGraphOpts): Promise<BuildAppGr
   }
 
   const appIdLower = appId.toLowerCase();
+  const { matched: matchedDeps, namespace: resolvedNs } = await resolveMatchedDeployments(
+    allDeps,
+    appId,
+    namespace
+  );
+  namespace = resolvedNs;
 
-  const matchedDeps = allDeps.filter((d) => {
-    const ns = d.metadata?.namespace ?? 'default';
-    const name = d.metadata?.name ?? '';
-    const annAppId = d.metadata?.annotations?.[APP_ID_ANNOTATION];
-    if (annAppId && annAppId.toLowerCase() === appIdLower) return true;
-    if (namespace && ns !== namespace) return false;
-    return name.toLowerCase() === appIdLower;
-  });
-
-  if (matchedDeps.length === 0) {
-    const byAnn = allDeps.filter(
-      (d) => (d.metadata?.annotations?.[APP_ID_ANNOTATION] ?? '').toLowerCase() === appIdLower
-    );
-    if (byAnn.length > 0) {
-      matchedDeps.push(...byAnn);
-      namespace = byAnn[0]!.metadata?.namespace ?? namespace;
-    }
-  }
+  const catalogEntry = await getCatalogEntry(namespace, appId);
 
   const namespaces = new Set(matchedDeps.map((d) => d.metadata?.namespace ?? namespace));
   if (matchedDeps.length === 0) namespaces.add(namespace);
@@ -391,7 +381,10 @@ export async function buildAppGraph(opts: BuildAppGraphOpts): Promise<BuildAppGr
       }
     }
 
-    for (const depName of parseDependsOn(dep.metadata?.annotations?.[DEPENDS_ON_ANNOTATION])) {
+    for (const depName of [
+      ...parseDependsOn(dep.metadata?.annotations?.[DEPENDS_ON_ANNOTATION]),
+      ...(catalogEntry?.dependsOn ?? []),
+    ]) {
       const parts = depName.includes('/') ? depName.split('/') : [ns, depName];
       const depNs = parts.length === 2 ? parts[0]! : ns;
       const depTarget = parts.length === 2 ? parts[1]! : parts[0]!;
@@ -526,55 +519,4 @@ export async function buildAppReview(opts: BuildAppGraphOpts): Promise<AppReview
   return built.error ? { ...review, error: built.error } : review;
 }
 
-export interface AppListEntry {
-  appId: string;
-  namespace: string;
-  deploymentCount: number;
-  source: 'annotation' | 'deployment-name';
-}
-
-/** List known apps from cluster (annotation or deployment name). */
-export async function listApps(namespace?: string): Promise<{
-  apps: AppListEntry[];
-  clusterReachable: boolean;
-  error?: string;
-}> {
-  try {
-    const depsRes = await appsV1Api.listDeploymentForAllNamespaces();
-    const allDeps = depsRes.body.items ?? [];
-    const byKey = new Map<string, AppListEntry>();
-
-    for (const dep of allDeps) {
-      const ns = dep.metadata?.namespace ?? 'default';
-      if (namespace && ns !== namespace) continue;
-      const annId = dep.metadata?.annotations?.[APP_ID_ANNOTATION]?.trim();
-      const name = dep.metadata?.name ?? '';
-      const appId = annId || name;
-      const key = `${ns}|${appId}`.toLowerCase();
-      const existing = byKey.get(key);
-      if (existing) {
-        existing.deploymentCount += 1;
-      } else {
-        byKey.set(key, {
-          appId,
-          namespace: ns,
-          deploymentCount: 1,
-          source: annId ? 'annotation' : 'deployment-name',
-        });
-      }
-    }
-
-    return {
-      apps: [...byKey.values()].sort((a, b) =>
-        a.namespace === b.namespace ? a.appId.localeCompare(b.appId) : a.namespace.localeCompare(b.namespace)
-      ),
-      clusterReachable: true,
-    };
-  } catch (err) {
-    return {
-      apps: [],
-      clusterReachable: false,
-      error: formatK8sApiError(err),
-    };
-  }
-}
+export { listApps, type AppListEntry } from './app-list.js';

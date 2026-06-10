@@ -7,12 +7,14 @@ import { log } from '../../../shared/src/http.js';
 import { emitSecurityAudit } from '../../../shared/src/audit-siem.js';
 import { sanitizeForLlm, sanitizeText } from './sanitize.js';
 import { authorizeAction } from './authorize.js';
+import { createInternalAuthMiddleware } from '../../../shared/src/internal-auth.js';
 
 const AGENT = 'security-agent';
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
+app.use(createInternalAuthMiddleware());
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', agent: AGENT });

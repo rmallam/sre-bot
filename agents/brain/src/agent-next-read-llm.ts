@@ -10,7 +10,7 @@ import {
   buildAgentGoal,
   evidenceSummaryForLlm,
 } from '../../../shared/src/agent-evidence.js';
-import { resolveBrainLlm } from '../../../shared/src/llm-config.js';
+import { resolveToolSelectLlm } from '../../../shared/src/llm-config.js';
 import { openRouterChat, stripJsonFences } from '../../../shared/src/openrouter.js';
 import { log } from '../../../shared/src/http.js';
 import type { AgentNextReadRequest, AgentNextReadResponse } from './agent-loop.js';
@@ -44,7 +44,7 @@ function parseLlmNextRead(raw: string): LlmNextReadPayload | null {
 }
 
 async function callLlmNextRead(req: AgentNextReadRequest): Promise<LlmNextReadPayload> {
-  const llm = resolveBrainLlm();
+  const llm = resolveToolSelectLlm();
   const catalog = formatAgentToolCatalogForLlm();
   const evidenceBlock = evidenceSummaryForLlm(req.evidence);
   const prior = req.priorSteps
@@ -199,7 +199,7 @@ export async function agentReflectLlm(req: {
   }
 
   try {
-    const llm = resolveBrainLlm();
+    const llm = resolveToolSelectLlm();
     const lastFail = [...req.actionHistory].reverse().find((a) => !a.success);
     const system = `You are an SRE agent reflecting after a failed verify step. Respond JSON only:
 { "outcome": "retry" | "escalate" | "ask_user", "operatorMessage": "...", "focusGoal": "optional retry focus" }

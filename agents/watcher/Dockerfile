@@ -2,6 +2,8 @@ FROM node:22-alpine
 WORKDIR /app
 
 # Copy shared types
+COPY shared/package*.json ./shared/
+RUN cd shared && npm ci --omit=dev
 COPY shared/ ./shared/
 COPY scripts/container-entrypoint.sh /app/scripts/container-entrypoint.sh
 RUN chmod +x /app/scripts/container-entrypoint.sh

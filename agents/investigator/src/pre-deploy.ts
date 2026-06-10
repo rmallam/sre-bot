@@ -75,7 +75,7 @@ async function safeCall<T>(
 export async function gatherPreDeployFacts(
   req: DeployRequest
 ): Promise<Partial<DiagnosisContext>> {
-  const { incidentId, namespace, githubRepo, gitRef = 'main', containerImage } = req;
+  const { incidentId, namespace, githubRepo, gitRef = 'main', containerImage, helmRemote } = req;
 
   log('info', AGENT, 'Starting pre-deploy fact-gathering', {
     incidentId,
@@ -83,6 +83,7 @@ export async function gatherPreDeployFacts(
     githubRepo,
     gitRef,
     containerImage,
+    helmRemote: helmRemote?.chartRef,
   });
 
   const k8sFacts = await gatherNamespaceFacts(namespace, incidentId);
@@ -96,7 +97,16 @@ export async function gatherPreDeployFacts(
         cloneError: undefined,
         resolvedGitRef: gitRef,
       }
-    : await cloneAndLocateEntryPoint(githubRepo ?? '', gitRef, incidentId, req.resourceName);
+    : helmRemote
+      ? {
+          needsHelmGeneration: false,
+          repoEntryPointKind: 'helm' as const,
+          gitManifestPath: undefined,
+          gitManifestContent: undefined,
+          cloneError: undefined,
+          resolvedGitRef: gitRef,
+        }
+      : await cloneAndLocateEntryPoint(githubRepo ?? '', gitRef, incidentId, req.resourceName);
 
   const result: Partial<DiagnosisContext> = {
     incidentId: req.incidentId,

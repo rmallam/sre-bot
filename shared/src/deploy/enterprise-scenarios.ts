@@ -115,6 +115,22 @@ export function classifyEnterpriseDeployScenario(
     };
   }
 
+  if (request.helmRemote) {
+    tags.push('helm-remote-repo');
+    return {
+      scenario: 'helm-remote-repo',
+      tags,
+      recommendedAction: 'repo_apply',
+      deployStrategy: 'direct',
+      reasoning:
+        `Helm catalog deploy (${request.helmRemote.chartRef} from ${request.helmRemote.repoUrl}).`,
+      warnings,
+      requiresHil,
+      preSteps,
+      helmRemote: request.helmRemote,
+    };
+  }
+
   if (request.stackServices && request.stackServices.length > 1) {
     return {
       scenario: 'multi-service-stack',

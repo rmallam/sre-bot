@@ -6,6 +6,7 @@ import type { CiRunFacts } from '../../../shared/src/ci-types.js';
 import type { CiRepoContext } from '../../../shared/src/ci-repo-context.js';
 import type { Platform } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
+import { internalAuthHeaders } from '../../../shared/src/internal-auth.js';
 import {
   appendStep,
   getJob,
@@ -38,6 +39,7 @@ async function gatherRepoContext(ciRun: CiRunFacts): Promise<CiRepoContext> {
   });
   if (ciRun.workflowName) params.set('workflowName', ciRun.workflowName);
   const res = await fetch(`${CICD_URL}/repo-context?${params}`, {
+    headers: internalAuthHeaders(),
     signal: AbortSignal.timeout(90_000),
   });
   if (!res.ok) {
@@ -62,7 +64,7 @@ async function planFix(opts: {
 }> {
   const res = await fetch(`${BRAIN_URL}/plan-app-fix`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(opts),
     signal: AbortSignal.timeout(180_000),
   });
@@ -88,7 +90,7 @@ async function openCodePr(opts: {
 }): Promise<{ prUrl?: string; message?: string }> {
   const res = await fetch(`${CICD_URL}/open-code-pr`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       repo: opts.githubRepo,
       branch: opts.branch,

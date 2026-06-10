@@ -75,6 +75,16 @@ export function defaultQuickActionsForUpdate(
     actions.push({ id: `show_details_${payload.runId}`, label: '📋 Show logs' });
   }
 
+  if (
+    payload.runId &&
+    (payload.kind === 'deploy_ready' ||
+      payload.kind === 'deploy_failed' ||
+      payload.kind === 'run_succeeded' ||
+      payload.kind === 'run_failed')
+  ) {
+    actions.push({ id: `view_run_${payload.runId}`, label: 'View run details' });
+  }
+
   switch (payload.kind) {
     case 'ci_approval_rerun':
     case 'ci_approval_workflow_pr':
@@ -147,9 +157,10 @@ export function formatRunUpdateFallback(payload: RunUpdatePayload): string {
       return payload.progressStep ?? payload.technicalMessage ?? 'Deploy in progress…';
     case 'deploy_ready':
       return (
+        payload.technicalMessage ??
         `Deploy looks healthy for ${payload.resourceName ?? 'the app'}` +
-        (payload.namespace ? ` in namespace ${payload.namespace}` : '') +
-        '.'
+          (payload.namespace ? ` in namespace ${payload.namespace}` : '') +
+          '.'
       );
     case 'deploy_failed':
       return (

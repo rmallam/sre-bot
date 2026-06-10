@@ -1,16 +1,12 @@
 import { parse, stringify } from 'yaml';
 import { redactString, REDACTED } from './secret-patterns.js';
 
-const SENSITIVE_KEYS = new Set([
-  'stringData',
-  'data',
-  'password',
-  'token',
-  'secret',
-  'apiKey',
-  'api_key',
-  'privateKey',
-]);
+const SENSITIVE_KEY_RE =
+  /^(stringdata|data|password|token|secret|apikey|api_key|privatekey|accesstoken|clientsecret|credentials|authorization)$/i;
+
+function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEY_RE.test(key);
+}
 
 export function redactYaml(content: string): { yaml: string; redactedKeys: string[] } {
   const redactedKeys: string[] = [];
@@ -24,6 +20,21 @@ export function redactYaml(content: string): { yaml: string; redactedKeys: strin
   }
 }
 
+function redactEnvValue(envItem: Record<string, unknown>, keyPath: string, redactedKeys: string[]): void {
+  if ('value' in envItem && typeof envItem['value'] === 'string' && envItem['value'].length > 0) {
+    envItem['value'] = REDACTED;
+    redactedKeys.push(`${keyPath}.value`);
+  }
+  const valueFrom = envItem['valueFrom'];
+  if (valueFrom && typeof valueFrom === 'object') {
+    const vf = valueFrom as Record<string, unknown>;
+    if (vf['secretKeyRef'] || vf['configMapKeyRef']) {
+      envItem['valueFrom'] = REDACTED;
+      redactedKeys.push(`${keyPath}.valueFrom`);
+    }
+  }
+}
+
 function walk(node: unknown, path: string[], redactedKeys: string[]): void {
   if (node === null || typeof node !== 'object') return;
 
@@ -34,19 +45,24 @@ function walk(node: unknown, path: string[], redactedKeys: string[]): void {
 
   for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
     const keyPath = [...path, key].join('.');
-    if (SENSITIVE_KEYS.has(key)) {
+    if (isSensitiveKey(key)) {
       (node as Record<string, unknown>)[key] = REDACTED;
       redactedKeys.push(keyPath);
       continue;
     }
     if (key === 'env' && Array.isArray(value)) {
       for (const envItem of value) {
-        if (envItem && typeof envItem === 'object' && 'value' in envItem) {
-          const v = (envItem as { value?: string }).value;
-          if (typeof v === 'string' && v.length > 0) {
-            (envItem as { value: string }).value = REDACTED;
-            redactedKeys.push(`${keyPath}.value`);
-          }
+        if (envItem && typeof envItem === 'object') {
+          redactEnvValue(envItem as Record<string, unknown>, keyPath, redactedKeys);
+        }
+      }
+    }
+    if (key === 'envFrom' && Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) {
+        const item = value[i];
+        if (item && typeof item === 'object') {
+          (value as unknown[])[i] = REDACTED;
+          redactedKeys.push(`${keyPath}.${i}`);
         }
       }
     }

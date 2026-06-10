@@ -2,5 +2,8 @@
   "name": "@sre-bot/shared",
   "version": "1.0.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@kubernetes/client-node": "^0.21.0"
+  }
 }

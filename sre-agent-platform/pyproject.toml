@@ -23,6 +23,11 @@ dependencies = [
 
 [project.optional-dependencies]
 google = ["semantic-router[google]"]
+dev = ["pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.setuptools]
 py-modules = ["config"]

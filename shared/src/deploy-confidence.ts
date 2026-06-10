@@ -19,7 +19,10 @@ export interface DeployConfidenceInput {
   routingConfidence?: number;
   routingSource?: DeployRoutingSource;
   /** Regex parser view of the same utterance (commander passes parseCommand result). */
-  regexDeploy?: Pick<DeployCommandInput, 'githubRepo' | 'namespace' | 'gitRef' | 'appName'>;
+  regexDeploy?: Pick<
+    DeployCommandInput,
+    'githubRepo' | 'namespace' | 'gitRef' | 'appName' | 'containerImage' | 'helmRemote'
+  >;
   /** Raw githubRepo from LLM JSON before normalization (detect malformed URLs). */
   llmRawGithubRepo?: string;
 }
@@ -90,7 +93,11 @@ function regexAgreementSignal(
 ): DeployConfidenceSignal {
   let score = 0;
 
-  if (!regexDeploy?.githubRepo?.trim() && !regexDeploy?.containerImage?.trim()) {
+  if (
+    !regexDeploy?.githubRepo?.trim() &&
+    !regexDeploy?.containerImage?.trim() &&
+    !regexDeploy?.helmRemote
+  ) {
     const hasGithubUrl = /github\.com\/[\w.-]+\/[\w.-]+/i.test(rawText);
     score = hasGithubUrl ? 0.72 : 0.45;
     if (!hasGithubUrl) reasons.push('no_regex_deploy');
@@ -105,6 +112,7 @@ function regexAgreementSignal(
     deployStrategy: 'gitops',
     deployStrategyExplicit: false,
     containerImage: regexDeploy.containerImage,
+    helmRemote: regexDeploy.helmRemote,
     appName: regexDeploy.appName,
   });
 
@@ -123,6 +131,14 @@ function regexAgreementSignal(
     } else {
       score += 0.15;
       reasons.push('image_mismatch');
+    }
+  } else if (deploy.helmRemote && regexDeploy.helmRemote) {
+    if (deploy.helmRemote.chartRef === regexDeploy.helmRemote.chartRef) {
+      score += 0.45;
+      reasons.push('helm_catalog_match');
+    } else {
+      score += 0.15;
+      reasons.push('helm_catalog_mismatch');
     }
   }
 
@@ -189,7 +205,7 @@ function fieldQualitySignal(
     }
   }
 
-  if (!deploy.githubRepo?.trim() && !deploy.containerImage?.trim()) {
+  if (!deploy.githubRepo?.trim() && !deploy.containerImage?.trim() && !deploy.helmRemote) {
     score -= 0.5;
     reasons.push('missing_source');
   }
@@ -207,6 +223,7 @@ function weightedScore(signals: DeployConfidenceSignal[]): number {
 function buildClarifyMessage(deploy: DeployCommandInput, reasons: string[]): string {
   const repo =
     deploy.githubRepo?.replace(/^github\.com\//, '') ||
+    deploy.helmRemote?.chartRef ||
     deploy.containerImage ||
     '(unknown repo)';
   const ns = deploy.namespace || '(unknown namespace)';

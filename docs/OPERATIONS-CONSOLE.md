@@ -15,6 +15,7 @@ The **Operations Console** is the primary web UI for managing SRE Bot incidents,
 | **Runs** | Grouped by workload — suggested fix, worked?, actions taken, skill export |
 | **Run detail** | Full remediation outcome, tool timeline, cancel in-flight runs |
 | **Ignored** | View suppressed resources; unignore when ready to remediate again |
+| **Assistant** | Conversational chat with the SRE agent |
 
 ### Dual-channel workflow
 
@@ -32,19 +33,30 @@ Older runs without persisted outcomes show best-effort data derived from tool tr
 
 | ID | Feature |
 |----|---------|
+| **CON-2** | OIDC SSO login, HTTP-only session cookies, namespace RBAC (group → namespace map) |
 | **CON-3** | Keyboard shortcuts on Approvals — **A** approve, **R** reject, **I** ignore, **J/K** navigate |
 | **CON-4** | **Activity** tab — unified run + approval timeline |
 | **CON-5** | Runs page shows **latest attempt only** by default |
 
-### Roadmap (pending)
-
-See [PRODUCT-ROADMAP.md](./PRODUCT-ROADMAP.md) Track B:
-
-| ID | Feature |
-|----|---------|
-| **CON-2** | Auth (OAuth / basic / SSO proxy) |
-
 Toggle **Live** in the top bar for 5-second polling. Pause to reduce API load (30s background refresh on overview pages).
+
+## Authentication (CON-2)
+
+Local dev runs with auth **disabled** (open access). For production:
+
+```bash
+CONSOLE_AUTH_ENABLED=true
+CONSOLE_COOKIE_SECURE=true
+OIDC_ISSUER=https://your-idp.example.com/realms/sre
+OIDC_CLIENT_ID=sre-console
+OIDC_CLIENT_SECRET=...
+OIDC_REDIRECT_URI=https://console.example.com/api/auth/callback
+CONSOLE_NAMESPACE_RBAC={"team-a":["ns-a","ns-b"],"admins":["*"]}
+```
+
+Multi-replica console: set `CONSOLE_SESSION_BACKEND=redis` and `REDIS_URL=...`.
+
+Secondary HIL enforcement (optional): `HIL_ENFORCE_CONSOLE_RBAC=true` — hil-agent validates namespace headers from the console BFF on web approve/reject.
 
 ## Local development
 
@@ -82,6 +94,9 @@ Environment:
 | `HIL_URL` | `http://hil-agent:8080` | Approvals, ignore list |
 | `ORCHESTRATOR_URL` | `http://orchestrator-agent:8080` | Runs, summaries, cancel |
 | `COMMANDER_URL` | `http://commander-agent:8080` | Agent health probe |
+| `CONSOLE_AUTH_ENABLED` | `false` | Enable OIDC login |
+| `CONSOLE_SESSION_BACKEND` | `memory` | `redis` for multi-replica sessions |
+| `CONSOLE_NAMESPACE_RBAC` | — | JSON group → namespaces map |
 
 ## Legacy HIL dashboard
 
@@ -91,7 +106,8 @@ The original HTML dashboard remains at http://localhost:8085/legacy for backward
 
 ```
 Browser → console-agent (Express BFF + static React)
-              ├── GET/POST /api/* → hil-agent
+              ├── OIDC login/callback → HTTP-only session cookie
+              ├── GET/POST /api/* → hil-agent (namespace RBAC headers)
               └── GET/POST /api/runs/* → orchestrator-agent
 ```
 

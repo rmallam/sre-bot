@@ -3,29 +3,91 @@ import type { ResumeRunRequest, StartRunRequest } from '../../../shared/src/type
 import { log } from '../../../shared/src/http.js';
 import { startRun, resumeRunAfterApproval } from './graph.js';
 import { listToolDefinitions } from '../../../shared/src/tool-registry.js';
-import { getRun, listRuns, resolveRun, setRunStatus, findActiveRunByResourceKey } from './run-store.js';
+import { getRun, listRuns, resolveRun, setRunStatus, findActiveRunByResourceKey, mergeRunMetadata, countActiveRunsByNamespace } from './run-store.js';
 import {
   enrichStoredRun,
   groupRunsByResource,
-  deriveOutcomeFromStoredRun,
   formatSkillMarkdown,
 } from '../../../shared/src/remediation-outcome.js';
 import { formatRunSummaryForUser } from '../../../shared/src/run-summary.js';
+import { toolCallNames } from '../../../shared/src/run-persistence.js';
 import { createRunStore, closeRunStore } from './stores/index.js';
 import { findActiveDuplicateRun } from './run-dedupe.js';
-import { reconcileStaleActiveRun } from './stale-run-reconcile.js';
+import { reconcileStaleActiveRun, sweepStaleRunningRuns } from './stale-run-reconcile.js';
 import { persistCiVerifyOutcome } from './persist-outcome.js';
+import { createInternalAuthMiddleware } from '../../../shared/src/internal-auth.js';
+import {
+  namespaceRunLimitExceeded,
+  resolveNamespaceRunLimit,
+} from '../../../shared/src/namespace-run-limit.js';
+import { drainThrottledRuns, enqueueThrottledRun, startThrottledQueueDrainer } from './throttled-queue.js';
 
 const AGENT = 'orchestrator-agent';
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
+const STALE_RUN_SWEEP_MS = parseInt(process.env['STALE_RUN_SWEEP_MS'] ?? String(15 * 60 * 1000), 10);
+
+async function cancelRunRecord(runId: string, reason: string): Promise<void> {
+  await setRunStatus(runId, 'cancelled');
+  await mergeRunMetadata(runId, {
+    staleCancelled: true,
+    staleCancelReason: reason,
+    staleCancelledAt: new Date().toISOString(),
+  }).catch(() => undefined);
+}
+
+function runListItem(enriched: ReturnType<typeof enrichStoredRun>) {
+  return {
+    runId: enriched.runId,
+    incidentId: enriched.incidentId,
+    status: enriched.status,
+    startedAt: enriched.startedAt,
+    updatedAt: enriched.updatedAt,
+    toolCount: enriched.toolCount,
+    mode: enriched.mode,
+    namespace: enriched.namespace,
+    resourceName: enriched.resourceName,
+    githubRepo: enriched.githubRepo,
+    resourceKey: enriched.resourceKey,
+    displayName: enriched.displayName,
+    outcome: enriched.outcome,
+    isStale: enriched.isStale,
+    suggestedActionLabel: enriched.suggestedActionLabel,
+  };
+}
+
+async function startStaleRunSweeper(): Promise<void> {
+  const sweep = async () => {
+    const cancelled = await sweepStaleRunningRuns({
+      listRuns,
+      cancelRun: cancelRunRecord,
+    });
+    if (cancelled > 0) {
+      log('info', AGENT, 'Stale run sweep completed', { cancelled });
+    }
+  };
+  await sweep().catch((err) => {
+    log('warn', AGENT, 'Initial stale run sweep failed', { error: String(err) });
+  });
+  setInterval(() => {
+    void sweep().catch((err) => {
+      log('warn', AGENT, 'Stale run sweep failed', { error: String(err) });
+    });
+  }, STALE_RUN_SWEEP_MS);
+}
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
+app.use(createInternalAuthMiddleware());
 
 async function boot(): Promise<void> {
   await createRunStore();
   log('info', AGENT, 'Run store initialized', {
     backend: process.env['RUN_STORE_BACKEND'] ?? 'auto',
+  });
+  await startStaleRunSweeper();
+  startThrottledQueueDrainer();
+  void drainThrottledRuns().catch((err) => {
+    log('warn', AGENT, 'Initial throttled queue drain failed', { error: String(err) });
   });
 }
 
@@ -68,6 +130,37 @@ app.post('/runs', async (req: Request, res: Response) => {
     return;
   }
 
+  const nsLimit = resolveNamespaceRunLimit();
+  if (nsLimit.enabled) {
+    const activeInNs = await countActiveRunsByNamespace(body.namespace);
+    if (namespaceRunLimitExceeded(activeInNs, nsLimit)) {
+      const runId = await enqueueThrottledRun(body);
+      log('warn', AGENT, 'Namespace run limit reached — queued for later', {
+        incidentId: body.incidentId,
+        namespace: body.namespace,
+        resourceName: body.resourceName,
+        activeInNs,
+        limit: nsLimit.maxActive,
+        runId,
+      });
+      res.status(202).json({
+        accepted: true,
+        queued: true,
+        throttled: true,
+        reason: 'namespace_run_limit',
+        runId,
+        incidentId: body.incidentId,
+        namespace: body.namespace,
+        activeRuns: activeInNs,
+        limit: nsLimit.maxActive,
+        hint:
+          `Run queued — namespace ${body.namespace} has ${activeInNs}/${nsLimit.maxActive} active runs. ` +
+          'It will start automatically when capacity is available.',
+      });
+      return;
+    }
+  }
+
   const dedupeLimit = parseInt(process.env['ORCHESTRATOR_DEDUPE_SCAN_LIMIT'] ?? '200', 10);
   const indexed = await findActiveRunByResourceKey(body);
   const duplicate =
@@ -84,7 +177,7 @@ app.post('/runs', async (req: Request, res: Response) => {
       duplicate,
       getRun,
       async (runId) => {
-        await setRunStatus(runId, 'cancelled');
+        await cancelRunRecord(runId, 'dedupe_reconcile');
       }
     );
     if (reconciled !== 'cancelled_stale') {
@@ -115,6 +208,7 @@ app.post('/runs', async (req: Request, res: Response) => {
   startRun(body)
     .then(({ runId, status, lastError }) => {
       log('info', AGENT, 'Run finished', { runId, status, incidentId: body.incidentId, lastError });
+      return drainThrottledRuns();
     })
     .catch(async (err) => {
       const error = err instanceof Error ? err.message : String(err);
@@ -154,24 +248,7 @@ app.get('/runs', async (req: Request, res: Response) => {
   const limit = parseInt((req.query.limit as string) ?? '50', 10);
   const runs = await listRuns({ incidentId, limit });
   res.json({
-    runs: runs.map((r) => {
-      const enriched = enrichStoredRun(r);
-      return {
-        runId: enriched.runId,
-        incidentId: enriched.incidentId,
-        status: enriched.status,
-        startedAt: enriched.startedAt,
-        updatedAt: enriched.updatedAt,
-        toolCount: enriched.toolCount,
-        mode: enriched.mode,
-        namespace: enriched.namespace,
-        resourceName: enriched.resourceName,
-        githubRepo: enriched.githubRepo,
-        resourceKey: enriched.resourceKey,
-        displayName: enriched.displayName,
-        outcome: enriched.outcome,
-      };
-    }),
+    runs: runs.map((r) => runListItem(enrichStoredRun(r))),
   });
 });
 
@@ -226,7 +303,7 @@ app.post('/runs/:runId/cancel', async (req: Request, res: Response) => {
     res.status(404).json({ error: 'Run not found' });
     return;
   }
-  await setRunStatus(entry.runId, 'cancelled');
+  await cancelRunRecord(entry.runId, (req.body as { reason?: string })?.reason ?? 'manual');
   log('info', AGENT, 'Run cancelled', {
     runId: entry.runId,
     incidentId: entry.incidentId,
@@ -241,6 +318,7 @@ app.get('/runs/:runId', async (req: Request, res: Response) => {
     res.status(404).json({ error: 'Run not found' });
     return;
   }
+  const enriched = enrichStoredRun(entry);
   res.json({
     runId: entry.runId,
     resolvedFrom: entry.runId !== req.params.runId ? req.params.runId : undefined,
@@ -250,12 +328,14 @@ app.get('/runs/:runId', async (req: Request, res: Response) => {
     updatedAt: entry.updatedAt,
     confidence: entry.compiled?.confidence,
     riskLevel: entry.compiled?.riskLevel,
-    tools: entry.compiled?.calls.map((c) => c.name),
-    capabilityToolCalls: entry.capabilityToolCalls?.map((c) => c.name),
+    tools: toolCallNames(entry.compiled?.calls),
+    capabilityToolCalls: toolCallNames(entry.capabilityToolCalls),
     resumeFromToolIndex: entry.resumeFromToolIndex,
     pendingToolApproval: entry.pendingToolApproval,
     transcript: entry.transcript,
-    outcome: deriveOutcomeFromStoredRun(entry),
+    outcome: enriched.outcome,
+    isStale: enriched.isStale,
+    suggestedActionLabel: enriched.suggestedActionLabel,
     remediationPlan: entry.metadata?.remediationPlan,
   });
 });

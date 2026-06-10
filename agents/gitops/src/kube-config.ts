@@ -1,28 +1,5 @@
 /**
- * Kubernetes client bootstrap for gitops-agent in compose.
+ * Kubernetes client bootstrap for gitops-agent — re-exports shared (PLAT-14).
  */
 
-import * as k8s from '@kubernetes/client-node';
-import { existsSync } from 'node:fs';
-
-export function buildKubeConfig(): k8s.KubeConfig {
-  const kc = new k8s.KubeConfig();
-
-  if (existsSync('/var/run/secrets/kubernetes.io/serviceaccount/token')) {
-    try {
-      kc.loadFromCluster();
-      return kc;
-    } catch {
-      /* fall through */
-    }
-  }
-
-  const kubeconfig = process.env['KUBECONFIG'] ?? `${process.env['HOME'] ?? '/root'}/.kube/config`;
-  if (existsSync(kubeconfig)) {
-    kc.loadFromFile(kubeconfig, true);
-    return kc;
-  }
-
-  kc.loadFromDefault();
-  return kc;
-}
+export { buildKubeConfig } from '../../../shared/src/kube-config.js';

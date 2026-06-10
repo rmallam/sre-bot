@@ -20,6 +20,7 @@ import type {
 } from '../../../shared/src/types.js';
 import type { DeployProvenance } from '../../../shared/src/deploy-provenance.js';
 import { postWithRetry, log } from '../../../shared/src/http.js';
+import { createInternalAuthMiddleware } from '../../../shared/src/internal-auth.js';
 import { gatherPodFacts } from './k8s-facts.js';
 import { gatherPreDeployFacts, checkNamespaceExists } from './pre-deploy.js';
 import { buildFromSource, type BuildFromSourceRequest } from './source-build-runner.js';
@@ -32,6 +33,8 @@ import {
 } from './git-mirror.js';
 import { gatherFactsSync } from './facts-sync.js';
 import { verifyDeployment } from './verify.js';
+import { discoverReleaseWorkloads } from './release-workloads.js';
+import type { DeployWorkloadRef } from '../../../shared/src/deploy-workloads.js';
 import { queryLogs, queryMetrics } from './observability.js';
 import { clusterGet, type ClusterGetResource } from './cluster-get.js';
 import {
@@ -57,6 +60,7 @@ const AGENT = 'investigator';
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
+app.use(createInternalAuthMiddleware());
 
 // ── Middleware: structured request logging ─────────────────────────────────────
 
@@ -128,6 +132,14 @@ app.get('/facts', async (req: Request, res: Response) => {
   const mode = (String(req.query.mode ?? 'diagnose')) as DiagnosisContext['mode'];
   const githubRepo = req.query.githubRepo ? String(req.query.githubRepo) : undefined;
   const containerImage = req.query.containerImage ? String(req.query.containerImage) : undefined;
+  let helmRemote: DeployRequest['helmRemote'];
+  if (req.query.helmRemote) {
+    try {
+      helmRemote = JSON.parse(String(req.query.helmRemote)) as DeployRequest['helmRemote'];
+    } catch {
+      helmRemote = undefined;
+    }
+  }
   const gitRef = req.query.gitRef ? String(req.query.gitRef) : undefined;
   const investigateScope = req.query.investigateScope
     ? (String(req.query.investigateScope) as import('../../../shared/src/types.js').InvestigateScope)
@@ -157,6 +169,7 @@ app.get('/facts', async (req: Request, res: Response) => {
       mode,
       githubRepo,
       containerImage,
+      helmRemote,
       gitRef,
       investigateScope,
       rawMessage,
@@ -282,11 +295,89 @@ app.get('/app-review', async (req: Request, res: Response) => {
 app.get('/apps', async (req: Request, res: Response) => {
   const namespace = req.query.namespace ? String(req.query.namespace) : undefined;
   try {
-    const { listApps } = await import('./app-graph-builder.js');
+    const { listApps } = await import('./app-list.js');
     const result = await listApps(namespace);
     res.json(result);
   } catch (err) {
     log('error', AGENT, 'GET /apps failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get('/apps/catalog', async (_req: Request, res: Response) => {
+  try {
+    const { listCatalogEntries } = await import('./app-catalog-store.js');
+    const entries = await listCatalogEntries();
+    res.json({ entries });
+  } catch (err) {
+    log('error', AGENT, 'GET /apps/catalog failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.put('/apps/catalog', async (req: Request, res: Response) => {
+  const body = req.body as import('../../../shared/src/app-catalog.js').AppCatalogEntry;
+  if (!body?.appId?.trim() || !body?.namespace?.trim()) {
+    res.status(400).json({ error: 'appId and namespace required' });
+    return;
+  }
+  try {
+    const { upsertCatalogEntry } = await import('./app-catalog-store.js');
+    const entry = await upsertCatalogEntry({
+      ...body,
+      appId: body.appId.trim(),
+      namespace: body.namespace.trim(),
+      members: body.members ?? [],
+      source: 'user',
+      userEdited: true,
+      updatedAt: new Date().toISOString(),
+    });
+    res.json(entry);
+  } catch (err) {
+    log('error', AGENT, 'PUT /apps/catalog failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.delete('/apps/catalog', async (req: Request, res: Response) => {
+  const namespace = String(req.query.namespace ?? '').trim();
+  const appId = String(req.query.appId ?? '').trim();
+  if (!namespace || !appId) {
+    res.status(400).json({ error: 'namespace and appId required' });
+    return;
+  }
+  try {
+    const { deleteCatalogEntry } = await import('./app-catalog-store.js');
+    const deleted = await deleteCatalogEntry(namespace, appId);
+    res.json({ deleted });
+  } catch (err) {
+    log('error', AGENT, 'DELETE /apps/catalog failed', { error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post('/apps/catalog/upsert-auto', async (req: Request, res: Response) => {
+  const body = req.body as {
+    appId?: string;
+    namespace?: string;
+    members?: import('../../../shared/src/app-catalog.js').AppCatalogMember[];
+    dependsOn?: string[];
+  };
+  if (!body?.appId?.trim() || !body?.namespace?.trim()) {
+    res.status(400).json({ error: 'appId and namespace required' });
+    return;
+  }
+  try {
+    const { upsertAutoCatalogEntry } = await import('./app-catalog-store.js');
+    const entry = await upsertAutoCatalogEntry({
+      appId: body.appId.trim(),
+      namespace: body.namespace.trim(),
+      members: body.members ?? [],
+      dependsOn: body.dependsOn,
+    });
+    res.json(entry);
+  } catch (err) {
+    log('error', AGENT, 'POST /apps/catalog/upsert-auto failed', { error: String(err) });
     res.status(500).json({ error: String(err) });
   }
 });
@@ -327,14 +418,65 @@ app.get('/verify', async (req: Request, res: Response) => {
   const namespace = String(req.query.namespace ?? 'default');
   const resourceName = String(req.query.resourceName ?? '');
   const incidentId = String(req.query.incidentId ?? 'unknown');
+  let workloads: DeployWorkloadRef[] | undefined;
+  const workloadsRaw = req.query.workloads;
+  if (typeof workloadsRaw === 'string' && workloadsRaw.trim()) {
+    try {
+      workloads = JSON.parse(workloadsRaw) as DeployWorkloadRef[];
+    } catch {
+      res.status(400).json({ error: 'invalid workloads JSON' });
+      return;
+    }
+  }
 
   if (!resourceName) {
     res.status(400).json({ error: 'resourceName required' });
     return;
   }
 
-  const result = await verifyDeployment(namespace, resourceName, incidentId);
+  const result = await verifyDeployment(namespace, resourceName, incidentId, { workloads });
   res.json(result);
+});
+
+app.post('/verify', async (req: Request, res: Response) => {
+  const body = req.body as {
+    namespace?: string;
+    resourceName?: string;
+    incidentId?: string;
+    workloads?: DeployWorkloadRef[];
+  };
+  const namespace = body.namespace ?? 'default';
+  const resourceName = body.resourceName ?? '';
+  const incidentId = body.incidentId ?? 'unknown';
+
+  if (!resourceName) {
+    res.status(400).json({ error: 'resourceName required' });
+    return;
+  }
+
+  const result = await verifyDeployment(namespace, resourceName, incidentId, {
+    workloads: body.workloads,
+  });
+  res.json(result);
+});
+
+app.get('/discover-workloads', async (req: Request, res: Response) => {
+  const namespace = String(req.query.namespace ?? 'default');
+  const releaseName = String(req.query.releaseName ?? req.query.resourceName ?? '');
+  const incidentId = String(req.query.incidentId ?? 'unknown');
+
+  if (!releaseName) {
+    res.status(400).json({ error: 'releaseName required' });
+    return;
+  }
+
+  try {
+    const result = await discoverReleaseWorkloads(namespace, releaseName, incidentId);
+    res.json(result);
+  } catch (err) {
+    log('error', AGENT, 'GET /discover-workloads failed', { incidentId, error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 app.post('/observability/logs', async (req: Request, res: Response) => {
@@ -509,9 +651,9 @@ app.post('/pre-deploy', async (req: Request, res: Response): Promise<void> => {
     });
     return;
   }
-  if (!body.githubRepo && !body.containerImage) {
+  if (!body.githubRepo && !body.containerImage && !body.helmRemote) {
     res.status(400).json({
-      error: 'Either githubRepo or containerImage is required for pre-deploy',
+      error: 'Either githubRepo, containerImage, or helmRemote is required for pre-deploy',
     });
     return;
   }

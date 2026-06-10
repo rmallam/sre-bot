@@ -28,10 +28,19 @@ function toolCallsToPlan(toolCalls: ToolCall[], ctx: DiagnosisContext): Remediat
   } else if (names.includes('executor.restart_workload')) {
     action = 'restart';
   }
+  const rootCause =
+    names.length === 0
+      ? ctx.priorActionSummary?.trim() ||
+        'Investigation completed — no automated remediation recommended'
+      : 'Capability planner selected tool pipeline';
+  const reasoning =
+    names.length === 0
+      ? 'No executable tools mapped for this incident'
+      : `Tools: ${names.join(' → ')}`;
   return {
     action,
-    rootCause: 'Capability planner selected tool pipeline',
-    reasoning: `Tools: ${names.join(' → ')}`,
+    rootCause,
+    reasoning,
     severity: 'MEDIUM',
     proposedPatch: [],
     targetManifestPath: ctx.gitManifestPath ?? '',
@@ -184,7 +193,10 @@ For transient pod issues prefer executor.restart_workload. For manifest fixes us
   }
 
   const remediationPlan =
-    classic && (classic.action === 'escalate_human' || classic.action === 'noop')
+    classic &&
+    (classic.action === 'escalate_human' ||
+      classic.action === 'noop' ||
+      toolCalls.length === 0)
       ? classic
       : toolCallsToPlan(toolCalls, ctx);
 

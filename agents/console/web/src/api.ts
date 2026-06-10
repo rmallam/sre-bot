@@ -1,6 +1,7 @@
 import type {
   Approval,
   AgentHealth,
+  AppCatalogEntry,
   AppListEntry,
   AppReviewResult,
   AppsListResult,
@@ -11,8 +12,10 @@ import type {
   ResourceRunGroup,
 } from './types';
 
+const fetchOpts: RequestInit = { credentials: 'same-origin' };
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const res = await fetch(url, { ...fetchOpts, ...init });
   if (!res.ok) {
     const err = await res.text();
     throw new Error(err || `HTTP ${res.status}`);
@@ -42,6 +45,23 @@ export function fetchAppReview(
 export function fetchApps(namespace?: string): Promise<AppsListResult> {
   const params = namespace?.trim() ? `?namespace=${encodeURIComponent(namespace.trim())}` : '';
   return json(`/api/apps${params}`);
+}
+
+export function fetchAppCatalog(): Promise<{ entries: AppCatalogEntry[] }> {
+  return json('/api/apps/catalog');
+}
+
+export function saveAppCatalogEntry(entry: AppCatalogEntry): Promise<AppCatalogEntry> {
+  return json('/api/apps/catalog', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(entry),
+  });
+}
+
+export function deleteAppCatalogEntry(namespace: string, appId: string): Promise<{ deleted: boolean }> {
+  const params = new URLSearchParams({ namespace, appId });
+  return json(`/api/apps/catalog?${params}`, { method: 'DELETE' });
 }
 
 export function fetchAgents(): Promise<{ agents: AgentHealth[] }> {
@@ -154,6 +174,7 @@ export interface ChatTurn {
   runId?: string;
   quickActions?: Array<{ id: string; label: string }>;
   updateKind?: string;
+  liveUpdate?: boolean;
 }
 
 export interface ChatSessionSummary {
@@ -179,22 +200,18 @@ export function fetchChatSession(channelId: string): Promise<{
   lastIncidentId?: string;
   lastRunId?: string;
 }> {
-  return json(
-    `/api/chat/session?channelId=${encodeURIComponent(channelId)}&userId=${CONSOLE_USER}`
-  );
+  return json(`/api/chat/session?channelId=${encodeURIComponent(channelId)}`);
 }
 
-const CONSOLE_USER = 'console';
-
 export function listChatSessions(): Promise<{ sessions: ChatSessionSummary[] }> {
-  return json(`/api/chat/sessions?userId=${CONSOLE_USER}`);
+  return json('/api/chat/sessions');
 }
 
 export function createChatSession(label?: string): Promise<{ channelId: string; sessionLabel: string }> {
   return json('/api/chat/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId: CONSOLE_USER, label }),
+    body: JSON.stringify({ label }),
   });
 }
 
@@ -202,7 +219,7 @@ export function resetChatSession(channelId: string): Promise<{ ok: boolean; tran
   return json(`/api/chat/sessions/${encodeURIComponent(channelId)}/reset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId: CONSOLE_USER }),
+    body: JSON.stringify({}),
   });
 }
 
@@ -210,12 +227,10 @@ export function sendChatMessage(message: string, channelId: string): Promise<Cha
   return json('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, channelId, userId: CONSOLE_USER }),
+    body: JSON.stringify({ message, channelId }),
   });
 }
 
 export function fetchChatTranscript(channelId: string): Promise<{ transcript: ChatTurn[] }> {
-  return json(
-    `/api/chat/transcript?channelId=${encodeURIComponent(channelId)}&userId=${CONSOLE_USER}`
-  );
+  return json(`/api/chat/transcript?channelId=${encodeURIComponent(channelId)}`);
 }

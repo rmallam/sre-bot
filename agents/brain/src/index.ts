@@ -15,12 +15,14 @@ import type { DiagnosisContext } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
 import { llmConfigSummary } from '../../../shared/src/llm-config.js';
 import { runBrain } from './brain.js';
+import { createInternalAuthMiddleware } from '../../../shared/src/internal-auth.js';
 
 const AGENT = 'brain-agent';
 const PORT = parseInt(process.env['PORT'] ?? '8080', 10);
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
+app.use(createInternalAuthMiddleware());
 
 // ── Structured request logging middleware ────────────────────────────────────
 

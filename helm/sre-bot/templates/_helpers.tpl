@@ -91,6 +91,16 @@ timeoutSeconds: 5
 failureThreshold: 3
 {{- end }}
 
+{{- define "sre-bot.internalAuthEnv" -}}
+- name: SRE_AUTH_STRICT
+  value: {{ .Values.global.sreAuthStrict | default "true" | quote }}
+- name: SRE_INTERNAL_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "sre-bot.secretName" . }}
+      key: sre_internal_token
+{{- end }}
+
 {{- define "sre-bot.readinessProbe" -}}
 httpGet:
   path: /health

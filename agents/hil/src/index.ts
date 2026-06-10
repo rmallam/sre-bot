@@ -32,6 +32,8 @@ import { startSlack } from './slack-notifier.js';
 import { startTelegram } from './telegram-notifier.js';
 import { log } from '../../../shared/src/http.js';
 import type { ApprovalRequest, RemediationResult } from '../../../shared/src/types.js';
+import { createInternalAuthMiddleware } from '../../../shared/src/internal-auth.js';
+import { hilNamespaceMutationAllowed } from '../../../shared/src/console-rbac-enforcement.js';
 
 const AGENT = 'hil-agent';
 const PORT  = parseInt(process.env['PORT'] ?? '8080', 10);
@@ -40,6 +42,7 @@ const app = express();
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true })); // for HTML form POSTs
+app.use(createInternalAuthMiddleware());
 
 // ── Structured request logging ────────────────────────────────────────────────
 app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -268,6 +271,15 @@ app.post('/api/approve/:incidentId', async (req: Request, res: Response) => {
   const via = platform === 'slack' || platform === 'telegram' || platform === 'web' ? platform : 'web';
   const actor = typeof userId === 'string' && userId.trim() ? userId : 'api-operator';
 
+  const entryBefore = approvalStore.get(incidentId);
+  if (
+    entryBefore &&
+    !hilNamespaceMutationAllowed(req.headers, entryBefore.request.namespace, via)
+  ) {
+    res.status(403).json({ error: 'Namespace not allowed for this operator', code: 'namespace_forbidden' });
+    return;
+  }
+
   log('info', AGENT, 'API approve action received', { incidentId, userId: actor, platform: via });
 
   const result = approvalStore.tryApprove(incidentId, actor, via);
@@ -343,6 +355,15 @@ app.post('/api/reject/:incidentId', async (req: Request, res: Response) => {
   const { userId, platform, reason } = req.body;
   const via = platform === 'slack' || platform === 'telegram' || platform === 'web' ? platform : 'web';
   const actor = typeof userId === 'string' && userId.trim() ? userId : 'api-operator';
+
+  const entryBefore = approvalStore.get(incidentId);
+  if (
+    entryBefore &&
+    !hilNamespaceMutationAllowed(req.headers, entryBefore.request.namespace, via)
+  ) {
+    res.status(403).json({ error: 'Namespace not allowed for this operator', code: 'namespace_forbidden' });
+    return;
+  }
 
   log('info', AGENT, 'API reject action received', { incidentId, userId: actor, platform: via, reason });
 

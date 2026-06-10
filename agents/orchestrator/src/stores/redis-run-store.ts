@@ -30,12 +30,17 @@ export class RedisRunStore implements RunStore {
       .exec();
   }
 
-  async initRun(runId: string, incidentId: string, metadata?: Record<string, unknown>): Promise<void> {
+  async initRun(
+    runId: string,
+    incidentId: string,
+    metadata?: Record<string, unknown>,
+    options?: { status?: RunStatus }
+  ): Promise<void> {
     const now = new Date().toISOString();
     await this.write({
       runId,
       incidentId,
-      status: 'running',
+      status: options?.status ?? 'running',
       transcript: [],
       startedAt: now,
       updatedAt: now,
@@ -111,6 +116,39 @@ export class RedisRunStore implements RunStore {
     if (!run) return;
     run.metadata = { ...(run.metadata ?? {}), ...patch };
     await this.write(run);
+  }
+
+  async listPendingThrottledRuns(limit = 50): Promise<StoredRun[]> {
+    const ids = await this.redis.zrange(INDEX_KEY, 0, 499);
+    const runs: StoredRun[] = [];
+    for (const id of ids) {
+      const run = await this.read(id);
+      if (run?.status === 'pending_throttled') runs.push(run);
+    }
+    runs.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+    return runs.slice(0, limit);
+  }
+
+  async claimThrottledRun(runId: string): Promise<boolean> {
+    const key = this.key(runId);
+    await this.redis.watch(key);
+    const raw = await this.redis.get(key);
+    if (!raw) {
+      await this.redis.unwatch();
+      return false;
+    }
+    const run = JSON.parse(raw) as StoredRun;
+    if (run.status !== 'pending_throttled') {
+      await this.redis.unwatch();
+      return false;
+    }
+    run.status = 'running';
+    run.updatedAt = new Date().toISOString();
+    const tx = await this.redis
+      .multi()
+      .set(key, JSON.stringify(run), 'EX', TTL_SECONDS)
+      .exec();
+    return tx !== null;
   }
 
   async close(): Promise<void> {

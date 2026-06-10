@@ -7,6 +7,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { parseOwnerRepo } from '../../../shared/src/github-repo.js';
+import { parseSafeTestCommand } from '../../../shared/src/safe-test-command.js';
 
 const execFile = promisify(execFileCb);
 const WORK_ROOT = process.env['CODING_AGENT_WORK_DIR'] ?? '/tmp/coding-agent';
@@ -52,13 +53,31 @@ export async function applyPatches(
   }
 }
 
+function minimalTestEnv(): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env['PATH'] ?? '/usr/local/bin:/usr/bin:/bin',
+    HOME: process.env['HOME'] ?? '/tmp',
+    NODE_ENV: process.env['NODE_ENV'] ?? 'test',
+    LANG: 'C.UTF-8',
+    CI: 'true',
+  };
+}
+
 export async function runTestCommand(dir: string, command: string): Promise<{ ok: boolean; output: string }> {
+  const spec = parseSafeTestCommand(command);
+  if (!spec) {
+    return {
+      ok: false,
+      output: `Rejected test command (not allowlisted): ${command.slice(0, 200)}`,
+    };
+  }
+
   try {
-    const { stdout, stderr } = await execFile('sh', ['-lc', command], {
+    const { stdout, stderr } = await execFile(spec.cmd, spec.args, {
       cwd: dir,
       timeout: parseInt(process.env['CODING_AGENT_TEST_TIMEOUT_MS'] ?? '180000', 10),
       maxBuffer: 4 * 1024 * 1024,
-      env: process.env,
+      env: minimalTestEnv(),
     });
     const output = `${stdout}\n${stderr}`.trim();
     return { ok: true, output: output.slice(-4000) };

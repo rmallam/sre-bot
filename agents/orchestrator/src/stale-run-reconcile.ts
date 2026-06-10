@@ -1,10 +1,12 @@
 import { log } from '../../../shared/src/http.js';
 import type { StoredRun } from '../../../shared/src/run-persistence.js';
+import { isStaleRunningRun } from '../../../shared/src/stale-run.js';
 import type { ActiveDuplicateRun } from './run-dedupe.js';
 
 const AGENT = 'orchestrator-stale-reconcile';
-const STALE_RUNNING_MS = parseInt(process.env['STALE_RUNNING_MS'] ?? String(2 * 60 * 60 * 1000), 10);
 const HIL_URL = process.env['HIL_URL'] ?? 'http://hil-agent:8080';
+
+export { isStaleRunningRun };
 
 interface HilApprovalRow {
   incidentId?: string;
@@ -59,18 +61,6 @@ export async function reconcileStaleAwaitingHuman(
   return 'cancelled_stale';
 }
 
-function isStaleRunningRun(entry: StoredRun): boolean {
-  if (entry.status !== 'running') return false;
-  const transcriptLen = entry.transcript?.length ?? 0;
-  const updatedMs = new Date(entry.updatedAt ?? entry.startedAt).getTime();
-  const startedMs = new Date(entry.startedAt).getTime();
-  const idleMs = Date.now() - updatedMs;
-  const ageMs = Date.now() - startedMs;
-  if (transcriptLen === 0 && idleMs > STALE_RUNNING_MS) return true;
-  if (transcriptLen === 0 && ageMs > 24 * 60 * 60 * 1000) return true;
-  return false;
-}
-
 /** Cancel zombie `running` rows that block dedupe (orchestrator crash, lost worker, etc.). */
 export async function reconcileStaleActiveRun(
   duplicate: ActiveDuplicateRun,
@@ -98,4 +88,31 @@ export async function reconcileStaleActiveRun(
     transcriptLen: entry.transcript?.length ?? 0,
   });
   return 'cancelled_stale';
+}
+
+/** Background sweep — cancel all stale running rows, not only dedupe conflicts. */
+export async function sweepStaleRunningRuns(deps: {
+  listRuns: (opts?: { limit?: number }) => Promise<StoredRun[]>;
+  cancelRun: (runId: string, reason: string) => Promise<void>;
+  scanLimit?: number;
+}): Promise<number> {
+  const limit = deps.scanLimit ?? parseInt(process.env['STALE_RUN_SWEEP_LIMIT'] ?? '500', 10);
+  const runs = await deps.listRuns({ limit });
+  let cancelled = 0;
+
+  for (const entry of runs) {
+    if (entry.status !== 'running') continue;
+    if (!isStaleRunningRun(entry)) continue;
+    await deps.cancelRun(entry.runId, 'stale_sweep');
+    log('info', AGENT, 'Auto-cancelled stale running run (background sweep)', {
+      runId: entry.runId,
+      incidentId: entry.incidentId,
+      startedAt: entry.startedAt,
+      updatedAt: entry.updatedAt,
+      transcriptLen: entry.transcript?.length ?? 0,
+    });
+    cancelled += 1;
+  }
+
+  return cancelled;
 }

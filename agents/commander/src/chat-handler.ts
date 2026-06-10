@@ -19,9 +19,10 @@ import {
   storeInvestigateChoice,
   tryResolvePendingInvestigateChoice,
 } from './investigate-choice.js';
-import { getChannelPref } from './channel-prefs.js';
+import { getChannelPref, tryAgentModeFollowUp } from './channel-prefs.js';
 import { appendWebStatusStep, markWebRunWaiting, clearWebStatus } from './chat-web-notify.js';
 import { formatDeployDispatchError } from '../../../shared/src/deploy-command.js';
+import { getSession } from './sessions.js';
 
 const AGENT = 'commander-chat';
 
@@ -83,12 +84,21 @@ export async function processChatMessage(opts: {
     await webThinking(channelId, 'Reading your message…');
   }
 
+  const agentModeReply = tryAgentModeFollowUp(platform, channelId, text);
+  if (agentModeReply) {
+    if (platform === 'web') await clearWebStatus(channelId, 'pending');
+    await recordAssistantMessage(platform, channelId, userId, agentModeReply);
+    return { reply: agentModeReply, executed: false, waitingForRun: false };
+  }
+
   const pendingRun = await tryPendingRunFollowUp(text, platform, channelId, userId);
   if (pendingRun) {
+    if (platform === 'web') await clearWebStatus(channelId, 'pending');
     await recordAssistantMessage(platform, channelId, userId, pendingRun.reply);
     return {
       reply: pendingRun.reply,
       executed: false,
+      waitingForRun: false,
       ...(pendingRun.quickActions?.length
         ? { quickActions: pendingRun.quickActions }
         : {}),
@@ -97,9 +107,10 @@ export async function processChatMessage(opts: {
 
   const investigateChoice = tryResolvePendingInvestigateChoice(platform, channelId, userId, text);
   if (investigateChoice.status === 'cancelled') {
+    if (platform === 'web') await clearWebStatus(channelId, 'pending');
     const reply = 'Investigation choice cancelled.';
     await recordAssistantMessage(platform, channelId, userId, reply);
-    return { reply, executed: false };
+    return { reply, executed: false, waitingForRun: false };
   }
   if (investigateChoice.status === 'selected' && investigateChoice.command) {
     try {
@@ -139,9 +150,10 @@ export async function processChatMessage(opts: {
 
   const deletePending = tryResolvePendingDeleteChoice(platform, channelId, userId, text);
   if (deletePending.status === 'cancelled') {
+    if (platform === 'web') await clearWebStatus(channelId, 'pending');
     const reply = 'Delete cancelled.';
     await recordAssistantMessage(platform, channelId, userId, reply);
-    return { reply, executed: false };
+    return { reply, executed: false, waitingForRun: false };
   }
   if (deletePending.status === 'selected' && deletePending.command) {
     try {
@@ -170,8 +182,9 @@ export async function processChatMessage(opts: {
   const deploySource = await tryDeploySourceFollowUp(platform, channelId, userId, text);
   if (deploySource) {
     if (deploySource.type === 'reply') {
+      if (platform === 'web') await clearWebStatus(channelId, 'pending');
       await recordAssistantMessage(platform, channelId, userId, deploySource.text);
-      return { reply: deploySource.text, executed: false };
+      return { reply: deploySource.text, executed: false, waitingForRun: false };
     }
     try {
       if (platform === 'web') await webThinking(channelId, 'Retrying with deploy source…');
@@ -274,13 +287,13 @@ export async function processChatMessage(opts: {
     if (flow.kind === 'reply') {
       if (platform === 'web') await clearWebStatus(channelId, 'pending');
       await recordAssistantMessage(platform, channelId, userId, flow.text);
-      return { reply: flow.text, executed: false, commandType: 'investigate' };
+      return { reply: flow.text, executed: false, commandType: 'investigate', waitingForRun: false };
     }
     if (flow.kind === 'confirm') {
       storeInvestigateChoice(platform, channelId, userId, text, parsed, flow.candidates);
       if (platform === 'web') await clearWebStatus(channelId, 'pending');
       await recordAssistantMessage(platform, channelId, userId, flow.prompt);
-      return { reply: flow.prompt, executed: false, commandType: 'investigate' };
+      return { reply: flow.prompt, executed: false, commandType: 'investigate', waitingForRun: false };
     }
     parsed = flow.command;
   }
@@ -345,7 +358,7 @@ export async function processChatMessage(opts: {
     }
     const reply = formatChatCommandError(err);
     await recordAssistantMessage(platform, channelId, userId, reply);
-    return { reply, executed: false, commandType: parsed.type };
+    return { reply, executed: false, waitingForRun: false, commandType: parsed.type };
   }
 }
 
@@ -383,10 +396,12 @@ export async function getChatSessionState(
   userId: string
 ) {
   const { getSession } = await import('./sessions.js');
+  const { recoverWaitingForRun } = await import('../../../shared/src/chat-waiting-state.js');
   const session = await getSession(platform, channelId, userId);
+  const waitingForRun = recoverWaitingForRun(session);
   return {
     transcript: session?.transcript ?? [],
-    waitingForRun: session?.waitingForRun ?? false,
+    waitingForRun,
     lastIncidentId: session?.lastIncidentId,
     lastRunId: session?.lastRunId,
   };

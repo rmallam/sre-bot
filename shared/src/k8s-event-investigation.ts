@@ -61,6 +61,7 @@ export function extractEventFromInvestigateText(text: string): {
   const patterns = [
     /investigate\s+this\s*[•·\-–—:]\s*([A-Z][a-zA-Z0-9]+)\s*:\s*(.+)/i,
     /investigate\s+(?:this\s+)?(?:event|warning)\s+([A-Z][a-zA-Z0-9]+)\b(?:[:\s-]+(.+))?/i,
+    /investigate\s+this\s+([A-Z][a-zA-Z0-9]+)\s+(.{8,})/i,
     /investigate\b[^:]{0,80}?([A-Z][a-zA-Z]{4,})\s*:\s*(.{15,})/,
   ];
 

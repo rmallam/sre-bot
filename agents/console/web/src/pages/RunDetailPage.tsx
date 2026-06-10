@@ -2,8 +2,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { cancelRun, fetchRun, fetchRunSummary } from '../api';
 import { StatusBadge } from '../components/StatusBadge';
-import { OutcomeBadge, formatAction } from '../components/OutcomeBadge';
+import { OutcomeBadge, formatAction, formatSuggestedFix } from '../components/OutcomeBadge';
 import { CodingAgentPanel } from '../components/CodingAgentPanel';
+import {
+  formatRunSuccessBanner,
+  formatToolDisplayLabel,
+  formatToolPipelineLabel,
+  formatToolSummaryDetail,
+} from '../run-display';
 import { useToast } from '../components/Toast';
 import type { RemediationOutcome } from '../types';
 
@@ -12,6 +18,7 @@ interface Props {
 }
 
 function isStaleRunning(run: Record<string, unknown>): boolean {
+  if (run.isStale === true) return true;
   if (String(run.status) !== 'running') return false;
   const transcript = (run.transcript as unknown[]) ?? [];
   if (transcript.length > 0) return false;
@@ -113,11 +120,15 @@ export function RunDetailPage({ live = true }: Props) {
   const outcome = run.outcome as RemediationOutcome | undefined;
   const canCancel = status === 'running' || status === 'awaiting_human';
   const stale = isStaleRunning(run);
+  const suggestedActionLabel =
+    typeof run.suggestedActionLabel === 'string' ? run.suggestedActionLabel : undefined;
   const meta = (run.metadata as Record<string, unknown> | undefined) ?? {};
   const codingAgentJobId =
     typeof meta.codingAgentJobId === 'string' ? meta.codingAgentJobId : undefined;
   const plan = meta.remediationPlan as { action?: string } | undefined;
   const suggestedAction = outcome?.suggestedAction ?? plan?.action;
+  const planAction = plan?.action;
+  const successBanner = formatRunSuccessBanner(run);
   const showCodingPanel = !!codingAgentJobId || suggestedAction === 'coding_agent_handoff';
   const displayRunId = resolvedRunId ?? String(run.runId ?? routeRunId ?? '');
 
@@ -141,7 +152,7 @@ export function RunDetailPage({ live = true }: Props) {
           <h3 style={{ margin: '0 0 0.5rem', fontSize: '1.25rem' }}>
             Run <span className="mono">{displayRunId}</span>
           </h3>
-          <StatusBadge status={status} />
+          <StatusBadge status={stale ? 'stale' : status} />
           <span style={{ marginLeft: 12, color: 'var(--text-muted)', fontSize: '0.875rem' }}>
             Incident {String(run.incidentId).slice(0, 8)}…
           </span>
@@ -153,22 +164,38 @@ export function RunDetailPage({ live = true }: Props) {
         )}
       </div>
 
+      {successBanner && (
+        <div className="run-success-banner" role="status">
+          <h4>All set</h4>
+          <pre className="run-success-banner-body">{successBanner}</pre>
+        </div>
+      )}
+
       {outcome && (
         <div className="card" style={{ marginBottom: '1.25rem' }}>
           <div className="card-header">
             <h3>Remediation outcome</h3>
-            <OutcomeBadge worked={outcome.worked} />
+            <OutcomeBadge
+              worked={outcome.worked}
+              suggestedAction={outcome.suggestedAction}
+              finalStatus={outcome.finalStatus}
+            />
           </div>
           <div className="card-body">
             <div className="attempt-grid">
-              {outcome.suggestedAction && (
-                <div>
-                  <label>Suggested fix</label>
-                  <p>
-                    <strong>{formatAction(outcome.suggestedAction)}</strong>
-                  </p>
-                </div>
-              )}
+              <div>
+                <label>Suggested fix</label>
+                <p>
+                  <strong>
+                    {suggestedActionLabel ??
+                      formatSuggestedFix({
+                        status,
+                        toolCount: transcript.length,
+                        outcome,
+                      })}
+                  </strong>
+                </p>
+              </div>
               <div>
                 <label>Root cause</label>
                 <p>{outcome.rootCause ?? '—'}</p>
@@ -254,7 +281,7 @@ export function RunDetailPage({ live = true }: Props) {
           <div className="card-body">
             {((run.tools as string[]) ?? []).length > 0 ? (
               <p style={{ margin: 0, fontSize: '0.875rem' }}>
-                {(run.tools as string[]).join(' → ')}
+                {formatToolPipelineLabel(run.tools as string[], planAction)}
               </p>
             ) : (
               <p style={{ margin: 0, color: 'var(--text-muted)' }}>Not compiled yet</p>
@@ -272,12 +299,20 @@ export function RunDetailPage({ live = true }: Props) {
             <p style={{ color: 'var(--text-muted)', margin: 0 }}>No tool executions recorded.</p>
           ) : (
             <ul className="timeline">
-              {transcript.map((entry, i) => (
+              {transcript.map((entry, i) => {
+                const tool = String(entry.tool ?? '');
+                const label = formatToolDisplayLabel(tool, planAction);
+                const detail = formatToolSummaryDetail(
+                  tool,
+                  entry.summary ? String(entry.summary) : undefined,
+                  planAction
+                );
+                return (
                 <li key={i} className={entry.success ? 'ok' : 'fail'}>
-                  <strong>{String(entry.tool)}</strong>
-                  {entry.summary && (
+                  <strong>{label}</strong>
+                  {detail && (
                     <div style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
-                      {String(entry.summary)}
+                      {detail}
                     </div>
                   )}
                   {entry.error && (
@@ -290,7 +325,8 @@ export function RunDetailPage({ live = true }: Props) {
                     {entry.at && new Date(String(entry.at)).toLocaleTimeString()}
                   </div>
                 </li>
-              ))}
+              );
+              })}
             </ul>
           )}
         </div>

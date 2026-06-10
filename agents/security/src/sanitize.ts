@@ -3,7 +3,7 @@ import type {
   SanitizedFacts,
   SecurityFinding,
 } from '../../../../shared/src/types.js';
-import { redactString, highEntropyBase64, SECRET_PATTERNS } from './redactors/secret-patterns.js';
+import { redactString, SECRET_PATTERNS } from './redactors/secret-patterns.js';
 import { redactYaml } from './redactors/yaml-walker.js';
 
 const BLOCK_ON_HIGH = (process.env['SECURITY_BLOCK_ON_FINDINGS'] ?? 'true').toLowerCase() === 'true';
@@ -46,16 +46,6 @@ export function sanitizeForLlm(
     }
     return { ...ev, message: text };
   });
-
-  if (highEntropyBase64(currentLogs + previousLogs)) {
-    findings.push({
-      type: 'high_entropy',
-      field: 'logs',
-      severity: 'HIGH',
-      action: 'redacted',
-      message: 'High-entropy blob detected in logs',
-    });
-  }
 
   const hasHigh = findings.some((f) => f.severity === 'HIGH');
   const blocked = BLOCK_ON_HIGH && hasHigh && findings.some((f) => f.action === 'blocked');

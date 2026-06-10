@@ -16,7 +16,11 @@ const NOTIFY_CHANNEL_ID =
   process.env['GITHUB_WEBHOOK_NOTIFY_CHANNEL_ID'] ?? process.env['TELEGRAM_ALERT_CHAT_ID'] ?? '';
 
 function verifySignature(rawBody: Buffer, signature: string | undefined): boolean {
-  if (!WEBHOOK_SECRET) return true;
+  if (!WEBHOOK_SECRET) {
+    if ((process.env['NODE_ENV'] ?? '').toLowerCase() === 'production') return false;
+    log('warn', AGENT, 'GITHUB_WEBHOOK_SECRET unset — webhook signature verification disabled (dev only)');
+    return true;
+  }
   if (!signature) return false;
   const expected =
     'sha256=' + crypto.createHmac('sha256', WEBHOOK_SECRET).update(rawBody).digest('hex');

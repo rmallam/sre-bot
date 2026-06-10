@@ -1,3 +1,5 @@
+import { internalAuthHeaders } from './internal-auth.js';
+
 /**
  * Shared resilient HTTP client used by all agents.
  *
@@ -39,7 +41,7 @@ export async function postWithRetry(opts: PostOptions): Promise<void> {
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(10_000),
       });

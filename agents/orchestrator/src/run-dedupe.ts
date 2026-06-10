@@ -1,7 +1,7 @@
 import type { StoredRun } from '../../../shared/src/run-persistence.js';
 import type { RunStatus, StartRunRequest } from '../../../shared/src/types.js';
 
-const ACTIVE_STATUSES = new Set<RunStatus>(['running', 'awaiting_human']);
+const ACTIVE_STATUSES = new Set<RunStatus>(['running', 'awaiting_human', 'pending_throttled']);
 
 export interface ActiveDuplicateRun {
   runId: string;

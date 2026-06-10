@@ -7,6 +7,7 @@ global:
   imageTag: main
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
+  sreAuthStrict: "true"
 
 namespace:
   create: true
@@ -31,6 +32,8 @@ secrets:
   telegramAlertChatId: ""
   argocdUrl: ""
   argocdToken: ""
+  sreInternalToken: ""
+  oidcClientSecret: ""
   gitSshPrivateKey: ""
   gitSshKnownHosts: |
     github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
@@ -88,6 +91,7 @@ llm:
   openrouter:
     brainModel: anthropic/claude-sonnet-4
     commanderModel: google/gemini-2.5-flash
+    toolSelectModel: google/gemini-2.5-flash
   gemini:
     brainModel: gemini-2.5-pro
     commanderModel: gemini-2.5-flash
@@ -104,6 +108,8 @@ agentMode:
   platformRouting: true
   ragGrounding: true
   ragLearning: true
+  ragBypassReact: true
+  ragBypassThreshold: "0.90"
 
 commander:
   useOrchestrator: true
@@ -111,10 +117,15 @@ commander:
   conversationalNarrateLlm: true
   githubWebhookNotifyPlatform: telegram
   githubWebhookNotifyChannelId: ""
+  alertmanagerNotifyPlatform: telegram
+  alertmanagerNotifyChannelId: ""
+  alertmanagerCooldownMs: "900000"
 
 orchestrator:
   autonomyMode: low_risk_only
   maxIterations: 5
+  namespaceRunLimit: 5
+  namespaceQueueDrainMs: 15000
   useCapabilityPlanner: ""
   perToolHil: false
   registryDryRun: "true"
@@ -123,6 +134,13 @@ orchestrator:
   ciClassifyLlm: true
   codingAgentEnabled: true
   codingAgentMaxIterations: 5
+
+debugMcp:
+  enabled: false
+  token: ""
+  maxLogBytes: 8192
+  lokiUrl: ""
+  prometheusUrl: ""
 
 investigator:
   safeMode: true
@@ -135,6 +153,9 @@ watcher:
   cooldownMinutes: 2
   watchNamespaces: ""
   useOrchestrator: true
+  healthCheckEnabled: true
+  healthCheckIntervalMs: "900000"
+  healthCheckCooldownMs: "1800000"
 
 gitops:
   repoPath: /data/gitops-mirror
@@ -165,6 +186,12 @@ codingAgent:
 platform:
   ragEnabled: true
   ragAutoMigrate: true
+  ragDedupEnabled: true
+  ragDedupIntervalSec: 3600
+  ragDedupSimilarity: "0.92"
+  ragDedupLlmMerge: true
+  ragDedupLlmModel: google/gemini-2.5-flash
+  ragPremergeSimilarity: "0.95"
   routerEncoder: openai
   embeddingProvider: openai
   routerScoreThreshold: "0.70"
@@ -256,6 +283,12 @@ agents:
     resources:
       requests: { cpu: 50m, memory: 256Mi }
       limits: { cpu: 500m, memory: 512Mi }
+  debugMcp:
+    enabled: false
+    replicas: 1
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 200m, memory: 256Mi }
 
 # ── Services (compose host ports in comments) ────────────────────────────────
 
@@ -287,3 +320,18 @@ ingress:
     className: nginx
     host: console.example.com
     annotations: {}
+
+# ── Console OIDC + namespace RBAC (CON-2) ───────────────────────────────────
+
+consoleAuth:
+  enabled: false
+  issuer: ""
+  clientId: ""
+  audience: ""
+  groupsClaim: groups
+  redirectUri: ""
+  sessionTtlSec: 28800
+  cookieSecure: false
+  sessionBackend: memory
+  # JSON map: group → namespace list, e.g. {"team-a":["ns-a"],"admins":["*"]}
+  namespaceRbac: {}

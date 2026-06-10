@@ -39,6 +39,18 @@ spec:
               value: {{ .Values.platform.ragAutoMigrate | quote }}
             - name: SRE_RAG_LEARNING
               value: {{ .Values.agentMode.ragLearning | quote }}
+            - name: SRE_RAG_DEDUP_ENABLED
+              value: {{ .Values.platform.ragDedupEnabled | quote }}
+            - name: SRE_RAG_DEDUP_INTERVAL_SEC
+              value: {{ .Values.platform.ragDedupIntervalSec | quote }}
+            - name: SRE_RAG_DEDUP_SIMILARITY
+              value: {{ .Values.platform.ragDedupSimilarity | quote }}
+            - name: SRE_RAG_DEDUP_LLM_MERGE
+              value: {{ .Values.platform.ragDedupLlmMerge | quote }}
+            - name: SRE_RAG_DEDUP_LLM_MODEL
+              value: {{ .Values.platform.ragDedupLlmModel | quote }}
+            - name: SRE_RAG_PREMERGE_SIMILARITY
+              value: {{ .Values.platform.ragPremergeSimilarity | quote }}
             - name: SRE_ROUTER_ENCODER
               value: {{ .Values.platform.routerEncoder | quote }}
             - name: SRE_EMBEDDING_PROVIDER
@@ -147,6 +159,8 @@ spec:
             - name: CODING_AGENT_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "coding" "root" .) | quote }}
             {{- end }}
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
+            {{- include "sre-bot.consoleAuthEnv" . | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /health

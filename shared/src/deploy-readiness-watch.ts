@@ -3,6 +3,7 @@
  */
 
 import type { VerifyResult } from './types.js';
+import type { DeployWorkloadRef } from './deploy-workloads.js';
 import { sendDeployProgress, type DeployNotifyTarget } from './deploy-notify.js';
 
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
@@ -58,12 +59,20 @@ function isTerminalDeployFailure(message: string): boolean {
 async function fetchVerify(
   namespace: string,
   resourceName: string,
-  incidentId: string
+  incidentId: string,
+  workloads?: DeployWorkloadRef[]
 ): Promise<VerifyResult> {
-  const res = await fetch(
-    `${INVESTIGATOR_URL}/verify?namespace=${encodeURIComponent(namespace)}&resourceName=${encodeURIComponent(resourceName)}&incidentId=${encodeURIComponent(incidentId)}`,
-    { signal: AbortSignal.timeout(30_000) }
-  );
+  const res = await fetch(`${INVESTIGATOR_URL}/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      namespace,
+      resourceName,
+      incidentId,
+      workloads: workloads?.length ? workloads : undefined,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!res.ok) {
     return { healthy: false, message: `Health check HTTP ${res.status}` };
   }
@@ -82,6 +91,9 @@ export interface WatchDeployReadinessOpts {
   appName?: string;
   /** If false, sends the promise line before polling (default true). */
   sendPromise?: boolean;
+  runId?: string;
+  /** Layer 4 workloads — skip rediscovery on each poll. */
+  workloads?: DeployWorkloadRef[];
 }
 
 /**
@@ -106,18 +118,33 @@ export function watchDeployReadinessAndNotify(opts: WatchDeployReadinessOpts): v
       let last: VerifyResult = { healthy: false, message: 'Still starting' };
 
       while (Date.now() < deadline) {
-        last = await fetchVerify(namespace, resourceName, target.incidentId);
+        last = await fetchVerify(
+          namespace,
+          resourceName,
+          target.incidentId,
+          opts.workloads
+        );
         if (last.healthy) {
           await sendDeployProgress(
-            target,
-            deployReadySuccessMessage(appName, namespace, last)
+            { ...target, runId: opts.runId ?? target.runId },
+            deployReadySuccessMessage(appName, namespace, last),
+            {
+              kind: 'deploy_ready',
+              namespace,
+              resourceName: appName,
+            }
           );
           return;
         }
         if (isTerminalDeployFailure(last.message)) {
           await sendDeployProgress(
-            target,
-            deployReadyFailureMessage(appName, namespace, last.message)
+            { ...target, runId: opts.runId ?? target.runId },
+            deployReadyFailureMessage(appName, namespace, last.message),
+            {
+              kind: 'deploy_failed',
+              namespace,
+              resourceName: appName,
+            }
           );
           return;
         }
@@ -125,18 +152,28 @@ export function watchDeployReadinessAndNotify(opts: WatchDeployReadinessOpts): v
       }
 
       await sendDeployProgress(
-        target,
+        { ...target, runId: opts.runId ?? target.runId },
         deployReadyFailureMessage(
           appName,
           namespace,
           last.message ||
             `Timed out after ${Math.round(TIMEOUT_MS / 60_000)} minutes — pods did not become Ready.`
-        )
+        ),
+        {
+          kind: 'deploy_failed',
+          namespace,
+          resourceName: appName,
+        }
       );
     } catch (err) {
       await sendDeployProgress(
-        target,
-        deployReadyFailureMessage(appName, namespace, String(err))
+        { ...target, runId: opts.runId ?? target.runId },
+        deployReadyFailureMessage(appName, namespace, String(err)),
+        {
+          kind: 'deploy_failed',
+          namespace,
+          resourceName: appName,
+        }
       );
     } finally {
       activeWatches.delete(key);

@@ -37,9 +37,27 @@ export class PostgresRunStore implements RunStore {
       ALTER TABLE sre_runs ADD COLUMN IF NOT EXISTS resource_key TEXT;
     `);
     await this.pool.query(`
+      ALTER TABLE sre_runs ADD COLUMN IF NOT EXISTS namespace TEXT;
+    `);
+    await this.pool.query(`
       CREATE INDEX IF NOT EXISTS idx_sre_runs_active_resource
       ON sre_runs(resource_key, updated_at DESC)
       WHERE status IN ('running', 'awaiting_human');
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_sre_runs_active_namespace
+      ON sre_runs(namespace, updated_at DESC)
+      WHERE status IN ('running', 'awaiting_human') AND namespace IS NOT NULL;
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_sre_runs_pending_throttled
+      ON sre_runs(started_at ASC)
+      WHERE status = 'pending_throttled';
+    `);
+    await this.pool.query(`
+      UPDATE sre_runs
+      SET namespace = metadata->'request'->>'namespace'
+      WHERE namespace IS NULL AND metadata->'request'->>'namespace' IS NOT NULL;
     `);
   }
 
@@ -59,16 +77,52 @@ export class PostgresRunStore implements RunStore {
     };
   }
 
-  async initRun(runId: string, incidentId: string, metadata?: Record<string, unknown>): Promise<void> {
+  async initRun(
+    runId: string,
+    incidentId: string,
+    metadata?: Record<string, unknown>,
+    options?: { status?: RunStatus }
+  ): Promise<void> {
     const now = new Date();
+    const status = options?.status ?? 'running';
     const req = metadata?.request as StartRunRequest | undefined;
     const resourceKey = req ? resourceKeyFromStartRequest(req) : `run:${incidentId}`;
+    const namespace = req?.namespace?.trim() || null;
     await this.pool.query(
-      `INSERT INTO sre_runs (run_id, incident_id, status, transcript, metadata, resource_key, started_at, updated_at)
-       VALUES ($1, $2, 'running', '[]'::jsonb, $3, $4, $5, $5)
-       ON CONFLICT (run_id) DO UPDATE SET updated_at = $5, resource_key = COALESCE(sre_runs.resource_key, $4)`,
-      [runId, incidentId, metadata ?? null, resourceKey, now]
+      `INSERT INTO sre_runs (run_id, incident_id, status, transcript, metadata, resource_key, namespace, started_at, updated_at)
+       VALUES ($1, $2, $3, '[]'::jsonb, $4, $5, $6, $7, $7)
+       ON CONFLICT (run_id) DO UPDATE SET updated_at = $7, resource_key = COALESCE(sre_runs.resource_key, $5), namespace = COALESCE(sre_runs.namespace, $6)`,
+      [runId, incidentId, status, metadata ?? null, resourceKey, namespace, now]
     );
+  }
+
+  async countActiveRunsByNamespace(namespace: string): Promise<number> {
+    const res = await this.pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM sre_runs
+       WHERE namespace = $1 AND status IN ('running', 'awaiting_human')`,
+      [namespace.trim()]
+    );
+    return Number((res.rows[0] as { cnt?: number })?.cnt ?? 0);
+  }
+
+  async listPendingThrottledRuns(limit = 50): Promise<StoredRun[]> {
+    const res = await this.pool.query(
+      `SELECT * FROM sre_runs
+       WHERE status = 'pending_throttled'
+       ORDER BY started_at ASC
+       LIMIT $1`,
+      [limit]
+    );
+    return res.rows.map((r) => this.rowToRun(r as Record<string, unknown>));
+  }
+
+  async claimThrottledRun(runId: string): Promise<boolean> {
+    const res = await this.pool.query(
+      `UPDATE sre_runs SET status = 'running', updated_at = NOW()
+       WHERE run_id = $1 AND status = 'pending_throttled'`,
+      [runId]
+    );
+    return (res.rowCount ?? 0) > 0;
   }
 
   /** PLAT-13 — indexed lookup for run dedupe at scale. */

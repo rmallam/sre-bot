@@ -299,7 +299,12 @@ export async function routeMessage(
         }
         const deployReady =
           enriched.type === 'deploy' &&
-          !!(enriched.containerImage || enriched.githubRepo || enriched.stackServices?.length);
+          !!(
+            enriched.containerImage ||
+            enriched.helmRemote ||
+            enriched.githubRepo ||
+            enriched.stackServices?.length
+          );
         const llmAsksMore =
           !!intent.userReply &&
           (/\?/.test(intent.userReply) ||

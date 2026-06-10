@@ -47,8 +47,26 @@ export async function buildDeployPlan(
   const namespace = request.namespace;
   const deployStrategy = request.deployStrategy ?? 'gitops';
   const containerImage = request.containerImage;
+  const helmRemote = request.helmRemote;
   const finalize = (plan: RemediationPlan) =>
     finalizeEnterprisePlan(plan, ctx, request, { githubRepo, gitRef });
+
+  if (helmRemote) {
+    return finalize({
+      action: 'repo_apply',
+      rootCause: `Deploy ${helmRemote.chartRef} from Helm catalog`,
+      reasoning:
+        `Installing published chart ${helmRemote.chartRef} from ${helmRemote.repoUrl} ` +
+        `(${helmRemote.repoName}) — no Git clone.`,
+      severity: 'MEDIUM',
+      proposedPatch: [],
+      targetManifestPath: `helm-catalog/${helmRemote.chartRef.replace('/', '-')}`,
+      commitMessage: `feat(deploy): install ${helmRemote.chartRef} via Helm catalog`,
+      rollbackSafe: true,
+      targetRepo: 'app',
+      helmRemote,
+    });
+  }
 
   if (containerImage) {
     const generatedPlan = buildHelmDeployPlan({

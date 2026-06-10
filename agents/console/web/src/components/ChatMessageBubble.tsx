@@ -8,6 +8,7 @@ interface Props {
   animate?: boolean;
   onAnimationComplete?: () => void;
   onQuickAction?: () => void;
+  onShowLogs?: (text: string, runId: string) => void;
 }
 
 export function ChatMessageBubble({
@@ -15,6 +16,7 @@ export function ChatMessageBubble({
   animate = false,
   onAnimationComplete,
   onQuickAction,
+  onShowLogs,
 }: Props) {
   if (turn.role === 'status') {
     return (
@@ -28,28 +30,34 @@ export function ChatMessageBubble({
   }
 
   const isUser = turn.role === 'user';
+  const isRunLogs = turn.updateKind === 'run_logs';
 
   return (
-    <div className={`chat-message ${isUser ? 'chat-message-user' : 'chat-message-assistant'}`}>
+    <div className={`chat-message ${isUser ? 'chat-message-user' : 'chat-message-assistant'}${isRunLogs ? ' chat-message-logs' : ''}`}>
       <div className="chat-message-header">
-        <span className="chat-message-role">{isUser ? 'You' : 'Assistant'}</span>
+        <span className="chat-message-role">{isUser ? 'You' : isRunLogs ? 'Run logs' : 'Assistant'}</span>
       </div>
       <div className="chat-message-body">
         {turn.role === 'assistant' ? (
           <>
-            <StreamingMessage
-              content={turn.content}
-              animate={animate}
-              onComplete={onAnimationComplete}
-            />
+            {isRunLogs ? (
+              <pre className="chat-run-logs">{turn.content}</pre>
+            ) : (
+              <StreamingMessage
+                content={turn.content}
+                animate={animate}
+                onComplete={onAnimationComplete}
+              />
+            )}
             {turn.quickActions?.length ? (
               <ChatQuickActions
                 actions={turn.quickActions as ChatQuickAction[]}
                 incidentId={turn.incidentId}
                 onAction={onQuickAction}
+                onShowLogs={onShowLogs}
               />
             ) : null}
-            {turn.runId ? (
+            {turn.runId && !turn.quickActions?.some((a) => a.id.startsWith('show_details_')) ? (
               <p className="chat-run-link">
                 <Link to={`/runs/${encodeURIComponent(turn.runId)}`}>View run details →</Link>
               </p>

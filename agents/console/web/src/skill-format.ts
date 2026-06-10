@@ -21,8 +21,14 @@ export function formatSkillSnippet(run: RunListItem, resourceLabel?: string): st
   if (o.reasoning) lines.push(`**Reasoning:** ${o.reasoning}`);
 
   const workedLabel =
-    o.worked === true ? 'Yes — verified / succeeded' : o.worked === false ? 'No' : 'Pending / unknown';
-  lines.push(`**Worked:** ${workedLabel}`);
+    o.finalStatus === 'succeeded' && o.suggestedAction === 'noop'
+      ? 'No action taken'
+      : o.worked === true
+        ? 'Yes — verified / succeeded'
+        : o.worked === false
+          ? 'No'
+          : 'Pending / unknown';
+  lines.push(`**Outcome:** ${workedLabel}`);
 
   if (o.actionsTaken.length) {
     lines.push('', '**Actions taken:**');

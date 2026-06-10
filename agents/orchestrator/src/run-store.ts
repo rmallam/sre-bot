@@ -2,6 +2,7 @@ import type { RunStatus, ToolTranscriptEntry, StartRunRequest } from '../../../s
 import type { CompiledPlan } from '../../../shared/src/tool-registry.js';
 import type { ToolCall } from '../../../shared/src/tool-contracts.js';
 import type { PendingToolApproval, StoredRun } from '../../../shared/src/run-persistence.js';
+import { normalizeStoredRun, normalizeToolCalls } from '../../../shared/src/run-persistence.js';
 import { runResourceKey, resourceKeyFromStartRequest } from '../../../shared/src/remediation-outcome.js';
 import { getRunStore } from './stores/index.js';
 
@@ -10,13 +11,15 @@ export type { StoredRun, PendingToolApproval };
 export async function initRun(
   runId: string,
   incidentId: string,
-  metadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>,
+  options?: { status?: import('../../../shared/src/types.js').RunStatus }
 ): Promise<void> {
-  await (await getRunStore()).initRun(runId, incidentId, metadata);
+  await (await getRunStore()).initRun(runId, incidentId, metadata, options);
 }
 
 export async function getRun(runId: string): Promise<StoredRun | undefined> {
-  return (await getRunStore()).getRun(runId);
+  const run = await (await getRunStore()).getRun(runId);
+  return run ? normalizeStoredRun(run) : undefined;
 }
 
 /** Exact match, then unique prefix match (for truncated links). */
@@ -35,7 +38,8 @@ export async function listRuns(opts?: {
   incidentId?: string;
   limit?: number;
 }): Promise<StoredRun[]> {
-  return (await getRunStore()).listRuns(opts);
+  const runs = await (await getRunStore()).listRuns(opts);
+  return runs.map(normalizeStoredRun);
 }
 
 export async function setRunCompiled(runId: string, compiled: CompiledPlan): Promise<void> {
@@ -47,7 +51,7 @@ export async function setCapabilityPlan(
   toolCalls: ToolCall[],
   compiled: CompiledPlan
 ): Promise<void> {
-  await (await getRunStore()).setCapabilityPlan(runId, toolCalls, compiled);
+  await (await getRunStore()).setCapabilityPlan(runId, normalizeToolCalls(toolCalls), compiled);
 }
 
 export async function appendRunTranscript(
@@ -95,4 +99,21 @@ export async function findActiveRunByResourceKey(
   const limit = parseInt(process.env['ORCHESTRATOR_DEDUPE_SCAN_LIMIT'] ?? '200', 10);
   const runs = await store.listRuns({ limit });
   return runs.find((r) => ACTIVE_STATUSES.has(r.status) && runResourceKey(r) === key);
+}
+
+export async function countActiveRunsByNamespace(namespace: string): Promise<number> {
+  const ns = namespace.trim();
+  if (!ns) return 0;
+  const store = await getRunStore();
+  if ('countActiveRunsByNamespace' in store) {
+    const fn = store.countActiveRunsByNamespace as (n: string) => Promise<number>;
+    return fn.call(store, ns);
+  }
+  const limit = parseInt(process.env['ORCHESTRATOR_DEDUPE_SCAN_LIMIT'] ?? '500', 10);
+  const runs = await store.listRuns({ limit });
+  return runs.filter((r) => {
+    if (!ACTIVE_STATUSES.has(r.status)) return false;
+    const req = r.metadata?.request as { namespace?: string } | undefined;
+    return req?.namespace?.trim() === ns;
+  }).length;
 }

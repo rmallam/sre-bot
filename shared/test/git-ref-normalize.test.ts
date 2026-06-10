@@ -4,18 +4,21 @@ import {
   normalizeRequestedGitRef,
   toHttpsCloneUrl,
 } from '../src/git-ref.js';
+import { describe, test } from 'vitest';
 
-assert.equal(
-  normalizeGithubRepoSlug('github.com/https://github.com/vyogotech/frappe-operator'),
-  'github.com/vyogotech/frappe-operator'
-);
-assert.equal(
-  normalizeGithubRepoSlug('https://github.com/vyogotech/frappe-operator'),
-  'github.com/vyogotech/frappe-operator'
-);
-assert.equal(toHttpsCloneUrl('github.com/org/app'), 'https://github.com/org/app');
+describe('git-ref-normalize', () => {
+  test('legacy assertions', () => {
+    assert.equal(
+      normalizeGithubRepoSlug('github.com/https://github.com/vyogotech/frappe-operator'),
+      'github.com/vyogotech/frappe-operator'
+    );
+    assert.equal(
+      normalizeGithubRepoSlug('https://github.com/vyogotech/frappe-operator'),
+      'github.com/vyogotech/frappe-operator'
+    );
+    assert.equal(toHttpsCloneUrl('github.com/org/app'), 'https://github.com/org/app');
 
-assert.equal(normalizeRequestedGitRef('latest'), undefined);
-assert.equal(normalizeRequestedGitRef('main'), 'main');
-
-console.log('git-ref-normalize.test.ts ok');
+    assert.equal(normalizeRequestedGitRef('latest'), undefined);
+    assert.equal(normalizeRequestedGitRef('main'), 'main');
+  });
+});

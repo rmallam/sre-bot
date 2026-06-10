@@ -3,29 +3,15 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
-import { existsSync } from 'node:fs';
 import type { DiagnosisContext, KubeEvent, ResourceKind } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
+import { buildKubeConfig } from '../../../shared/src/kube-config.js';
 import { gatherPodFacts } from './k8s-facts.js';
 import { resolveDeploymentByHint } from './workload-resolve.js';
 
 export { resolveDeploymentByHint };
 
 const AGENT = 'investigator';
-
-function buildKubeConfig(): k8s.KubeConfig {
-  const kc = new k8s.KubeConfig();
-  if (existsSync('/var/run/secrets/kubernetes.io/serviceaccount/token')) {
-    try {
-      kc.loadFromCluster();
-      return kc;
-    } catch {
-      /* fall through */
-    }
-  }
-  kc.loadFromDefault();
-  return kc;
-}
 
 const kc = buildKubeConfig();
 const coreV1Api = kc.makeApiClient(k8s.CoreV1Api);
@@ -165,6 +151,17 @@ export async function gatherClusterHealthFacts(incidentId: string): Promise<Part
       .slice(0, 50),
     namespaceExists: true,
     clusterReachable: true,
+    scopeHealth: {
+      scope: 'cluster',
+      nodeCount: nodes.length,
+      notReadyNodeCount: notReadyNodes.length,
+      unhealthyDeployments: unhealthy.map((u) => ({
+        namespace: u.ns,
+        name: u.name,
+        ready: u.ready,
+        desired: u.desired,
+      })),
+    },
   };
 }
 
@@ -212,5 +209,14 @@ export async function gatherNamespaceHealthFacts(
     recentEvents: mapEvents(warnings),
     currentLogs: summary,
     existingDeployments: deployments.map((d) => d.metadata?.name ?? '').filter(Boolean),
+    scopeHealth: {
+      scope: 'namespace',
+      unhealthyDeployments: unhealthy.map((u) => ({
+        namespace,
+        name: u.name,
+        ready: u.ready,
+        desired: u.desired,
+      })),
+    },
   };
 }

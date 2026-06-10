@@ -5,6 +5,11 @@
 import type { CiRunFacts } from './ci-types.js';
 import type { StoredRun } from './run-persistence.js';
 import { runStatusOutcomeLabel, sanitizeUserFacingText } from './user-outcomes.js';
+import {
+  formatToolDisplayLabel,
+  formatToolSummaryDetail,
+} from './tool-user-labels.js';
+import { formatRunEndState } from './run-end-state.js';
 
 export interface RunSummaryOptions {
   /** Include log excerpts (verbose). Default true for detail view. */
@@ -57,20 +62,31 @@ export function formatRunSummaryForUser(
     lines.push('', `PR: ${prUrl}`);
   }
 
+  const planAction = (run.metadata?.remediationPlan as { action?: string } | undefined)?.action;
+
   const recentSteps = run.transcript
     .slice(-5)
-    .map((e) => e.summary ?? e.tool)
+    .map((e) => {
+      const label = formatToolDisplayLabel(e.tool, planAction);
+      const detail = formatToolSummaryDetail(e.tool, e.summary, planAction);
+      return detail ? `${label} — ${detail}` : label;
+    })
     .filter(Boolean)
     .map((s) => sanitizeUserFacingText(String(s)));
 
   if (recentSteps.length && !ciRun?.diagnosis) {
-    lines.push('', 'Recent steps:');
+    lines.push('', 'What happened:');
     for (const step of recentSteps) {
-      lines.push(`• ${step.slice(0, 200)}`);
+      lines.push(`• ${step.slice(0, 240)}`);
     }
   }
 
-  return lines.join('\n').slice(0, 3500);
+  const endState = formatRunEndState(run);
+  if (endState) {
+    lines.push('', endState.replace(/\*\*/g, ''));
+  }
+
+  return lines.join('\n').slice(0, 4500);
 }
 
 function extractCiRunFromRun(run: StoredRun): CiRunFacts | undefined {

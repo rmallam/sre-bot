@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { isInClusterKube } from '../src/kube-connectivity.js';
+import { describe, test } from 'vitest';
 
-assert.equal(typeof isInClusterKube(), 'boolean');
-
-console.log('kube-connectivity.test.ts OK');
+describe('kube-connectivity', () => {
+  test('legacy assertions', () => {
+    assert.equal(typeof isInClusterKube(), 'boolean');
+  });
+});

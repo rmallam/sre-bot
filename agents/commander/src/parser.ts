@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { listCatalogAppNames, resolveCatalogImage } from '../../../shared/src/app-image-catalog.js';
+import { listHelmCatalogToolNames, resolveHelmCatalog } from '../../../shared/src/helm-chart-catalog.js';
 import {
   ALL_NAMESPACES,
   isAllNamespacesScope,
@@ -33,6 +34,8 @@ export interface DeployCmd {
   createNamespace?: boolean;
   /** Deploy from a public/catalog image without cloning a repo. */
   containerImage?: string;
+  /** Install from a published Helm chart (built-in catalog). */
+  helmRemote?: import('../../../shared/src/deploy/readme-install-hints.js').RemoteHelmInstall;
   /** Kubernetes app name (defaults from image catalog token). */
   appName?: string;
   /** Multi-service deploy from several repositories in one run. */
@@ -253,7 +256,7 @@ const RESOURCE_ALIASES: Record<string, GetResource> = {
 };
 
 const INVESTIGATE_TRIGGERS =
-  /(?:what(?:'?s| is)\s+wrong\s+with|investigate|diagnose|debug|why\s+is|why\s+are|check(?:\s+on|\s+out)?|look\s+at|inspect|how\s+is|how\s+are|health\s+of|status\s+of|any\s+issues\s+with)\s+/i;
+  /(?:what(?:'?s| is)\s+wrong\s+with|investigate|diagnose|debug|why\s+is|why\s+isn'?t|why\s+are|check(?:\s+on|\s+out)?|look\s+at|inspect|how\s+is|how\s+are|health\s+of|status\s+of|any\s+issues\s+with)\s+/i;
 const REMEDIATION_TRIGGERS = /\b(fix|remediate|repair|patch|change|update)\b/i;
 
 export function extractGithubRepo(text: string): string | null {
@@ -651,10 +654,27 @@ export function parseSimpleDeploy(text: string): DeployCmd | null {
     return null;
   }
 
+  const namespace = extractDeployNamespace(normalised);
+
+  if (!withContainer) {
+    const helmEntry = resolveHelmCatalog(appToken);
+    if (helmEntry) {
+      return {
+        type: 'deploy',
+        githubRepo: '',
+        gitRef: 'main',
+        namespace: namespace || helmEntry.defaultNamespace,
+        deployStrategy: 'direct',
+        deployStrategyExplicit: true,
+        helmRemote: helmEntry.remote,
+        appName: helmEntry.releaseName,
+      };
+    }
+  }
+
   const image = resolveCatalogImage(appToken);
   if (!image) return null;
 
-  const namespace = extractDeployNamespace(normalised);
   return {
     type: 'deploy',
     githubRepo: '',
@@ -676,21 +696,34 @@ export function deployParseHint(text: string): string | null {
   const appToken = (withContainer?.[1] ?? bare?.[1])?.toLowerCase();
   const ns = extractDeployNamespace(text);
 
-  if (appToken && !STOP_WORDS.has(appToken) && appToken !== 'container' && !resolveCatalogImage(appToken)) {
+  const knownHelm = appToken ? resolveHelmCatalog(appToken) : undefined;
+  const knownImage = appToken ? resolveCatalogImage(appToken) : undefined;
+
+  if (
+    appToken &&
+    !STOP_WORDS.has(appToken) &&
+    appToken !== 'container' &&
+    !knownHelm &&
+    !knownImage
+  ) {
     return (
-      `I don't have a built-in image for "${appToken}".\n\n` +
+      `I don't have a built-in chart or image for "${appToken}".\n\n` +
       `Try:\n` +
-      `• deploy httpd in ${ns} namespace\n` +
+      `• deploy argocd in ${ns} namespace\n` +
+      `• deploy httpd container in ${ns} namespace\n` +
       `• deploy github.com/org/${appToken} in ${ns} namespace\n\n` +
-      `Built-in apps: ${listCatalogAppNames().join(', ')}`
+      `Helm tools: ${listHelmCatalogToolNames().join(', ')}\n` +
+      `Container apps: ${listCatalogAppNames().join(', ')}`
     );
   }
 
   return (
     `To deploy, try:\n` +
-    `• deploy httpd in ${ns} namespace\n` +
+    `• deploy argocd in ${ns} namespace\n` +
+    `• deploy httpd container in ${ns} namespace\n` +
     `• deploy github.com/org/repo in ${ns} namespace\n\n` +
-    `Built-in apps: ${listCatalogAppNames().join(', ')}`
+    `Helm tools: ${listHelmCatalogToolNames().join(', ')}\n` +
+    `Container apps: ${listCatalogAppNames().join(', ')}`
   );
 }
 

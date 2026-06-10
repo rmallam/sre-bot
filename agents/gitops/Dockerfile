@@ -19,6 +19,8 @@ RUN ARCH="${TARGETARCH}" \
     && helm version --short
 
 # Copy shared library
+COPY shared/package*.json ./shared/
+RUN cd shared && npm ci --omit=dev
 COPY shared/ ./shared/
 COPY scripts/container-entrypoint.sh /app/scripts/container-entrypoint.sh
 RUN chmod +x /app/scripts/container-entrypoint.sh
