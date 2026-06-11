@@ -1,0 +1,43 @@
+---
+description: Testing pyramid, commands, and conventions for sre-bot
+globs: "**/*.{test.ts,spec.ts},shared/test/**,agents/**/test/**,scripts/test*.sh,sre-agent-platform/tests/**"
+alwaysApply: false
+---
+
+# Testing Standards
+
+## Pyramid
+
+| Layer | Command | When |
+|-------|---------|------|
+| Unit | `npm test` | Every change |
+| Platform | `npm run test:platform` | Python/RAG/platform changes |
+| Kind E2E | `./scripts/test-e2e-kind.sh` | Agent API, auth, chat, orchestration |
+| Workflows | `./scripts/test-e2e-workflows.sh` | End-to-end run lifecycles |
+| Full | `./scripts/test-all.sh` | Pre-merge / pre-deploy |
+
+## Writing tests (Vitest)
+
+- Place tests beside code: `shared/test/*.test.ts`, `agents/<agent>/test/*.test.ts`.
+- Test real behavior (parsers, auth, dedupe, correlation) — not trivial getters.
+- Use existing patterns in `shared/test/internal-auth.test.ts`, `shared/test/alert-correlation.test.ts`.
+- E2E scripts use `e2e_curl` from `scripts/test-e2e-lib.sh` (loads `SRE_INTERNAL_TOKEN` from cluster secret).
+
+## E2E auth
+
+Kind E2E hits agents with `SRE_AUTH_STRICT=true`. Tests must send Bearer token via `e2e_curl`, not bare `curl -sf`.
+
+Gitops endpoints may return HTTP 500 with `{ success: false }` — use `e2e_curl -s` (no `-f`) when asserting response body.
+
+## Platform (pytest)
+
+```bash
+cd sre-agent-platform && python3 -m pytest tests/ -q
+```
+
+Add tests under `sre-agent-platform/tests/` for RAG, dedup, routing logic.
+
+## CI vs local
+
+- **CI** (`.github/workflows/ci.yml`): unit + platform on every push/PR.
+- **Local Kind E2E**: required for agent/helm changes before claiming "deployed and verified."

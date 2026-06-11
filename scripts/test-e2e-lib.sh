@@ -45,6 +45,26 @@ pass() { PASS=$((PASS + 1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "    $2"; }
 skip() { SKIP=$((SKIP + 1)); echo "  ○ $1 (skipped)"; }
 
+load_e2e_internal_token() {
+  [[ -n "${SRE_INTERNAL_TOKEN:-}" ]] && return 0
+  command -v kubectl >/dev/null || return 0
+  kubectl --context "$KIND_CONTEXT" get ns "$NS" >/dev/null 2>&1 || return 0
+  SRE_INTERNAL_TOKEN="$(
+    kubectl --context "$KIND_CONTEXT" -n "$NS" get secret sre-bot-secrets \
+      -o jsonpath='{.data.sre_internal_token}' 2>/dev/null | base64 -d 2>/dev/null || true
+  )"
+  export SRE_INTERNAL_TOKEN
+}
+
+# curl wrapper — adds Bearer token for inter-agent APIs when SRE_AUTH_STRICT=true.
+e2e_curl() {
+  if [[ -n "${SRE_INTERNAL_TOKEN:-}" ]]; then
+    curl -H "Authorization: Bearer ${SRE_INTERNAL_TOKEN}" "$@"
+  else
+    curl "$@"
+  fi
+}
+
 assert_json_field() {
   local name="$1" json="$2" py_expr="$3" expected="$4"
   local val
@@ -78,6 +98,7 @@ ensure_port_forwards() {
   [[ "$AUTO_PORT_FORWARD" == "true" ]] || return 0
   command -v kubectl >/dev/null || return 0
   kubectl --context "$KIND_CONTEXT" get ns "$NS" >/dev/null 2>&1 || return 0
+  load_e2e_internal_token
   start_port_forward commander-agent 9081
   start_port_forward investigator-agent 9082
   start_port_forward brain-agent 9083
@@ -122,7 +143,7 @@ poll_run_by_incident() {
   local incident_id="$1" max_sec="${2:-$WORKFLOW_RUN_TIMEOUT_SEC}"
   local elapsed=0 runs='{}'
   while [[ "$elapsed" -lt "$max_sec" ]]; do
-    runs="$(curl -sf -m 15 "$ORCHESTRATOR_URL/runs?incidentId=$incident_id&limit=3" 2>/dev/null || echo '{}')"
+    runs="$(e2e_curl -sf -m 15 "$ORCHESTRATOR_URL/runs?incidentId=$incident_id&limit=3" 2>/dev/null || echo '{}')"
     if echo "$runs" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('runs') else 1)" 2>/dev/null; then
       echo "$runs"
       return 0
@@ -138,7 +159,7 @@ poll_run_status() {
   local run_id="$1" max_sec="${2:-$WORKFLOW_RUN_TIMEOUT_SEC}"
   local elapsed=0 status="running"
   while [[ "$elapsed" -lt "$max_sec" ]]; do
-    status="$(curl -sf -m 15 "$ORCHESTRATOR_URL/runs/$run_id" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo '')"
+    status="$(e2e_curl -sf -m 15 "$ORCHESTRATOR_URL/runs/$run_id" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo '')"
     if [[ -n "$status" && "$status" != "running" ]]; then
       echo "$status"
       return 0

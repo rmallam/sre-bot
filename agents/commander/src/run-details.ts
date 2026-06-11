@@ -2,6 +2,8 @@
  * UX-4 — Fetch orchestrator run summary for Show logs / follow-ups.
  */
 
+import { agentFetch } from './agent-fetch.js';
+
 const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
 
 export async function fetchRunDetailsText(
@@ -9,7 +11,7 @@ export async function fetchRunDetailsText(
   opts?: { verbose?: boolean }
 ): Promise<string> {
   const params = opts?.verbose ? '?verbose=true' : '';
-  const res = await fetch(`${ORCHESTRATOR_URL}/runs/${encodeURIComponent(runId)}/summary${params}`, {
+  const res = await agentFetch(`${ORCHESTRATOR_URL}/runs/${encodeURIComponent(runId)}/summary${params}`, {
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
@@ -24,7 +26,7 @@ export async function fetchLatestRunSummaryByIncident(
   incidentId: string,
   opts?: { verbose?: boolean }
 ): Promise<string | null> {
-  const listRes = await fetch(
+  const listRes = await agentFetch(
     `${ORCHESTRATOR_URL}/runs?incidentId=${encodeURIComponent(incidentId)}&limit=1`,
     { signal: AbortSignal.timeout(15_000) }
   );

@@ -5,6 +5,7 @@
 
 import type { IncidentMode, ResourceKind } from '../../../shared/src/types.js';
 import { getSessionStore, type WebSessionSummary } from './session-store.js';
+import { agentFetch } from './agent-fetch.js';
 import { v4 as uuidv4 } from 'uuid';
 
 /** Inline approve/reject actions (mirrors run-update quickActions). */
@@ -174,7 +175,7 @@ export async function linkRunToSession(
 ): Promise<void> {
   const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
   try {
-    const res = await fetch(
+    const res = await agentFetch(
       `${ORCHESTRATOR_URL}/runs?incidentId=${encodeURIComponent(incidentId)}&limit=1`,
       { signal: AbortSignal.timeout(10_000) }
     );

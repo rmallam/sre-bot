@@ -9,6 +9,7 @@ import { mergeDeployProvenance } from '../../../shared/src/deploy-provenance.js'
 import { clearPendingClarification, setPendingClarification } from './clarification.js';
 import { getSession } from './sessions.js';
 import { cancelRun } from './deploy-source-run.js';
+import { agentFetch } from './agent-fetch.js';
 
 const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
 
@@ -107,7 +108,7 @@ export async function maybeArmDeploySourceFromRun(
   runId: string
 ): Promise<void> {
   try {
-    const res = await fetch(`${ORCHESTRATOR_URL}/runs/${encodeURIComponent(runId)}`, {
+    const res = await agentFetch(`${ORCHESTRATOR_URL}/runs/${encodeURIComponent(runId)}`, {
       signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) return;

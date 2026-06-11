@@ -1,0 +1,50 @@
+---
+description: Core coding standards for sre-bot — scope, conventions, and quality bar
+alwaysApply: true
+---
+
+# Coding Standards
+
+## Scope and design
+
+- **Minimize diff** — smallest change that fixes the root cause. No drive-by refactors.
+- **No over-engineering** — no extra abstractions for one-off cases; inline when clearer.
+- **Match existing style** — naming, imports, error handling, and file layout of the surrounding code.
+- **Comments** — only for non-obvious business logic; code should read clearly without noise.
+
+## TypeScript / agents
+
+- Shared types live in `shared/src/`; agent-specific logic stays in `agents/<name>/src/`.
+- Use `.js` extensions in ESM imports (`from './foo.js'`).
+- Prefer existing helpers (`postWithRetry`, `log`, `agentFetch`) over duplicating HTTP logic.
+- Env vars: `process.env['VAR_NAME']` with sensible defaults documented in helm/compose.
+
+## Inter-agent HTTP (critical)
+
+Agents enforce `SRE_AUTH_STRICT` + `SRE_INTERNAL_TOKEN` on non-`/health` routes.
+
+```typescript
+// ❌ BAD — 401 from investigator/orchestrator
+await fetch(`${INVESTIGATOR_URL}/get?...`);
+
+// ✅ GOOD — commander
+import { agentFetch } from './agent-fetch.js';
+await agentFetch(`${INVESTIGATOR_URL}/get?...`);
+
+// ✅ GOOD — other agents / shared
+import { internalAuthHeaders } from '../../../shared/src/internal-auth.js';
+await fetch(url, { headers: internalAuthHeaders({ 'Content-Type': 'application/json' }), ... });
+```
+
+Console BFF uses `internalAuthHeaders()` in `proxyJson()` — ensure console pod has `SRE_INTERNAL_TOKEN` after secret changes (rollout restart).
+
+## Helm / Kind
+
+- Wire `{{- include "sre-bot.internalAuthEnv" . | nindent 12 }}` on every deployment using `createInternalAuthMiddleware`.
+- Set `secrets.sreInternalToken` in Kind deploy (`deploy-kind.sh` defaults to `sre-bot-local-dev-token`).
+- After secret or env updates, restart pods that mount the secret — env is fixed at pod start.
+
+## Security
+
+- Never commit secrets (`.env.local`, API keys). Use `helm/sre-bot/secrets.example.yaml` as reference.
+- Use timing-safe auth checks (`shared/src/internal-auth.ts`); do not roll custom token compare.

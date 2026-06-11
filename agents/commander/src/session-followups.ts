@@ -10,6 +10,9 @@ import { statusSubjectFromTopic } from './active-topic.js';
 import { fetchLatestRunSummaryByIncident, fetchRunDetailsText } from './run-details.js';
 import { getChannelPref } from './channel-prefs.js';
 import { extractContainerImageViaLlm } from './image-hint-llm.js';
+import { agentFetch } from './agent-fetch.js';
+import { isClusterListExpandFollowUp } from './cluster-get-followup.js';
+import { replyClusterGet } from './router.js';
 import {
   extractContainerImageHint,
   looksLikeImageRemediation,
@@ -39,6 +42,19 @@ export async function trySessionFollowUp(
   const session = await getSession(platform, channelId, userId);
   const verbose = getChannelPref(platform, channelId).verbose;
   const t = text.trim();
+
+  if (session?.activeTopic?.kind === 'get' && isClusterListExpandFollowUp(t)) {
+    const topic = session.activeTopic;
+    const resource = topic.resourceName ?? 'pods';
+    const text = await replyClusterGet({
+      resource,
+      namespace: topic.namespace,
+      platform,
+      channelId,
+      verbose: true,
+    });
+    return { type: 'reply', text };
+  }
 
   if (session?.lastStatusSubject || session?.activeTopic) {
     const subject =
@@ -231,7 +247,7 @@ async function fetchDeployVerifyStatus(namespace: string, resourceName: string):
       resourceName,
       incidentId: 'deploy-status-check',
     });
-    const res = await fetch(`${INVESTIGATOR_URL}/verify?${params}`, {
+    const res = await agentFetch(`${INVESTIGATOR_URL}/verify?${params}`, {
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) return null;
@@ -263,7 +279,7 @@ async function fetchCiRunStatus(
       repo: githubRepo.startsWith('github.com/') ? githubRepo : `github.com/${githubRepo}`,
     });
     if (workflowRunId != null) params.set('runId', String(workflowRunId));
-    const res = await fetch(`${CICD_URL}/fetch-run?${params}`, {
+    const res = await agentFetch(`${CICD_URL}/fetch-run?${params}`, {
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) return null;

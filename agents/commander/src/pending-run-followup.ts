@@ -5,6 +5,7 @@
 import type { Platform } from '../../../shared/src/types.js';
 import { getSession } from './sessions.js';
 import { getActiveCase, updateCaseStatus } from './case-manager.js';
+import { agentFetch } from './agent-fetch.js';
 
 const ORCHESTRATOR_URL = process.env['ORCHESTRATOR_URL'] ?? 'http://orchestrator-agent:8080';
 const HIL_URL = process.env['HIL_URL'] ?? 'http://hil-agent:8080';
@@ -34,7 +35,7 @@ function isPendingStatusQuestion(text: string): boolean {
 async function fetchAwaitingRuns(limit = 30): Promise<
   Array<{ runId: string; incidentId: string; namespace?: string; resourceName?: string; status: string }>
 > {
-  const res = await fetch(`${ORCHESTRATOR_URL}/runs?limit=${limit}`, {
+  const res = await agentFetch(`${ORCHESTRATOR_URL}/runs?limit=${limit}`, {
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) return [];
@@ -53,7 +54,7 @@ async function fetchAwaitingRuns(limit = 30): Promise<
 async function fetchHilPending(): Promise<
   Array<{ incidentId: string; runId?: string; namespace?: string; resourceName?: string }>
 > {
-  const res = await fetch(`${HIL_URL}/api/approvals`, { signal: AbortSignal.timeout(5_000) });
+  const res = await agentFetch(`${HIL_URL}/api/approvals`, { signal: AbortSignal.timeout(5_000) });
   if (!res.ok) return [];
   const data = (await res.json()) as {
     approvals?: Array<{
@@ -68,7 +69,7 @@ async function fetchHilPending(): Promise<
 }
 
 async function cancelRun(runId: string): Promise<boolean> {
-  const res = await fetch(`${ORCHESTRATOR_URL}/runs/${encodeURIComponent(runId)}/cancel`, {
+  const res = await agentFetch(`${ORCHESTRATOR_URL}/runs/${encodeURIComponent(runId)}/cancel`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason: 'operator_cancelled' }),

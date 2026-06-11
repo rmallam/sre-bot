@@ -6,6 +6,7 @@ import type { Platform, RunStatus } from '../../../shared/src/types.js';
 import type { RunUpdatePayload } from '../../../shared/src/run-update.js';
 import { mergeCaseEvidenceFromDiagnosis } from '../../../shared/src/agent-case.js';
 import { log } from '../../../shared/src/http.js';
+import { agentFetch } from './agent-fetch.js';
 import {
   getActiveCase,
   syncCaseFromRunOutcome,
@@ -31,7 +32,7 @@ export interface ActiveRunLookup {
 
 export async function lookupActiveRun(incidentId: string): Promise<ActiveRunLookup> {
   try {
-    const res = await fetch(
+    const res = await agentFetch(
       `${ORCHESTRATOR_URL}/runs?incidentId=${encodeURIComponent(incidentId)}&limit=1`,
       { signal: AbortSignal.timeout(10_000) }
     );
@@ -78,7 +79,7 @@ export async function persistCaseEvidenceFromRun(
   incidentId: string
 ): Promise<void> {
   try {
-    const res = await fetch(`${ORCHESTRATOR_URL}/runs?incidentId=${encodeURIComponent(incidentId)}&limit=1`, {
+    const res = await agentFetch(`${ORCHESTRATOR_URL}/runs?incidentId=${encodeURIComponent(incidentId)}&limit=1`, {
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return;

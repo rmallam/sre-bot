@@ -218,6 +218,7 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -280,6 +281,7 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
             - name: BRAIN_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "brain" "root" .) | quote }}
             - name: CICD_URL

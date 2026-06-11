@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { DeployCmd } from './parser.js';
 import { rememberDeployDraft } from './conversation.js';
+import { agentFetch } from './agent-fetch.js';
 
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 const CHOICE_TTL_MS = parseInt(process.env['DEPLOY_CHOICE_TTL_MS'] ?? '180000', 10);
@@ -125,7 +126,7 @@ async function fetchRepoFindings(deploy: DeployCmd): Promise<DeployFindings | un
     gitRef: deploy.gitRef,
   });
 
-  const res = await fetch(`${INVESTIGATOR_URL}/facts?${params.toString()}`, {
+  const res = await agentFetch(`${INVESTIGATOR_URL}/facts?${params.toString()}`, {
     signal: AbortSignal.timeout(45_000),
   }).catch(() => null);
   if (!res || !res.ok) return undefined;

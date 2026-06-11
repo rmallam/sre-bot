@@ -7,6 +7,7 @@
 
 import type { DeployCmd } from './parser.js';
 import { rememberDeployDraft } from './conversation.js';
+import { agentFetch } from './agent-fetch.js';
 
 const INVESTIGATOR_URL = process.env['INVESTIGATOR_URL'] ?? 'http://investigator-agent:8080';
 const CHOICE_TTL_MS = parseInt(process.env['NAMESPACE_PROMPT_TTL_MS'] ?? '300000', 10);
@@ -46,7 +47,7 @@ export async function namespaceExists(namespace: string): Promise<boolean> {
     namespace,
     incidentId: `ns-check-${Date.now()}`,
   });
-  const res = await fetch(`${INVESTIGATOR_URL}/namespace-check?${params}`, {
+  const res = await agentFetch(`${INVESTIGATOR_URL}/namespace-check?${params}`, {
     signal: AbortSignal.timeout(20_000),
   }).catch(() => null);
   if (!res?.ok) return true;

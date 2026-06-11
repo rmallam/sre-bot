@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import type { Request, Response } from 'express';
 import { log, postWithRetry } from '../../../shared/src/http.js';
+import { agentFetch } from './agent-fetch.js';
 import type { Platform, ResourceKind, StartRunRequest } from '../../../shared/src/types.js';
 import {
   buildAlertRunGroups,
@@ -146,7 +147,7 @@ function parseFiringAlerts(payload: AlertmanagerPayload): ParsedAlertTarget[] {
 async function enrichWithGraphBindings(alerts: ParsedAlertTarget[]): Promise<ParsedAlertTarget[]> {
   if (!CORRELATION_USE_APP_GRAPH || alerts.length < 2) return alerts;
   try {
-    const res = await fetch(`${INVESTIGATOR_URL}/alert-correlation/bindings`, {
+    const res = await agentFetch(`${INVESTIGATOR_URL}/alert-correlation/bindings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

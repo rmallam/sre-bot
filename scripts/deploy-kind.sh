@@ -47,6 +47,7 @@ OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 ALLOWED_USERS="${ALLOWED_USERS:-}"
 TELEGRAM_ALERT_CHAT_ID="${TELEGRAM_ALERT_CHAT_ID:-${ALLOWED_USERS}}"
+SRE_INTERNAL_TOKEN="${SRE_INTERNAL_TOKEN:-sre-bot-local-dev-token}"
 
 if [[ -z "$OPENROUTER_API_KEY" && -z "$GEMINI_API_KEY" ]]; then
   echo "Set OPENROUTER_API_KEY or GEMINI_API_KEY in $ENV_FILE" >&2
@@ -80,6 +81,7 @@ secrets:
   telegramAlertChatId: "${TELEGRAM_ALERT_CHAT_ID}"
   gitopsRepoUrl: "${GITOPS_REPO_URL:-}"
   githubToken: "${GITHUB_TOKEN:-}"
+  sreInternalToken: "${SRE_INTERNAL_TOKEN}"
 
 agentMode:
   sreAgentMode: ${SRE_AGENT_MODE:-agentic}

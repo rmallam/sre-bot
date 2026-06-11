@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@kubernetes/client-node": "^0.21.0"
+    "@kubernetes/client-node": "^0.21.0",
+    "jose": "^4.15.9"
   }
 }

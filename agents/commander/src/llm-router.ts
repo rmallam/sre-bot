@@ -7,6 +7,7 @@ import type { CommandIntent, CommandIntentName } from '../../../shared/src/comma
 import { parseCommandIntentJson } from '../../../shared/src/command-intent.js';
 import type { Platform } from '../../../shared/src/types.js';
 import { log } from '../../../shared/src/http.js';
+import { agentFetch } from './agent-fetch.js';
 import { resolveCommanderLlm } from '../../../shared/src/llm-config.js';
 import { openRouterChat, stripJsonFences } from '../../../shared/src/openrouter.js';
 import {
@@ -169,7 +170,7 @@ export async function routeMessage(
   channelId?: string
 ): Promise<LlmRouteResult> {
   try {
-    const res = await fetch(`${SECURITY_URL}/sanitize-for-llm`, {
+    const res = await agentFetch(`${SECURITY_URL}/sanitize-for-llm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, incidentId: `chat-${userId}` }),
@@ -209,13 +210,6 @@ export async function routeMessage(
 
     const routingMode = resolveAgentMode().routingMode;
 
-    if (routingMode !== 'llm_only') {
-      const prefReply = tryPrefFollowUp(platform, channelId, text);
-      if (prefReply) {
-        return withReply({ type: 'unknown' }, 1, { userReply: prefReply });
-      }
-    }
-
     const sessionFollow = await trySessionFollowUp(text, platform, channelId, userId);
     if (sessionFollow?.type === 'reply') {
       return withReply({ type: 'unknown' }, 0.95, { userReply: sessionFollow.text });
@@ -225,6 +219,13 @@ export async function routeMessage(
         userReply: sessionFollow.reply,
         routingSource: 'followup',
       });
+    }
+
+    if (routingMode !== 'llm_only') {
+      const prefReply = tryPrefFollowUp(platform, channelId, text);
+      if (prefReply) {
+        return withReply({ type: 'unknown' }, 1, { userReply: prefReply });
+      }
     }
 
     if (routingMode !== 'llm_only') {

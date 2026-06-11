@@ -19,6 +19,7 @@ import { message } from 'telegraf/filters';
 import { Markup } from 'telegraf';
 import { v4 as uuidv4 } from 'uuid';
 import { log } from '../../../shared/src/http.js';
+import { agentFetch } from './agent-fetch.js';
 import { isAuthorized } from './auth.js';
 import { parseCommand, isWorkloadStatusQuery } from './parser.js';
 import { handleCommand, fetchWorkloadStatusReply } from './router.js';
@@ -202,7 +203,7 @@ function forwardHilAction(
 ): void {
   void (async () => {
     try {
-      const res = await fetch(`${HIL_URL}/api/${action}/${incidentId}`, {
+      const res = await agentFetch(`${HIL_URL}/api/${action}/${incidentId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, platform: PLATFORM }),
@@ -252,7 +253,7 @@ async function submitOperatorSuggestion(
   uid: string
 ): Promise<void> {
   try {
-    const res = await fetch(`${HIL_URL}/api/suggest-fix/${incidentId}`, {
+    const res = await agentFetch(`${HIL_URL}/api/suggest-fix/${incidentId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

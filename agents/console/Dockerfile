@@ -10,6 +10,8 @@ RUN npm run build:web
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM node:22-alpine
 WORKDIR /app
+COPY shared/package*.json ./shared/
+RUN cd shared && npm ci --omit=dev
 COPY shared/ ./shared/
 COPY agents/console/package*.json ./agents/console/
 RUN cd agents/console && npm ci --omit=dev

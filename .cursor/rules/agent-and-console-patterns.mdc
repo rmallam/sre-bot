@@ -1,0 +1,43 @@
+---
+description: Agent, console BFF, and chat flow patterns specific to sre-bot
+globs: "agents/**/*.ts,agents/**/*.tsx,helm/**/*.yaml,docker-compose.yml"
+alwaysApply: false
+---
+
+# Agent & Console Patterns
+
+## Chat flow
+
+```
+Browser → console /api/chat → commander /chat → router → investigator|orchestrator
+```
+
+- Console OIDC (`CONSOLE_AUTH_ENABLED`) is **separate** from inter-agent Bearer auth.
+- Chat 401 on `GET /get` = commander missing `agentFetch`, not missing console login.
+
+## Commander outbound calls
+
+All fetches to `INVESTIGATOR_URL`, `ORCHESTRATOR_URL`, `HIL_URL`, `GITOPS_URL`, `SECURITY_URL`, `CICD_URL` must go through `agentFetch()` in `agents/commander/src/agent-fetch.ts`.
+
+External LLM URLs (OpenRouter, Gemini) use plain `fetch`.
+
+## Console proxy
+
+`agents/console/src/server.ts` — `proxyJson()` adds `internalAuthHeaders()`. After helm secret changes, rollout `console-agent`.
+
+## Shared runtime deps
+
+If `shared/src/*.ts` imports an npm package, add it to `shared/package.json` and install shared deps in agent Dockerfiles:
+
+```dockerfile
+COPY shared/package*.json ./shared/
+RUN cd shared && npm ci --omit=dev
+```
+
+## New investigator/orchestrator endpoints
+
+1. Add route in agent `index.ts`
+2. If protected: already behind `createInternalAuthMiddleware`
+3. Wire commander caller with `agentFetch`
+4. Add E2E smoke in `scripts/test-e2e-kind.sh` or `test-e2e-advanced-features.sh`
+5. Document env vars in `helm/sre-bot/values.yaml` and `docs/ARCHITECTURE.md` if user-facing

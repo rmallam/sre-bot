@@ -9,7 +9,9 @@
     "test:coverage": "vitest run --coverage",
     "test:agents": "vitest run agents/",
     "test:shared": "vitest run shared/test/",
-    "test:platform": "cd sre-agent-platform && python3 -m pytest tests/ -q"
+    "test:platform": "cd sre-agent-platform && python3 -m pytest tests/ -q",
+    "test:ci": "npm test && npm run test:platform",
+    "test:all": "./scripts/test-all.sh"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^3.2.4",

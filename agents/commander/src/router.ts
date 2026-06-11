@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { formatFetchError, postWithRetry, log } from '../../../shared/src/http.js';
-import { internalAuthHeaders } from '../../../shared/src/internal-auth.js';
+import { agentFetch } from './agent-fetch.js';
 import type { DeployRequest, DiagnosisContext, Platform, StartRunRequest } from '../../../shared/src/types.js';
 import type { HealthOutcome, AppReviewOutcome, UndeployOutcomePayload } from '../../../shared/src/command-outcome.js';
 import type { ParsedCommand } from './parser.js';
@@ -71,9 +71,9 @@ async function dispatchRun(payload: StartRunRequest, incidentId: string): Promis
 
   if (USE_ORCHESTRATOR) {
     const url = `${ORCHESTRATOR_URL}/runs`;
-    const res = await fetch(url, {
+    const res = await agentFetch(url, {
       method: 'POST',
-      headers: internalAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15_000),
     });
@@ -232,7 +232,7 @@ async function hilQuickActionsForRun(
 ): Promise<Array<{ id: string; label: string }> | undefined> {
   if (!incidentId && !runId) return undefined;
   try {
-    const res = await fetch(`${HIL_URL}/api/approvals`, { signal: AbortSignal.timeout(5_000) });
+    const res = await agentFetch(`${HIL_URL}/api/approvals`, { signal: AbortSignal.timeout(5_000) });
     if (!res.ok) return undefined;
     const data = (await res.json()) as {
       approvals?: Array<{ incidentId: string; runId?: string; status?: string }>;
@@ -261,7 +261,7 @@ async function fetchUndeploy(
   const url = `${GITOPS_URL}/undeploy`;
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await agentFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ namespace, releaseName, incidentId }),
@@ -300,7 +300,7 @@ async function fetchClusterGet(
   const url = `${INVESTIGATOR_URL}/get?${params}`;
   let res: Response;
   try {
-    res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+    res = await agentFetch(url, { signal: AbortSignal.timeout(60_000) });
   } catch (err) {
     const formatted = formatFetchError(err, url);
     if (formatted.message.includes('ENOTFOUND') && formatted.message.includes('investigator-agent')) {
@@ -330,6 +330,33 @@ async function fetchClusterGet(
   };
 }
 
+/** Re-fetch and format a cluster listing (used for get commands and "more detail" follow-ups). */
+export async function replyClusterGet(opts: {
+  resource: string;
+  namespace?: string;
+  platform: Platform;
+  channelId: string;
+  verbose?: boolean;
+  incidentId?: string;
+}): Promise<string> {
+  const incidentId = opts.incidentId ?? uuidv4();
+  const data = await fetchClusterGet(opts.resource, opts.namespace, incidentId);
+  const verbose = opts.verbose ?? getChannelPref(opts.platform, opts.channelId).verbose;
+  return composeUserReply(
+    {
+      kind: 'cluster_get',
+      data: {
+        resource: data.resource,
+        namespace: data.namespace,
+        text: data.text,
+        total: data.total,
+        shown: data.shown,
+      },
+    },
+    { verbose, incidentId, platform: opts.platform }
+  );
+}
+
 /** Synchronous cluster/namespace health — report-only, no orchestrator run. */
 function healthLabel(parsed: Extract<ParsedCommand, { type: 'investigate' }>): string {
   if (parsed.scope === 'cluster') return 'the cluster';
@@ -347,7 +374,7 @@ async function fetchEventInvestigation(
 
   let snapshot: ClusterHealthSnapshot | null = null;
   try {
-    const res = await fetch(`${INVESTIGATOR_URL}/cluster-health?force=true`, {
+    const res = await agentFetch(`${INVESTIGATOR_URL}/cluster-health?force=true`, {
       signal: AbortSignal.timeout(60_000),
     });
     if (res.ok) {
@@ -373,7 +400,7 @@ async function loadAppReview(
     params.set('namespace', parsed.namespace);
   }
   try {
-    const res = await fetch(`${INVESTIGATOR_URL}/app-review?${params}`, {
+    const res = await agentFetch(`${INVESTIGATOR_URL}/app-review?${params}`, {
       signal: AbortSignal.timeout(90_000),
     });
     if (!res.ok) {
@@ -474,7 +501,7 @@ async function fetchHealthInvestigation(
   const url = `${INVESTIGATOR_URL}/facts?${params}`;
   let res: Response;
   try {
-    res = await fetch(url, { signal: AbortSignal.timeout(90_000) });
+    res = await agentFetch(url, { signal: AbortSignal.timeout(90_000) });
   } catch (err) {
     throw formatFetchError(err, url);
   }
@@ -521,7 +548,7 @@ export async function fetchWorkloadStatusReply(opts: {
   let res: Response;
   try {
     const timeoutMs = opts.namespace === '_all' ? 120_000 : 60_000;
-    res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    res = await agentFetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
     throw formatFetchError(err, url);
   }
@@ -563,20 +590,14 @@ export async function handleCommand(
 
   switch (parsed.type) {
     case 'get': {
-      const data = await fetchClusterGet(parsed.resource, parsed.namespace, incidentId);
-      const text = await composeUserReply(
-        {
-          kind: 'cluster_get',
-          data: {
-            resource: data.resource,
-            namespace: data.namespace,
-            text: data.text,
-            total: data.total,
-            shown: data.shown,
-          },
-        },
-        composeOpts
-      );
+      const text = await replyClusterGet({
+        resource: parsed.resource,
+        namespace: parsed.namespace,
+        platform,
+        channelId,
+        verbose: composeOpts.verbose,
+        incidentId,
+      });
       return { incidentId, immediateReply: text };
     }
     case 'workload-status': {

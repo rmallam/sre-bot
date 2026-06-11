@@ -27,7 +27,7 @@ VERIFY_BODY="$(cat <<'EOF'
 }
 EOF
 )"
-PV="$(curl -sf -m 30 -X POST "$INVESTIGATOR_URL/verify" -H 'Content-Type: application/json' -d "$VERIFY_BODY" 2>/dev/null || echo '{}')"
+PV="$(e2e_curl -sf -m 30 -X POST "$INVESTIGATOR_URL/verify" -H 'Content-Type: application/json' -d "$VERIFY_BODY" 2>/dev/null || echo '{}')"
 if echo "$PV" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if 'playbookChecks' in d or 'healthy' in d else 1)" 2>/dev/null; then
   pass "POST /verify accepts playbookMarkdown"
 else
@@ -36,7 +36,7 @@ fi
 
 # ── 3. Alert correlation bindings endpoint ───────────────────────────────────
 BIND_BODY='{"workloads":[{"namespace":"default","resourceKind":"Deployment","resourceName":"test-app"}]}'
-BIND="$(curl -sf -m 30 -X POST "$INVESTIGATOR_URL/alert-correlation/bindings" -H 'Content-Type: application/json' -d "$BIND_BODY" 2>/dev/null || echo '{}')"
+BIND="$(e2e_curl -sf -m 30 -X POST "$INVESTIGATOR_URL/alert-correlation/bindings" -H 'Content-Type: application/json' -d "$BIND_BODY" 2>/dev/null || echo '{}')"
 if echo "$BIND" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if 'bindings' in d else 1)" 2>/dev/null; then
   pass "POST /alert-correlation/bindings"
 else
@@ -63,7 +63,7 @@ AM_BODY="$(cat <<'EOF'
 }
 EOF
 )"
-AM="$(curl -sf -m 30 -X POST "$COMMANDER_URL/webhooks/alertmanager" -H 'Content-Type: application/json' -d "$AM_BODY" 2>/dev/null || echo '{}')"
+AM="$(e2e_curl -sf -m 30 -X POST "$COMMANDER_URL/webhooks/alertmanager" -H 'Content-Type: application/json' -d "$AM_BODY" 2>/dev/null || echo '{}')"
 if echo "$AM" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') is True else 1)" 2>/dev/null; then
   started="$(echo "$AM" | python3 -c "import json,sys; print(json.load(sys.stdin).get('started',0))" 2>/dev/null || echo 0)"
   if [[ "$started" -le 1 ]]; then
@@ -76,7 +76,7 @@ else
 fi
 
 # ── 5. Git revert endpoint exists ────────────────────────────────────────────
-REVERT="$(curl -sf -m 15 -X POST "$GITOPS_URL/revert-deploy" -H 'Content-Type: application/json' -d '{"incidentId":"e2e-revert","namespace":"default","resourceName":"test","deployGitCommitSha":"abc","previousGitCommitSha":"def","reason":"e2e"}' 2>/dev/null || echo '{}')"
+REVERT="$(e2e_curl -s -m 15 -X POST "$GITOPS_URL/revert-deploy" -H 'Content-Type: application/json' -d '{"incidentId":"e2e-revert","namespace":"default","resourceName":"test","deployGitCommitSha":"abc","previousGitCommitSha":"def","reason":"e2e"}' 2>/dev/null || echo '{}')"
 if echo "$REVERT" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if 'success' in d else 1)" 2>/dev/null; then
   pass "POST /revert-deploy endpoint responds"
 else

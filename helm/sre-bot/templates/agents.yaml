@@ -115,6 +115,7 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
             - name: ORCHESTRATOR_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "orchestrator" "root" .) | quote }}
             - name: INVESTIGATOR_URL
@@ -265,6 +266,7 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
             - name: BRAIN_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "brain" "root" .) | quote }}
             - name: ORCHESTRATOR_URL
@@ -359,6 +361,7 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
             - name: HIL_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "hil" "root" .) | quote }}
             - name: CIRCUIT_BREAKER_LIMIT
@@ -430,6 +433,7 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
             - name: SECURITY_BLOCK_ON_FINDINGS
               value: {{ .Values.security.blockOnFindings | quote }}
             - name: SECURITY_MAX_LOG_BYTES
@@ -689,6 +693,7 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            {{- include "sre-bot.internalAuthEnv" . | nindent 12 }}
             - name: GITOPS_URL
               value: {{ include "sre-bot.serviceUrl" (dict "agent" "gitops" "root" .) | quote }}
             - name: EXECUTOR_URL

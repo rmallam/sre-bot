@@ -1,0 +1,47 @@
+---
+description: Run the full verification flow before marking any code change complete
+alwaysApply: true
+---
+
+# Verify Before Done
+
+After **any** code change (fix, feature, refactor, config), run tests before telling the user the work is finished. Do not skip because the change "looks small."
+
+## Required test ladder
+
+Run in order; stop and fix on first failure:
+
+1. **Unit tests (always)**
+   ```bash
+   npm test
+   npm run test:platform
+   ```
+
+2. **Kind / live stack (when agents, shared, helm, or docker wiring changed)**
+   - Rebuild affected images and roll out if running on Kind.
+   - Run E2E:
+   ```bash
+   ./scripts/test-e2e-kind.sh
+   ```
+   - If chat, auth, or multi-agent flows changed, also smoke the path manually (console chat, cluster-health, `/get`).
+
+3. **Full matrix (before merge / deploy / "ready for prod")**
+   ```bash
+   ./scripts/test-all.sh
+   ```
+   Requires Kind port-forwards or a running stack (`./scripts/kind-port-forward.sh`).
+
+## When to rebuild / restart pods
+
+- **Helm secret or env change** → `helm upgrade` + rollout restart affected deployments (especially `console-agent`, `commander-agent`).
+- **Dockerfile or agent source change** → rebuild image, `kind load`, rollout restart.
+- **Shared dependency used at runtime** (e.g. `jose` in `shared/`) → update `shared/package.json` and agent Dockerfiles that copy shared.
+
+## Agent completion checklist
+
+- [ ] `npm test` passes
+- [ ] `npm run test:platform` passes
+- [ ] E2E run if stack-facing code changed
+- [ ] No new linter errors in touched files
+- [ ] Inter-agent calls use `agentFetch` / `internalAuthHeaders` (not bare `fetch` to other agents)
+- [ ] Helm templates include `internalAuthEnv` for agents with `createInternalAuthMiddleware`

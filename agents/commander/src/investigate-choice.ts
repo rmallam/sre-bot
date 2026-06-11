@@ -1,3 +1,4 @@
+import { agentFetch } from './agent-fetch.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { Platform } from '../../../shared/src/types.js';
 import type { ComposeOptions } from '../../../shared/src/command-outcome.js';
@@ -157,7 +158,7 @@ export async function fetchWorkloadResolution(
     params.set('namespace', namespace);
   }
 
-  const res = await fetch(`${INVESTIGATOR_URL}/resolve-workload?${params}`, {
+  const res = await agentFetch(`${INVESTIGATOR_URL}/resolve-workload?${params}`, {
     signal: AbortSignal.timeout(45_000),
   }).catch(() => null);
 
