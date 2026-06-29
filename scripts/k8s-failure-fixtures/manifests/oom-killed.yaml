@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fixture-oom-killed
+  namespace: sre-fixture-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fixture-oom-killed
+  template:
+    metadata:
+      labels:
+        app: fixture-oom-killed
+    spec:
+      containers:
+        - name: app
+          image: polinux/stress
+          command: ["stress"]
+          args: ["--vm", "1", "--vm-bytes", "256M", "--vm-hang", "1"]
+          resources:
+            limits:
+              memory: 32Mi

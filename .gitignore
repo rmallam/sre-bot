@@ -9,6 +9,7 @@ node_modules/
 .env.local
 .env.*.local
 helm/kind-values.local.yaml
+helm/k3s-values.local.yaml
 secrets.yaml
 secrets.yml
 *.pem
@@ -61,6 +62,10 @@ kubeconfig
 # Local binaries (e.g. vendored kubectl for dev)
 bin/kubectl
 bin/*.exe
+
+# Runbook scrape cache (HTML from k8s.io fetch; not committed)
+shared/data/runbook-imports/cache/*
+!shared/data/runbook-imports/cache/.gitkeep
 
 # Scratch and temp
 scratch/

@@ -1,0 +1,42 @@
+[
+  {
+    "error_signature": "MutatingWebhookTimeout",
+    "target_component": "security",
+    "playbook_markdown": "# Mutating Webhook Timeout\n\n## Symptoms\n- Internal error: webhook timeout\n- Creates fail intermittently under load\n\n## Diagnosis\n- Check webhook service endpoints and latency\n- Review failurePolicy and timeoutSeconds in webhook config\n\n## Remediation\n- Scale webhook backend; increase timeout with care\n- Fix slow policy evaluation\n\n## Verification\n- Admission latency stable; creates succeed\n\n## Source\n- https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#timeout"
+  },
+  {
+    "error_signature": "PodSecurityViolation",
+    "target_component": "security",
+    "playbook_markdown": "# Pod Security Standards Violation\n\n## Symptoms\n- Admission denies pod: privileged, hostPath, runAsNonRoot\n\n## Diagnosis\n1. Namespace PSA label (enforce/warn).\n2. Pod securityContext vs policy.\n\n## Remediation\n- Harden manifest to restricted profile.\n\n## Verification\n- Pod admitted; compliance scan clean."
+  },
+  {
+    "error_signature": "RBACForbidden",
+    "target_component": "security",
+    "playbook_markdown": "# RBAC Forbidden\n\n## Symptoms\n- API 403 for ServiceAccount; operator or app cannot reconcile\n\n## Diagnosis\n1. Identify subject and missing verb/resource in audit log.\n\n## Remediation\n- Add minimal RoleBinding/ClusterRoleBinding.\n\n## Verification\n- Operation succeeds without excessive permissions."
+  },
+  {
+    "error_signature": "SCCDenied",
+    "target_component": "security",
+    "playbook_markdown": "# OpenShift SCC Denied\n\n## Symptoms\n- Pod cannot start; forbidden by SCC or security context\n\n## Diagnosis\n1. `oc describe pod` — SCC annotation and securityContext.\n2. Compare required capabilities vs allowed SCC.\n\n## Remediation\n- Adjust securityContext to match restricted SCC.\n- Assign appropriate SCC to ServiceAccount (with approval).\n\n## Verification\n- Pod admitted and Running under correct SCC."
+  },
+  {
+    "error_signature": "SecretNotFound",
+    "target_component": "security",
+    "playbook_markdown": "# Secret Not Found\n\n## Symptoms\n- Mount or env ref fails; Secret missing in namespace\n\n## Diagnosis\n1. `oc get secret -n <ns>`; check external-secrets operator.\n\n## Remediation\n- Create Secret or fix ExternalSecret sync.\n\n## Verification\n- Pod mounts secret; no CreateContainerConfigError."
+  },
+  {
+    "error_signature": "SecurityIncident",
+    "target_component": "security",
+    "playbook_markdown": "# Security Incident Response\n\n## Symptoms\n- Suspected compromise, credential leak, or anomalous access\n\n## Diagnosis\n1. Scope affected namespaces, secrets, and egress.\n\n## Remediation\n- Contain: NetworkPolicy, scale to zero.\n- Preserve logs; rotate credentials; patch CVE via git_patch.\n\n## Verification\n- IOCs addressed; audit trail complete."
+  },
+  {
+    "error_signature": "TokenExpiration",
+    "target_component": "security",
+    "playbook_markdown": "# Service Account Token Expiration\n\n## Symptoms\n- Workloads lose API access after token rotation\n\n## Diagnosis\n1. Bound service account token volume vs legacy secret token.\n\n## Remediation\n- Mount projected token volume; refresh client caches.\n\n## Verification\n- API calls succeed after rotation window."
+  },
+  {
+    "error_signature": "WebhookConfigurationRejected",
+    "target_component": "security",
+    "playbook_markdown": "# Admission Webhook Rejected Request\n\n## Symptoms\n- API error: rejected by webhook\n- Deploy/patch fails with admission webhook denial\n\n## Diagnosis\n- Read webhook denial message in kubectl/oc output\n- Check validating/mutating webhook configuration and webhook pod logs\n\n## Remediation\n- Fix manifest to satisfy webhook policy (OPA, Kyverno, cert-manager, etc.)\n- Temporarily bypass only with break-glass approval\n\n## Verification\n- Apply succeeds; webhook logs show allow\n\n## Source\n- https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/"
+  }
+]

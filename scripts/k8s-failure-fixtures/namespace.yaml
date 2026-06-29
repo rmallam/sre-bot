@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sre-fixture-lab
+  labels:
+    app.kubernetes.io/part-of: sre-bot
+    purpose: runbook-eval

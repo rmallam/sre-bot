@@ -2,6 +2,17 @@
 
 Verified remediation knowledge lives in the **platform RAG store** (`sre_runbooks` in `rag-postgres`), not in files on disk.
 
+**Corpus source (git):** `shared/data/runbooks/*.json` + `shared/data/k8s-issue-taxonomy.json`
+
+```bash
+npm run runbooks:validate    # schema + taxonomy sync
+npm run runbooks:scrape      # merge k8s-doc-sources.json into runbooks/
+npm run runbooks:sync-taxonomy
+npm run runbooks:ingest      # bulk POST /rag/learn
+npm run runbooks:fixtures    # GP-RB golden-path eval
+./scripts/k8s-failure-fixtures/apply-all.sh   # Kind eval fixtures
+```
+
 ## How learning works
 
 When a remediation is **verified** (`worked: true`), the orchestrator upserts a runbook via `POST /rag/learn` on `platform-agent` (requires `SRE_RAG_LEARNING=true`).

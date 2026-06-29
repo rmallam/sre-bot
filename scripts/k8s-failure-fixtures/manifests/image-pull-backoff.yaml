@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fixture-image-pull-backoff
+  namespace: sre-fixture-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fixture-image-pull-backoff
+  template:
+    metadata:
+      labels:
+        app: fixture-image-pull-backoff
+    spec:
+      containers:
+        - name: app
+          image: docker.io/library/this-tag-does-not-exist-xyz:999

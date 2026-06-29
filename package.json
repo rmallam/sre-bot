@@ -11,9 +11,20 @@
     "test:shared": "vitest run shared/test/",
     "test:platform": "cd sre-agent-platform && python3 -m pytest tests/ -q",
     "test:ci": "npm test && npm run test:platform",
-    "test:all": "./scripts/test-all.sh"
+    "test:all": "./scripts/test-all.sh",
+    "test:ui": "playwright test -c e2e/playwright.config.ts --grep-invert @journey",
+    "test:ui:full": "playwright test -c e2e/playwright.config.ts",
+    "test:ui:headed": "playwright test -c e2e/playwright.config.ts --headed --grep-invert @journey",
+    "runbooks:validate": "tsx scripts/ingest-runbooks/validate.ts",
+    "runbooks:ingest": "tsx scripts/ingest-runbooks/bulk-learn.ts",
+    "runbooks:scrape": "tsx scripts/ingest-runbooks/scrape-normalize.ts --merge",
+    "runbooks:scrape:fetch": "tsx scripts/ingest-runbooks/scrape-normalize.ts --fetch --merge",
+    "runbooks:sync-taxonomy": "tsx scripts/ingest-runbooks/sync-taxonomy.ts",
+    "runbooks:ci": "./scripts/test-runbook-corpus-ci.sh",
+    "runbooks:fixtures": "./scripts/test-runbook-fixtures.sh"
   },
   "devDependencies": {
+    "@playwright/test": "^1.51.0",
     "@vitest/coverage-v8": "^3.2.4",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0",

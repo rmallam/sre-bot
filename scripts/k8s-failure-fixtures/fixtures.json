@@ -1,0 +1,140 @@
+{
+  "namespace": "sre-fixture-lab",
+  "fixtures": [
+    {
+      "id": "oom_killed",
+      "manifest": "manifests/oom-killed.yaml",
+      "error_signature": "OOMKilled",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-oom-killed",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-oom-killed in sre-fixture-lab — find root cause"
+    },
+    {
+      "id": "crash_loop",
+      "manifest": "manifests/crash-loop.yaml",
+      "error_signature": "CrashLoopBackOff",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-crash-loop",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-crash-loop in sre-fixture-lab"
+    },
+    {
+      "id": "image_pull_backoff",
+      "manifest": "manifests/image-pull-backoff.yaml",
+      "error_signature": "ImagePullBackOff",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-image-pull-backoff",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-image-pull-backoff in sre-fixture-lab"
+    },
+    {
+      "id": "err_image_pull",
+      "manifest": "manifests/err-image-pull.yaml",
+      "error_signature": "ErrImagePull",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-err-image-pull",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-err-image-pull in sre-fixture-lab"
+    },
+    {
+      "id": "invalid_image_name",
+      "manifest": "manifests/invalid-image-name.yaml",
+      "error_signature": "InvalidImageName",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-invalid-image-name",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-invalid-image-name in sre-fixture-lab"
+    },
+    {
+      "id": "failed_mount",
+      "manifest": "manifests/failed-mount.yaml",
+      "error_signature": "FailedMount",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-failed-mount",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-failed-mount in sre-fixture-lab"
+    },
+    {
+      "id": "pvc_pending",
+      "manifest": "manifests/pvc-pending.yaml",
+      "error_signature": "PVCPending",
+      "workload_kind": "PersistentVolumeClaim",
+      "workload_name": "fixture-pvc-pending",
+      "expect_healthy": false,
+      "investigate_message": "investigate pvc fixture-pvc-pending in sre-fixture-lab"
+    },
+    {
+      "id": "failed_scheduling",
+      "manifest": "manifests/failed-scheduling.yaml",
+      "error_signature": "FailedScheduling",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-failed-scheduling",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-failed-scheduling in sre-fixture-lab"
+    },
+    {
+      "id": "config_error",
+      "manifest": "manifests/config-error.yaml",
+      "error_signature": "CreateContainerConfigError",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-config-error",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-config-error in sre-fixture-lab"
+    },
+    {
+      "id": "readiness_probe_fail",
+      "manifest": "manifests/readiness-probe-fail.yaml",
+      "error_signature": "ReadinessProbeFailure",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-readiness-probe-fail",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-readiness-probe-fail in sre-fixture-lab"
+    },
+    {
+      "id": "liveness_probe_fail",
+      "manifest": "manifests/liveness-probe-fail.yaml",
+      "error_signature": "LivenessProbeFailure",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-liveness-probe-fail",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-liveness-probe-fail in sre-fixture-lab"
+    },
+    {
+      "id": "init_container_error",
+      "manifest": "manifests/init-container-error.yaml",
+      "error_signature": "InitContainerError",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-init-container-error",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-init-container-error in sre-fixture-lab"
+    },
+    {
+      "id": "rollout_stuck",
+      "manifest": "manifests/rollout-stuck.yaml",
+      "error_signature": "RolloutStuck",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-rollout-stuck",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-rollout-stuck in sre-fixture-lab"
+    },
+    {
+      "id": "service_no_endpoints",
+      "manifest": "manifests/service-no-endpoints.yaml",
+      "error_signature": "ServiceNoEndpoints",
+      "workload_kind": "Service",
+      "workload_name": "fixture-service-no-endpoints",
+      "expect_healthy": false,
+      "investigate_message": "investigate service fixture-service-no-endpoints in sre-fixture-lab — no endpoints"
+    },
+    {
+      "id": "secret_not_found",
+      "manifest": "manifests/secret-not-found.yaml",
+      "error_signature": "SecretNotFound",
+      "workload_kind": "Deployment",
+      "workload_name": "fixture-secret-not-found",
+      "expect_healthy": false,
+      "investigate_message": "investigate deployment fixture-secret-not-found in sre-fixture-lab"
+    }
+  ]
+}

@@ -31,6 +31,9 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+      - name: Validate runbook corpus
+        run: npm run runbooks:validate
+
   platform:
     name: Platform pytest
     runs-on: ubuntu-latest

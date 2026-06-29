@@ -1,0 +1,464 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "error_signature": "ResourceQuotaExceeded",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/concepts/policy/resource-quotas/",
+      "title": "Resource Quota Exceeded",
+      "seed_sections": {
+        "symptoms": [
+          "Pod stays Pending with forbidden: exceeded quota events",
+          "Create rejected by admission for CPU, memory, pods, or PVC count"
+        ],
+        "diagnosis": [
+          "oc describe quota -n <namespace>",
+          "oc describe pod <pod> -n <namespace> — read FailedCreate or quota message",
+          "oc get resourcequota -n <namespace> -o yaml"
+        ],
+        "remediation": [
+          "Reduce resource requests or replica count in manifest",
+          "Raise ResourceQuota limits with change approval",
+          "Delete unused workloads consuming quota"
+        ],
+        "verification": [
+          "Pod schedules and reaches Running",
+          "quota used <= hard limits"
+        ]
+      }
+    },
+    {
+      "error_signature": "LimitRangeExceeded",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/concepts/policy/limit-range/",
+      "title": "LimitRange Violation",
+      "seed_sections": {
+        "symptoms": [
+          "Pod rejected at admission: maximum/minimum resource violation",
+          "Container limits below namespace LimitRange minimum"
+        ],
+        "diagnosis": [
+          "oc get limitrange -n <namespace> -o yaml",
+          "oc describe pod <pod> — admission error details"
+        ],
+        "remediation": [
+          "Adjust requests/limits to satisfy LimitRange min/max/default",
+          "git_patch deployment resources"
+        ],
+        "verification": [
+          "Pod admitted and Running"
+        ]
+      }
+    },
+    {
+      "error_signature": "ErrImageNeverPull",
+      "target_component": "gitops",
+      "url": "https://kubernetes.io/docs/concepts/containers/images/#image-pull-policy",
+      "title": "ErrImageNeverPull",
+      "seed_sections": {
+        "symptoms": [
+          "Pod events ErrImageNeverPull — image not present locally with imagePullPolicy Never"
+        ],
+        "diagnosis": [
+          "oc describe pod — confirm imagePullPolicy: Never",
+          "Check if image exists on node: crictl/cursor debug node"
+        ],
+        "remediation": [
+          "Pre-load image on node or change pull policy to IfNotPresent/Always",
+          "Use correct tag available on node"
+        ],
+        "verification": [
+          "Container starts without image pull errors"
+        ]
+      }
+    },
+    {
+      "error_signature": "FailedPostStartHook",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/",
+      "title": "FailedPostStart Hook",
+      "seed_sections": {
+        "symptoms": [
+          "Container killed after failed postStart lifecycle hook"
+        ],
+        "diagnosis": [
+          "oc logs <pod> -c <container>",
+          "oc describe pod — postStart hook command and exit status"
+        ],
+        "remediation": [
+          "Fix hook script or increase hook timeout",
+          "Remove hook if non-essential; use initContainer instead"
+        ],
+        "verification": [
+          "Pod Running; hook completes successfully"
+        ]
+      }
+    },
+    {
+      "error_signature": "JobFailed",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/concepts/workloads/controllers/job/",
+      "title": "Job Failed",
+      "seed_sections": {
+        "symptoms": [
+          "Job status Failed; pods BackoffLimitExceeded"
+        ],
+        "diagnosis": [
+          "oc describe job <job> -n <namespace>",
+          "oc logs job/<job> or failed pod logs"
+        ],
+        "remediation": [
+          "Fix application error causing non-zero exit",
+          "Adjust backoffLimit/activeDeadlineSeconds if transient"
+        ],
+        "verification": [
+          "Job completes with succeeded >= 1"
+        ]
+      }
+    },
+    {
+      "error_signature": "CronJobNotScheduled",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/",
+      "title": "CronJob Not Scheduling",
+      "seed_sections": {
+        "symptoms": [
+          "CronJob exists but no recent Jobs created",
+          "suspend: true or invalid schedule"
+        ],
+        "diagnosis": [
+          "oc get cronjob <name> -o yaml — schedule, suspend, lastScheduleTime",
+          "Check controller-manager logs if cluster-wide"
+        ],
+        "remediation": [
+          "Fix cron schedule syntax; set suspend: false",
+          "Resolve Forbid/Replace concurrency blocking"
+        ],
+        "verification": [
+          "New Job created at expected schedule"
+        ]
+      }
+    },
+    {
+      "error_signature": "PersistentVolumeClaimLost",
+      "target_component": "storage",
+      "url": "https://kubernetes.io/docs/concepts/storage/persistent-volumes/",
+      "title": "PersistentVolume Lost",
+      "seed_sections": {
+        "symptoms": [
+          "PVC phase Lost; PV unavailable or deleted"
+        ],
+        "diagnosis": [
+          "oc get pv,pvc -n <namespace>",
+          "Check storage backend and reclaim policy"
+        ],
+        "remediation": [
+          "Restore from snapshot if available",
+          "Recreate PV/PVC pair with backup data — requires approval"
+        ],
+        "verification": [
+          "PVC Bound; workload mounts data"
+        ]
+      }
+    },
+    {
+      "error_signature": "VolumeNodeAffinityConflict",
+      "target_component": "storage",
+      "url": "https://kubernetes.io/docs/concepts/storage/persistent-volumes/#node-affinity",
+      "title": "Volume Node Affinity Conflict",
+      "seed_sections": {
+        "symptoms": [
+          "Pod Pending — volume node affinity does not match selected node"
+        ],
+        "diagnosis": [
+          "oc describe pvc and pv — nodeAffinity terms",
+          "Compare pod scheduled node vs PV zone/region"
+        ],
+        "remediation": [
+          "Schedule pod in matching zone or use regional storage class",
+          "Recreate PVC in correct zone"
+        ],
+        "verification": [
+          "Pod scheduled on node matching PV affinity"
+        ]
+      }
+    },
+    {
+      "error_signature": "CNIPluginNotReady",
+      "target_component": "network",
+      "url": "https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/",
+      "title": "CNI Plugin Not Ready",
+      "seed_sections": {
+        "symptoms": [
+          "Pod sandbox creation failed — CNI plugin not initialized",
+          "Node NotReady with network unavailable"
+        ],
+        "diagnosis": [
+          "oc get pods -n openshift-multus or kube-system — CNI pods",
+          "Check node conditions NetworkUnavailable"
+        ],
+        "remediation": [
+          "Restart CNI/daemonset pods on affected node",
+          "Verify CNI config on node (/etc/cni/net.d)"
+        ],
+        "verification": [
+          "New pods get IP addresses; node Ready"
+        ],
+        "openshift_notes": [
+          "Check openshift-sdn or OVN-Kubernetes operator health"
+        ]
+      }
+    },
+    {
+      "error_signature": "EndpointSliceEmpty",
+      "target_component": "network",
+      "url": "https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/",
+      "title": "Empty EndpointSlice",
+      "seed_sections": {
+        "symptoms": [
+          "Service has no ready endpoints; traffic blackholed"
+        ],
+        "diagnosis": [
+          "oc get endpointslice -n <namespace> -l kubernetes.io/service-name=<svc>",
+          "Verify pod labels match service selector and pods are Ready"
+        ],
+        "remediation": [
+          "Fix selector or pod labels; fix failing readiness probes"
+        ],
+        "verification": [
+          "EndpointSlice lists ready pod IPs"
+        ]
+      }
+    },
+    {
+      "error_signature": "WebhookConfigurationRejected",
+      "target_component": "security",
+      "url": "https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/",
+      "title": "Admission Webhook Rejected Request",
+      "seed_sections": {
+        "symptoms": [
+          "API error: rejected by webhook",
+          "Deploy/patch fails with admission webhook denial"
+        ],
+        "diagnosis": [
+          "Read webhook denial message in kubectl/oc output",
+          "Check validating/mutating webhook configuration and webhook pod logs"
+        ],
+        "remediation": [
+          "Fix manifest to satisfy webhook policy (OPA, Kyverno, cert-manager, etc.)",
+          "Temporarily bypass only with break-glass approval"
+        ],
+        "verification": [
+          "Apply succeeds; webhook logs show allow"
+        ]
+      }
+    },
+    {
+      "error_signature": "OpenShiftImageStreamImportFailed",
+      "target_component": "gitops",
+      "url": "https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/building_applications/images",
+      "title": "OpenShift ImageStream Import Failed",
+      "seed_sections": {
+        "symptoms": [
+          "ImageStream tag import failed; deployment cannot resolve internal image",
+          "Build/deploy references ImageStreamTag not imported"
+        ],
+        "diagnosis": [
+          "oc describe imagestream/<name> -n <namespace>",
+          "oc import-image or check external registry credentials"
+        ],
+        "remediation": [
+          "Fix source registry pull secret on builder SA",
+          "Re-import tag or point deployment to external image directly"
+        ],
+        "verification": [
+          "ImageStreamTag shows imported metadata; pods pull successfully"
+        ]
+      }
+    },
+    {
+      "error_signature": "HorizontalPodAutoscalerUnableToScale",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/",
+      "title": "HPA Unable To Scale",
+      "seed_sections": {
+        "symptoms": [
+          "HPA reports FailedGetResourceMetric or scaling limited",
+          "Replicas stuck at min/max"
+        ],
+        "diagnosis": [
+          "oc describe hpa <name> -n <namespace>",
+          "Verify metrics-server or custom metrics adapter",
+          "Check resource requests on target deployment"
+        ],
+        "remediation": [
+          "Install/fix metrics-server; add CPU/memory requests to target pods",
+          "Adjust minReplicas/maxReplicas or metric target"
+        ],
+        "verification": [
+          "HPA shows valid metric and scales under load test"
+        ]
+      }
+    },
+    {
+      "error_signature": "ConfigMapMountConflict",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/concepts/configuration/configmap/",
+      "title": "ConfigMap Volume Mount Conflict",
+      "seed_sections": {
+        "symptoms": [
+          "Pod fails mounting ConfigMap subPath or duplicate keys",
+          "Hot-reload not reflected in container"
+        ],
+        "diagnosis": [
+          "oc describe pod — mount propagation and subPath",
+          "Verify ConfigMap keys exist"
+        ],
+        "remediation": [
+          "Fix subPath/key references; restart pod after ConfigMap update if not mounted as volume"
+        ],
+        "verification": [
+          "Pod Running; application reads expected config"
+        ]
+      }
+    },
+    {
+      "error_signature": "GracefulShutdownTimeout",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination",
+      "title": "Graceful Shutdown Timeout",
+      "seed_sections": {
+        "symptoms": [
+          "Pod killed after terminationGracePeriodSeconds",
+          "SIGKILL after preStop hook timeout"
+        ],
+        "diagnosis": [
+          "oc describe pod — termination grace and preStop",
+          "Check application shutdown handling in logs"
+        ],
+        "remediation": [
+          "Implement graceful shutdown; increase terminationGracePeriodSeconds if justified",
+          "Fix preStop hook duration"
+        ],
+        "verification": [
+          "Rollouts complete without forced SIGKILL in normal conditions"
+        ]
+      }
+    },
+    {
+      "error_signature": "NodeDiskPressure",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/",
+      "title": "Node Disk Pressure",
+      "seed_sections": {
+        "symptoms": [
+          "Node DiskPressure=True; pods evicted",
+          "EmptyDir or logs filling node disk"
+        ],
+        "diagnosis": [
+          "oc describe node <node> — conditions and allocated ephemeral storage",
+          "Check /var/lib/kubelet or container runtime disk usage"
+        ],
+        "remediation": [
+          "Prune unused images/containers; expand node disk",
+          "Reduce ephemeral-storage limits or log volume"
+        ],
+        "verification": [
+          "DiskPressure cleared; new pods schedule on node"
+        ]
+      }
+    },
+    {
+      "error_signature": "PriorityClassPreempted",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/",
+      "title": "Pod Preempted",
+      "seed_sections": {
+        "symptoms": [
+          "Pod terminated due to preemption by higher priority pod",
+          "Unexpected restarts on congested nodes"
+        ],
+        "diagnosis": [
+          "oc describe pod — preemption events",
+          "Review PriorityClass on workloads"
+        ],
+        "remediation": [
+          "Assign appropriate priorityClassName to critical apps",
+          "Add capacity to reduce preemption"
+        ],
+        "verification": [
+          "Critical pods stable under load"
+        ]
+      }
+    },
+    {
+      "error_signature": "ReplicaSetMismatch",
+      "target_component": "gitops",
+      "url": "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/",
+      "title": "ReplicaSet Selector Mismatch",
+      "seed_sections": {
+        "symptoms": [
+          "Deployment creates new ReplicaSet but pods not selected",
+          "selector immutable field error on patch"
+        ],
+        "diagnosis": [
+          "oc get rs -n <namespace> — show-labels",
+          "Compare deployment selector vs pod template labels"
+        ],
+        "remediation": [
+          "Fix template metadata.labels to match spec.selector",
+          "Recreate deployment if selector must change (requires migration)"
+        ],
+        "verification": [
+          "ReplicaSet owns expected pods; rollout completes"
+        ]
+      }
+    },
+    {
+      "error_signature": "StatefulSetOrderedReadyFailure",
+      "target_component": "compute",
+      "url": "https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/",
+      "title": "StatefulSet Ordered Pod Not Ready",
+      "seed_sections": {
+        "symptoms": [
+          "StatefulSet stuck — pod-N not Ready so pod-N+1 not created",
+          "Update blocked on partition or ordinals"
+        ],
+        "diagnosis": [
+          "oc get pods -l app=<sts> — ordinals and Ready column",
+          "oc describe statefulset — currentRevision vs updateRevision"
+        ],
+        "remediation": [
+          "Fix lowest ordinal pod first (storage, probes, config)",
+          "Use partition rollback if bad rollout"
+        ],
+        "verification": [
+          "All ordinals Ready; currentRevision matches desired"
+        ]
+      }
+    },
+    {
+      "error_signature": "MutatingWebhookTimeout",
+      "target_component": "security",
+      "url": "https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#timeout",
+      "title": "Mutating Webhook Timeout",
+      "seed_sections": {
+        "symptoms": [
+          "Internal error: webhook timeout",
+          "Creates fail intermittently under load"
+        ],
+        "diagnosis": [
+          "Check webhook service endpoints and latency",
+          "Review failurePolicy and timeoutSeconds in webhook config"
+        ],
+        "remediation": [
+          "Scale webhook backend; increase timeout with care",
+          "Fix slow policy evaluation"
+        ],
+        "verification": [
+          "Admission latency stable; creates succeed"
+        ]
+      }
+    }
+  ]
+}

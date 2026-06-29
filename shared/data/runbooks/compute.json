@@ -1,0 +1,172 @@
+[
+  {
+    "error_signature": "CapacityPlanning",
+    "target_component": "compute",
+    "playbook_markdown": "# Capacity Planning\n\n## Symptoms\n- Recurring scheduling failures or SLO burn from resource saturation\n\n## Diagnosis\n1. Pull 30d CPU/memory/restart trends from Prometheus.\n2. Compare requests/limits vs P95 utilization.\n\n## Remediation\n- Recommend HPA/VPA and node pool sizing.\n- Schedule changes in low-traffic window with rollback plan.\n\n## Verification\n- Headroom restored; no FailedScheduling for capacity."
+  },
+  {
+    "error_signature": "ConfigMapMountConflict",
+    "target_component": "compute",
+    "playbook_markdown": "# ConfigMap Volume Mount Conflict\n\n## Symptoms\n- Pod fails mounting ConfigMap subPath or duplicate keys\n- Hot-reload not reflected in container\n\n## Diagnosis\n- oc describe pod — mount propagation and subPath\n- Verify ConfigMap keys exist\n\n## Remediation\n- Fix subPath/key references; restart pod after ConfigMap update if not mounted as volume\n\n## Verification\n- Pod Running; application reads expected config\n\n## Source\n- https://kubernetes.io/docs/concepts/configuration/configmap/"
+  },
+  {
+    "error_signature": "ContainerCreatingStuck",
+    "target_component": "compute",
+    "playbook_markdown": "# ContainerCreating (Stuck)\n\n## Symptoms\n- Pod long-lived in ContainerCreating\n\n## Diagnosis\n1. Events: image pull, CNI attach, volume mount delays.\n2. Check network plugin and storage attachment.\n\n## Remediation\n- Fix image pull or CNI; resolve volume attach timeout.\n\n## Verification\n- Container transitions to Running within expected window."
+  },
+  {
+    "error_signature": "CrashLoopBackOff",
+    "target_component": "compute",
+    "playbook_markdown": "# CrashLoopBackOff\n\n## Symptoms\n- Pod status CrashLoopBackOff, rising restart count\n\n## Diagnosis\n1. `oc logs <pod> -n <ns> --previous` and current logs.\n2. Classify: config error vs dependency vs probe failure vs missing secret.\n3. `oc describe pod` for probe failures and exit codes.\n\n## Remediation\n- Fix config/env via git_patch; create missing Secret/ConfigMap.\n- Adjust failing readiness/liveness probes.\n- Rollout restart once after fix applied.\n\n## Verification\n- Readiness probe passing, restart count stable, pod Ready."
+  },
+  {
+    "error_signature": "CreateContainerConfigError",
+    "target_component": "compute",
+    "playbook_markdown": "# CreateContainerConfigError\n\n## Symptoms\n- Pod stuck CreateContainerConfigError\n\n## Diagnosis\n1. `oc describe pod` — missing Secret, ConfigMap, or invalid env reference.\n2. Verify referenced objects exist in namespace.\n\n## Remediation\n- git_patch envFrom/secretKeyRef or create missing Secret.\n- OpenShift: ensure ServiceAccount can mount secrets.\n\n## Verification\n- Container starts without config errors; pod Ready."
+  },
+  {
+    "error_signature": "CronJobNotScheduled",
+    "target_component": "compute",
+    "playbook_markdown": "# CronJob Not Scheduling\n\n## Symptoms\n- CronJob exists but no recent Jobs created\n- suspend: true or invalid schedule\n\n## Diagnosis\n- oc get cronjob <name> -o yaml — schedule, suspend, lastScheduleTime\n- Check controller-manager logs if cluster-wide\n\n## Remediation\n- Fix cron schedule syntax; set suspend: false\n- Resolve Forbid/Replace concurrency blocking\n\n## Verification\n- New Job created at expected schedule\n\n## Source\n- https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/"
+  },
+  {
+    "error_signature": "DisasterRecovery",
+    "target_component": "compute",
+    "playbook_markdown": "# Disaster Recovery\n\n## Symptoms\n- Region/cluster-wide failure; critical apps unavailable\n\n## Diagnosis\n1. Declare severity; map blast radius (namespaces, data stores).\n2. Confirm backup freshness (etcd, DB, object storage).\n\n## Remediation\n- Fail over to secondary cluster/region per DR runbook.\n- Restore from verified backups; validate before traffic cutover.\n\n## Verification\n- Critical user journeys pass; RPO/RTO documented."
+  },
+  {
+    "error_signature": "EtcdBackupRestore",
+    "target_component": "compute",
+    "playbook_markdown": "# etcd Backup and Restore\n\n## Symptoms\n- Need cluster state recovery or DR validation\n\n## Diagnosis\n1. Locate latest verified snapshot per backup policy.\n\n## Remediation\n- Restore only on isolated control plane for validation.\n- Document RPO/RTO; test quarterly.\n\n## Verification\n- Restored cluster passes workload smoke tests."
+  },
+  {
+    "error_signature": "Evicted",
+    "target_component": "compute",
+    "playbook_markdown": "# Evicted Pod\n\n## Symptoms\n- Pod status Evicted, node pressure events\n\n## Diagnosis\n1. Node conditions: DiskPressure, MemoryPressure, PIDPressure.\n2. Ephemeral storage usage on pod and node.\n\n## Remediation\n- Free disk on node or increase ephemeral-storage limits.\n- Delete evicted pod objects; rollout restart workload on healthy nodes.\n\n## Verification\n- Replacement pods stable on nodes without pressure."
+  },
+  {
+    "error_signature": "FailedPostStartHook",
+    "target_component": "compute",
+    "playbook_markdown": "# FailedPostStart Hook\n\n## Symptoms\n- Container killed after failed postStart lifecycle hook\n\n## Diagnosis\n- oc logs <pod> -c <container>\n- oc describe pod — postStart hook command and exit status\n\n## Remediation\n- Fix hook script or increase hook timeout\n- Remove hook if non-essential; use initContainer instead\n\n## Verification\n- Pod Running; hook completes successfully\n\n## Source\n- https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/"
+  },
+  {
+    "error_signature": "FailedScheduling",
+    "target_component": "compute",
+    "playbook_markdown": "# FailedScheduling\n\n## Symptoms\n- Pod Pending with FailedScheduling event\n\n## Diagnosis\n1. `oc describe pod` — read scheduler message (insufficient CPU/memory, taints, affinity).\n2. `oc get nodes`, taints, and allocatable resources.\n3. Check PodDisruptionBudget and quota limits.\n\n## Remediation\n- Lower resource requests or add node capacity.\n- Add tolerations for tainted nodes; relax affinity if too strict.\n- OpenShift: check SCC and project quota.\n\n## Verification\n- Pod scheduled and reaches Running/Ready."
+  },
+  {
+    "error_signature": "GracefulShutdownTimeout",
+    "target_component": "compute",
+    "playbook_markdown": "# Graceful Shutdown Timeout\n\n## Symptoms\n- Pod killed after terminationGracePeriodSeconds\n- SIGKILL after preStop hook timeout\n\n## Diagnosis\n- oc describe pod — termination grace and preStop\n- Check application shutdown handling in logs\n\n## Remediation\n- Implement graceful shutdown; increase terminationGracePeriodSeconds if justified\n- Fix preStop hook duration\n\n## Verification\n- Rollouts complete without forced SIGKILL in normal conditions\n\n## Source\n- https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination"
+  },
+  {
+    "error_signature": "HorizontalPodAutoscalerUnableToScale",
+    "target_component": "compute",
+    "playbook_markdown": "# HPA Unable To Scale\n\n## Symptoms\n- HPA reports FailedGetResourceMetric or scaling limited\n- Replicas stuck at min/max\n\n## Diagnosis\n- oc describe hpa <name> -n <namespace>\n- Verify metrics-server or custom metrics adapter\n- Check resource requests on target deployment\n\n## Remediation\n- Install/fix metrics-server; add CPU/memory requests to target pods\n- Adjust minReplicas/maxReplicas or metric target\n\n## Verification\n- HPA shows valid metric and scales under load test\n\n## Source\n- https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/"
+  },
+  {
+    "error_signature": "IncidentCommand",
+    "target_component": "compute",
+    "playbook_markdown": "# Incident Commander Checklist\n\n## Symptoms\n- Active SEV incident; unclear ownership\n\n## Diagnosis\n1. Assign IC, comms, ops, scribe roles.\n\n## Remediation\n- Set severity; war-room channel; hypothesis tracking.\n\n## Verification\n- All-clear only after technical verification complete."
+  },
+  {
+    "error_signature": "InitContainerError",
+    "target_component": "compute",
+    "playbook_markdown": "# InitContainerError\n\n## Symptoms\n- Init container fails; main containers never start\n\n## Diagnosis\n1. `oc logs <pod> -c <init-container>`.\n2. Compare init script expectations vs mounted volumes/secrets.\n\n## Remediation\n- Fix init container image, command, or dependencies.\n- Ensure migrations/secrets available before init runs.\n\n## Verification\n- Init completes; main container reaches Running."
+  },
+  {
+    "error_signature": "InsufficientCPU",
+    "target_component": "compute",
+    "playbook_markdown": "# Insufficient CPU (Scheduling)\n\n## Symptoms\n- FailedScheduling: insufficient cpu on nodes\n\n## Diagnosis\n1. Sum pod requests vs node allocatable CPU.\n2. Identify over-requested deployments in namespace.\n\n## Remediation\n- Reduce CPU requests or scale cluster/node pool.\n- Spread workloads with anti-affinity if hotspot on few nodes.\n\n## Verification\n- Pending pods schedule and become Ready."
+  },
+  {
+    "error_signature": "InsufficientMemory",
+    "target_component": "compute",
+    "playbook_markdown": "# Insufficient Memory (Scheduling)\n\n## Symptoms\n- FailedScheduling: insufficient memory\n\n## Diagnosis\n1. Compare memory requests to allocatable per node.\n2. Check for memory-heavy Pending pods blocking batch jobs.\n\n## Remediation\n- Right-size requests; add nodes or reduce replica count temporarily.\n\n## Verification\n- Workloads schedule; no Pending for resource reasons."
+  },
+  {
+    "error_signature": "JobFailed",
+    "target_component": "compute",
+    "playbook_markdown": "# Job Failed\n\n## Symptoms\n- Job status Failed; pods BackoffLimitExceeded\n\n## Diagnosis\n- oc describe job <job> -n <namespace>\n- oc logs job/<job> or failed pod logs\n\n## Remediation\n- Fix application error causing non-zero exit\n- Adjust backoffLimit/activeDeadlineSeconds if transient\n\n## Verification\n- Job completes with succeeded >= 1\n\n## Source\n- https://kubernetes.io/docs/concepts/workloads/controllers/job/"
+  },
+  {
+    "error_signature": "LimitRangeExceeded",
+    "target_component": "compute",
+    "playbook_markdown": "# LimitRange Violation\n\n## Symptoms\n- Pod rejected at admission: maximum/minimum resource violation\n- Container limits below namespace LimitRange minimum\n\n## Diagnosis\n- oc get limitrange -n <namespace> -o yaml\n- oc describe pod <pod> — admission error details\n\n## Remediation\n- Adjust requests/limits to satisfy LimitRange min/max/default\n- git_patch deployment resources\n\n## Verification\n- Pod admitted and Running\n\n## Source\n- https://kubernetes.io/docs/concepts/policy/limit-range/"
+  },
+  {
+    "error_signature": "LivenessProbeFailure",
+    "target_component": "compute",
+    "playbook_markdown": "# Liveness Probe Failure\n\n## Symptoms\n- Repeated restarts; liveness probe failures in events\n\n## Diagnosis\n1. Compare liveness vs readiness settings.\n2. Check app health endpoint under load.\n\n## Remediation\n- Fix health endpoint or loosen probe timing.\n- Do not disable liveness without understanding deadlock cause.\n\n## Verification\n- Restart count stable; pod Ready under normal load."
+  },
+  {
+    "error_signature": "NodeDiskPressure",
+    "target_component": "compute",
+    "playbook_markdown": "# Node Disk Pressure\n\n## Symptoms\n- Node DiskPressure=True; pods evicted\n- EmptyDir or logs filling node disk\n\n## Diagnosis\n- oc describe node <node> — conditions and allocated ephemeral storage\n- Check /var/lib/kubelet or container runtime disk usage\n\n## Remediation\n- Prune unused images/containers; expand node disk\n- Reduce ephemeral-storage limits or log volume\n\n## Verification\n- DiskPressure cleared; new pods schedule on node\n\n## Source\n- https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/"
+  },
+  {
+    "error_signature": "NodeDrain",
+    "target_component": "compute",
+    "playbook_markdown": "# Safe Node Drain\n\n## Symptoms\n- Planned maintenance on a worker node\n\n## Diagnosis\n1. Confirm PDB headroom and replica counts.\n\n## Remediation\n1. `oc adm cordon <node>` (or kubectl cordon).\n2. `oc adm drain <node> --ignore-daemonsets --delete-emptydir-data`.\n3. Uncordon after maintenance.\n\n## Verification\n- Workloads rescheduled; node safe for maintenance."
+  },
+  {
+    "error_signature": "NodeNotReady",
+    "target_component": "compute",
+    "playbook_markdown": "# Node NotReady\n\n## Symptoms\n- Node Ready=False; pods evicted or pending\n\n## Diagnosis\n1. `oc describe node` — kubelet, disk, memory, network conditions.\n2. Check cloud provider instance status and CNI pods on node.\n\n## Remediation\n- Drain and replace unhealthy node; fix kubelet/CNI root cause.\n- Reschedule critical workloads to healthy nodes.\n\n## Verification\n- Node Ready=True or workload migrated; SLO restored."
+  },
+  {
+    "error_signature": "OOMKilled",
+    "target_component": "compute",
+    "playbook_markdown": "# OOMKilled\n\n## Symptoms\n- Container exit reason OOMKilled in `kubectl/oc describe pod`\n- Exit code 137, restart loop or single crash\n\n## Diagnosis\n1. `oc describe pod <pod> -n <ns>` — confirm Last State / Reason.\n2. Compare memory limits vs working set (metrics or `oc adm top pod`).\n3. Check node memory pressure and sibling pods on the node.\n\n## Remediation\n- Increase memory limits/requests in Deployment manifest (git_patch).\n- If transient spike, rollout restart after limit bump.\n- OpenShift: verify LimitRange/ResourceQuota not blocking patch.\n\n## Verification\n- Pod Running, restart count stable, no OOM events in 5m.\n\n## Rollback\n- Revert manifest commit if latency/regression detected."
+  },
+  {
+    "error_signature": "PodDisruptionBudgetBlocked",
+    "target_component": "compute",
+    "playbook_markdown": "# PodDisruptionBudget Blocked\n\n## Symptoms\n- Drain/eviction blocked; PDB prevents voluntary disruption\n\n## Diagnosis\n1. `oc get pdb -n <ns>` and compare minAvailable vs current replicas.\n\n## Remediation\n- Temporarily adjust PDB during maintenance window.\n- Scale deployment to satisfy minAvailable before drain.\n\n## Verification\n- Maintenance completes; PDB still protects availability."
+  },
+  {
+    "error_signature": "PostmortemTemplate",
+    "target_component": "compute",
+    "playbook_markdown": "# Incident Postmortem Template\n\n## Symptoms\n- Incident resolved; need structured retrospective\n\n## Diagnosis\n1. Gather timeline, logs, and change records.\n\n## Remediation\n- Document summary, root cause, action items with owners.\n\n## Verification\n- Postmortem published; preventive actions tracked to closure."
+  },
+  {
+    "error_signature": "PriorityClassPreempted",
+    "target_component": "compute",
+    "playbook_markdown": "# Pod Preempted\n\n## Symptoms\n- Pod terminated due to preemption by higher priority pod\n- Unexpected restarts on congested nodes\n\n## Diagnosis\n- oc describe pod — preemption events\n- Review PriorityClass on workloads\n\n## Remediation\n- Assign appropriate priorityClassName to critical apps\n- Add capacity to reduce preemption\n\n## Verification\n- Critical pods stable under load\n\n## Source\n- https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/"
+  },
+  {
+    "error_signature": "ReadinessProbeFailure",
+    "target_component": "compute",
+    "playbook_markdown": "# Readiness Probe Failure\n\n## Symptoms\n- Pod Running but not Ready; readiness probe failures in describe\n\n## Diagnosis\n1. Inspect probe path, port, initialDelaySeconds, timeout.\n2. `oc exec` curl/wget probe endpoint from debug pod if needed.\n\n## Remediation\n- Fix application bind address/port or probe path.\n- Increase initialDelaySeconds for slow-start apps.\n\n## Verification\n- Ready condition True; Service endpoints populated."
+  },
+  {
+    "error_signature": "ResourceQuotaExceeded",
+    "target_component": "compute",
+    "playbook_markdown": "# Resource Quota Exceeded\n\n## Symptoms\n- Pod stays Pending with forbidden: exceeded quota events\n- Create rejected by admission for CPU, memory, pods, or PVC count\n\n## Diagnosis\n- oc describe quota -n <namespace>\n- oc describe pod <pod> -n <namespace> — read FailedCreate or quota message\n- oc get resourcequota -n <namespace> -o yaml\n\n## Remediation\n- Reduce resource requests or replica count in manifest\n- Raise ResourceQuota limits with change approval\n- Delete unused workloads consuming quota\n\n## Verification\n- Pod schedules and reaches Running\n- quota used <= hard limits\n\n## Source\n- https://kubernetes.io/docs/concepts/policy/resource-quotas/"
+  },
+  {
+    "error_signature": "RunContainerError",
+    "target_component": "compute",
+    "playbook_markdown": "# RunContainerError\n\n## Symptoms\n- Container fails immediately after create; RunContainerError in events\n\n## Diagnosis\n1. Check binary path, entrypoint, and volume mounts in manifest.\n2. `oc logs` if any output; inspect `oc describe` for mount or permission errors.\n\n## Remediation\n- Fix command/args or image architecture mismatch.\n- Correct read-only root filesystem or missing binary in image.\n\n## Verification\n- Container starts and passes probes."
+  },
+  {
+    "error_signature": "SLOBurnRate",
+    "target_component": "compute",
+    "playbook_markdown": "# SLO Error Budget Burn\n\n## Symptoms\n- SLI degradation; burn rate alerts firing\n\n## Diagnosis\n1. Identify burning SLI (availability, latency, errors).\n2. Compare burn rate to budget window (1h, 6h, 3d).\n\n## Remediation\n- Freeze risky deploys if budget exhausted.\n- Prioritize fixes restoring SLI; notify stakeholders.\n\n## Verification\n- SLI back within target; burn rate normalized."
+  },
+  {
+    "error_signature": "StatefulSetOrderedReadyFailure",
+    "target_component": "compute",
+    "playbook_markdown": "# StatefulSet Ordered Pod Not Ready\n\n## Symptoms\n- StatefulSet stuck — pod-N not Ready so pod-N+1 not created\n- Update blocked on partition or ordinals\n\n## Diagnosis\n- oc get pods -l app=<sts> — ordinals and Ready column\n- oc describe statefulset — currentRevision vs updateRevision\n\n## Remediation\n- Fix lowest ordinal pod first (storage, probes, config)\n- Use partition rollback if bad rollout\n\n## Verification\n- All ordinals Ready; currentRevision matches desired\n\n## Source\n- https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/"
+  },
+  {
+    "error_signature": "TerminatingStuck",
+    "target_component": "compute",
+    "playbook_markdown": "# Pod Stuck Terminating\n\n## Symptoms\n- Pod remains Terminating beyond grace period\n\n## Diagnosis\n1. Finalizers on pod; kubelet not reporting.\n2. Volume detach stuck on node.\n\n## Remediation\n- Remove blocking finalizers after confirming safe.\n- Force delete only after node confirmed dead (last resort).\n\n## Verification\n- Pod removed; replacement schedules if needed."
+  },
+  {
+    "error_signature": "UnschedulableTaints",
+    "target_component": "compute",
+    "playbook_markdown": "# Unschedulable — Node Taints\n\n## Symptoms\n- Scheduler message: node(s) had taint that pod didn't tolerate\n\n## Diagnosis\n1. `oc describe node` for taints.\n2. Review pod tolerations and node selectors.\n\n## Remediation\n- Add matching tolerations or remove incorrect nodeSelector.\n- Uncordon dedicated nodes if mis-tainted.\n\n## Verification\n- Pod schedules on intended node pool."
+  }
+]

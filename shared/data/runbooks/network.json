@@ -1,0 +1,52 @@
+[
+  {
+    "error_signature": "CertificateRotation",
+    "target_component": "network",
+    "playbook_markdown": "# TLS Certificate Rotation\n\n## Symptoms\n- TLS errors on ingress/route; cert nearing expiry\n\n## Diagnosis\n1. Identify expiring certs (ingress, mTLS, webhooks).\n2. cert-manager Certificate status if used.\n\n## Remediation\n- Issue replacement via cert-manager or PKI workflow.\n- Rolling restart pods if hot-reload unsupported.\n\n## Verification\n- TLS handshake succeeds; ingress health checks pass."
+  },
+  {
+    "error_signature": "CNIPluginNotReady",
+    "target_component": "network",
+    "playbook_markdown": "# CNI Plugin Not Ready\n\n## Symptoms\n- Pod sandbox creation failed — CNI plugin not initialized\n- Node NotReady with network unavailable\n\n## Diagnosis\n- oc get pods -n openshift-multus or kube-system — CNI pods\n- Check node conditions NetworkUnavailable\n\n## Remediation\n- Restart CNI/daemonset pods on affected node\n- Verify CNI config on node (/etc/cni/net.d)\n- (OpenShift) Check openshift-sdn or OVN-Kubernetes operator health\n\n## Verification\n- New pods get IP addresses; node Ready\n\n## Source\n- https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/"
+  },
+  {
+    "error_signature": "ConnectionRefused",
+    "target_component": "network",
+    "playbook_markdown": "# Connection Refused\n\n## Symptoms\n- TCP connection refused between pods or to service\n\n## Diagnosis\n1. App listening on declared containerPort?\n2. NetworkPolicy blocking traffic?\n\n## Remediation\n- Fix bind address (0.0.0.0); open required ports in policy.\n\n## Verification\n- curl from client pod succeeds."
+  },
+  {
+    "error_signature": "DNSResolutionFailure",
+    "target_component": "network",
+    "playbook_markdown": "# DNS Resolution Failure\n\n## Symptoms\n- Apps fail resolving cluster.local or external hosts\n\n## Diagnosis\n1. CoreDNS/kube-dns pod health.\n2. `oc run debug --image=busybox -- nslookup kubernetes.default`.\n\n## Remediation\n- Restart DNS pods; fix upstream forward config.\n- OpenShift: check DNS operator and NetworkPolicy.\n\n## Verification\n- In-cluster and external DNS resolve from test pod."
+  },
+  {
+    "error_signature": "EndpointSliceEmpty",
+    "target_component": "network",
+    "playbook_markdown": "# Empty EndpointSlice\n\n## Symptoms\n- Service has no ready endpoints; traffic blackholed\n\n## Diagnosis\n- oc get endpointslice -n <namespace> -l kubernetes.io/service-name=<svc>\n- Verify pod labels match service selector and pods are Ready\n\n## Remediation\n- Fix selector or pod labels; fix failing readiness probes\n\n## Verification\n- EndpointSlice lists ready pod IPs\n\n## Source\n- https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/"
+  },
+  {
+    "error_signature": "Ingress502",
+    "target_component": "network",
+    "playbook_markdown": "# Ingress / Route 502 Bad Gateway\n\n## Symptoms\n- External users see 502; ingress cannot reach backends\n\n## Diagnosis\n1. Ingress controller logs; backend service endpoints.\n2. OpenShift Route target port vs container port.\n\n## Remediation\n- Fix service port mapping or backend health.\n\n## Verification\n- HTTP check returns 200 from ingress URL."
+  },
+  {
+    "error_signature": "NetworkPolicyDebug",
+    "target_component": "network",
+    "playbook_markdown": "# NetworkPolicy Troubleshooting\n\n## Symptoms\n- Connection timeouts between services; traffic unexpectedly blocked\n\n## Diagnosis\n1. Map source/destination pods and labels.\n2. `oc get networkpolicy -n <ns>`; test with debug pod curl.\n\n## Remediation\n- Add minimal ingress/egress rules for required paths.\n\n## Verification\n- End-to-end connectivity restored."
+  },
+  {
+    "error_signature": "OpenShiftRouteNotExposed",
+    "target_component": "network",
+    "playbook_markdown": "# OpenShift Route Not Exposed\n\n## Symptoms\n- Route exists but traffic fails; edge termination issues\n\n## Diagnosis\n1. `oc get route` — host, tls, targetPort.\n2. Ingress controller / router pod health.\n\n## Remediation\n- Fix route spec; ensure Service exposes correct port.\n\n## Verification\n- Route URL returns expected response."
+  },
+  {
+    "error_signature": "ServiceNoEndpoints",
+    "target_component": "network",
+    "playbook_markdown": "# Service Has No Endpoints\n\n## Symptoms\n- Service exists but no endpoints; 503 from ingress\n\n## Diagnosis\n1. Selector labels match pod labels?\n2. Are backend pods Ready?\n\n## Remediation\n- Fix selector or pod labels; fix failing readiness probes.\n\n## Verification\n- `oc get endpoints` shows ready addresses."
+  },
+  {
+    "error_signature": "TLSHandshakeFailure",
+    "target_component": "network",
+    "playbook_markdown": "# TLS Handshake Failure\n\n## Symptoms\n- x509 or cipher mismatch errors\n\n## Diagnosis\n1. Compare cert SANs to hostname; check intermediate chain.\n\n## Remediation\n- Reissue cert with correct SAN; update trust store.\n\n## Verification\n- openssl s_client connects without verify errors."
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "error_signature": "DatabaseFailover",
+    "target_component": "database",
+    "playbook_markdown": "# Database Failover\n\n## Symptoms\n- Primary DB unreachable; app connection errors\n\n## Diagnosis\n1. Replication lag and primary health checks.\n2. Operator status (CloudNativePG, Crunchy, etc.).\n\n## Remediation\n- Promote replica or trigger operator failover.\n- Update app connection strings/secrets.\n\n## Verification\n- Read/write on new primary before closing incident."
+  },
+  {
+    "error_signature": "ConnectionPoolExhausted",
+    "target_component": "database",
+    "playbook_markdown": "# Connection Pool Exhausted\n\n## Symptoms\n- too many connections; app timeouts to DB\n\n## Diagnosis\n1. Active connections vs max_connections.\n2. Leaked connections from crashing pods.\n\n## Remediation\n- Scale pool settings; restart leaking workloads.\n- Add PgBouncer or operator connection limits.\n\n## Verification\n- Connection count stable; app latency normal."
+  },
+  {
+    "error_signature": "ReplicationLag",
+    "target_component": "database",
+    "playbook_markdown": "# Replication Lag\n\n## Symptoms\n- Replica far behind primary; stale reads or failover risk\n\n## Diagnosis\n1. Lag metrics from operator or `pg_stat_replication`.\n2. Network or disk saturation on replica.\n\n## Remediation\n- Fix network/disk; rebuild replica if corrupted.\n\n## Verification\n- Lag under SLO threshold sustained."
+  },
+  {
+    "error_signature": "DiskFullDatabase",
+    "target_component": "database",
+    "playbook_markdown": "# Database Disk Full\n\n## Symptoms\n- Writes fail; PVC or node disk at capacity\n\n## Diagnosis\n1. PVC usage and WAL growth.\n2. Large tables or unreclaimed bloat.\n\n## Remediation\n- Expand PVC if supported; vacuum/archive logs.\n- Emergency purge only with approval.\n\n## Verification\n- Free space above threshold; writes succeed."
+  }
+]

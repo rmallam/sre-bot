@@ -1,0 +1,1171 @@
+{
+  "version": 1,
+  "components": [
+    "compute",
+    "storage",
+    "network",
+    "gitops",
+    "database",
+    "security"
+  ],
+  "entries": [
+    {
+      "id": "capacityplanning",
+      "error_signature": "CapacityPlanning",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "capacity",
+        "planning"
+      ]
+    },
+    {
+      "id": "configmapmountconflict",
+      "error_signature": "ConfigMapMountConflict",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/configuration/configmap/"
+      ],
+      "keywords": [
+        "config",
+        "map",
+        "mount",
+        "conflict"
+      ]
+    },
+    {
+      "id": "containercreatingstuck",
+      "error_signature": "ContainerCreatingStuck",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "container",
+        "creating",
+        "stuck"
+      ]
+    },
+    {
+      "id": "crashloopbackoff",
+      "error_signature": "CrashLoopBackOff",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "high",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "crash",
+        "loop",
+        "back",
+        "off"
+      ],
+      "fixture_id": "crash_loop"
+    },
+    {
+      "id": "createcontainerconfigerror",
+      "error_signature": "CreateContainerConfigError",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "create",
+        "container",
+        "config",
+        "error"
+      ],
+      "fixture_id": "config_error"
+    },
+    {
+      "id": "cronjobnotscheduled",
+      "error_signature": "CronJobNotScheduled",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/"
+      ],
+      "keywords": [
+        "cron",
+        "job",
+        "not",
+        "scheduled"
+      ]
+    },
+    {
+      "id": "disasterrecovery",
+      "error_signature": "DisasterRecovery",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "critical",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "disaster",
+        "recovery"
+      ]
+    },
+    {
+      "id": "etcdbackuprestore",
+      "error_signature": "EtcdBackupRestore",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "critical",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "etcd",
+        "backup",
+        "restore"
+      ]
+    },
+    {
+      "id": "evicted",
+      "error_signature": "Evicted",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "evicted"
+      ]
+    },
+    {
+      "id": "failedpoststarthook",
+      "error_signature": "FailedPostStartHook",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/"
+      ],
+      "keywords": [
+        "failed",
+        "post",
+        "start",
+        "hook"
+      ]
+    },
+    {
+      "id": "failedscheduling",
+      "error_signature": "FailedScheduling",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "failed",
+        "scheduling"
+      ],
+      "fixture_id": "failed_scheduling"
+    },
+    {
+      "id": "gracefulshutdowntimeout",
+      "error_signature": "GracefulShutdownTimeout",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination"
+      ],
+      "keywords": [
+        "graceful",
+        "shutdown",
+        "timeout"
+      ]
+    },
+    {
+      "id": "horizontalpodautoscalerunabletoscale",
+      "error_signature": "HorizontalPodAutoscalerUnableToScale",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/"
+      ],
+      "keywords": [
+        "horizontal",
+        "pod",
+        "autoscaler",
+        "unable",
+        "to",
+        "scale"
+      ]
+    },
+    {
+      "id": "incidentcommand",
+      "error_signature": "IncidentCommand",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "incident",
+        "command"
+      ]
+    },
+    {
+      "id": "initcontainererror",
+      "error_signature": "InitContainerError",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "init",
+        "container",
+        "error"
+      ],
+      "fixture_id": "init_container_error"
+    },
+    {
+      "id": "insufficientcpu",
+      "error_signature": "InsufficientCPU",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "insufficient",
+        "c",
+        "p",
+        "u"
+      ]
+    },
+    {
+      "id": "insufficientmemory",
+      "error_signature": "InsufficientMemory",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "insufficient",
+        "memory"
+      ]
+    },
+    {
+      "id": "jobfailed",
+      "error_signature": "JobFailed",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/workloads/controllers/job/"
+      ],
+      "keywords": [
+        "job",
+        "failed"
+      ]
+    },
+    {
+      "id": "limitrangeexceeded",
+      "error_signature": "LimitRangeExceeded",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/policy/limit-range/"
+      ],
+      "keywords": [
+        "limit",
+        "range",
+        "exceeded"
+      ]
+    },
+    {
+      "id": "livenessprobefailure",
+      "error_signature": "LivenessProbeFailure",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "liveness",
+        "probe",
+        "failure"
+      ],
+      "fixture_id": "liveness_probe_fail"
+    },
+    {
+      "id": "nodediskpressure",
+      "error_signature": "NodeDiskPressure",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/"
+      ],
+      "keywords": [
+        "node",
+        "disk",
+        "pressure"
+      ]
+    },
+    {
+      "id": "nodedrain",
+      "error_signature": "NodeDrain",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "node",
+        "drain"
+      ]
+    },
+    {
+      "id": "nodenotready",
+      "error_signature": "NodeNotReady",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "high",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "node",
+        "not",
+        "ready"
+      ]
+    },
+    {
+      "id": "oomkilled",
+      "error_signature": "OOMKilled",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "high",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "o",
+        "o",
+        "m",
+        "killed"
+      ],
+      "fixture_id": "oom_killed"
+    },
+    {
+      "id": "poddisruptionbudgetblocked",
+      "error_signature": "PodDisruptionBudgetBlocked",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "pod",
+        "disruption",
+        "budget",
+        "blocked"
+      ]
+    },
+    {
+      "id": "postmortemtemplate",
+      "error_signature": "PostmortemTemplate",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "postmortem",
+        "template"
+      ]
+    },
+    {
+      "id": "priorityclasspreempted",
+      "error_signature": "PriorityClassPreempted",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/"
+      ],
+      "keywords": [
+        "priority",
+        "class",
+        "preempted"
+      ]
+    },
+    {
+      "id": "readinessprobefailure",
+      "error_signature": "ReadinessProbeFailure",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "readiness",
+        "probe",
+        "failure"
+      ],
+      "fixture_id": "readiness_probe_fail"
+    },
+    {
+      "id": "resourcequotaexceeded",
+      "error_signature": "ResourceQuotaExceeded",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/policy/resource-quotas/"
+      ],
+      "keywords": [
+        "resource",
+        "quota",
+        "exceeded"
+      ]
+    },
+    {
+      "id": "runcontainererror",
+      "error_signature": "RunContainerError",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "run",
+        "container",
+        "error"
+      ]
+    },
+    {
+      "id": "sloburnrate",
+      "error_signature": "SLOBurnRate",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "s",
+        "l",
+        "o",
+        "burn",
+        "rate"
+      ]
+    },
+    {
+      "id": "statefulsetorderedreadyfailure",
+      "error_signature": "StatefulSetOrderedReadyFailure",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/"
+      ],
+      "keywords": [
+        "stateful",
+        "set",
+        "ordered",
+        "ready",
+        "failure"
+      ]
+    },
+    {
+      "id": "terminatingstuck",
+      "error_signature": "TerminatingStuck",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "terminating",
+        "stuck"
+      ]
+    },
+    {
+      "id": "unschedulabletaints",
+      "error_signature": "UnschedulableTaints",
+      "target_component": "compute",
+      "category": "compute",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "unschedulable",
+        "taints"
+      ]
+    },
+    {
+      "id": "connectionpoolexhausted",
+      "error_signature": "ConnectionPoolExhausted",
+      "target_component": "database",
+      "category": "database",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "connection",
+        "pool",
+        "exhausted"
+      ]
+    },
+    {
+      "id": "databasefailover",
+      "error_signature": "DatabaseFailover",
+      "target_component": "database",
+      "category": "database",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "database",
+        "failover"
+      ]
+    },
+    {
+      "id": "diskfulldatabase",
+      "error_signature": "DiskFullDatabase",
+      "target_component": "database",
+      "category": "database",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "disk",
+        "full",
+        "database"
+      ]
+    },
+    {
+      "id": "replicationlag",
+      "error_signature": "ReplicationLag",
+      "target_component": "database",
+      "category": "database",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "replication",
+        "lag"
+      ]
+    },
+    {
+      "id": "argocdsyncfailed",
+      "error_signature": "ArgoCDSyncFailed",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "argo",
+        "c",
+        "d",
+        "sync",
+        "failed"
+      ]
+    },
+    {
+      "id": "configdrift",
+      "error_signature": "ConfigDrift",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "config",
+        "drift"
+      ]
+    },
+    {
+      "id": "errimageneverpull",
+      "error_signature": "ErrImageNeverPull",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/containers/images/#image-pull-policy"
+      ],
+      "keywords": [
+        "err",
+        "image",
+        "never",
+        "pull"
+      ]
+    },
+    {
+      "id": "errimagepull",
+      "error_signature": "ErrImagePull",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "err",
+        "image",
+        "pull"
+      ],
+      "fixture_id": "err_image_pull"
+    },
+    {
+      "id": "gitpatchrejected",
+      "error_signature": "GitPatchRejected",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "git",
+        "patch",
+        "rejected"
+      ]
+    },
+    {
+      "id": "helmhookfailed",
+      "error_signature": "HelmHookFailed",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "helm",
+        "hook",
+        "failed"
+      ]
+    },
+    {
+      "id": "imagepullbackoff",
+      "error_signature": "ImagePullBackOff",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "image",
+        "pull",
+        "back",
+        "off"
+      ],
+      "fixture_id": "image_pull_backoff"
+    },
+    {
+      "id": "invalidimagename",
+      "error_signature": "InvalidImageName",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "invalid",
+        "image",
+        "name"
+      ],
+      "fixture_id": "invalid_image_name"
+    },
+    {
+      "id": "openshiftimagestreamimportfailed",
+      "error_signature": "OpenShiftImageStreamImportFailed",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/building_applications/images"
+      ],
+      "keywords": [
+        "open",
+        "shift",
+        "image",
+        "stream",
+        "import",
+        "failed"
+      ]
+    },
+    {
+      "id": "replicasetmismatch",
+      "error_signature": "ReplicaSetMismatch",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/"
+      ],
+      "keywords": [
+        "replica",
+        "set",
+        "mismatch"
+      ]
+    },
+    {
+      "id": "rolloutstuck",
+      "error_signature": "RolloutStuck",
+      "target_component": "gitops",
+      "category": "gitops",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "rollout",
+        "stuck"
+      ],
+      "fixture_id": "rollout_stuck"
+    },
+    {
+      "id": "certificaterotation",
+      "error_signature": "CertificateRotation",
+      "target_component": "network",
+      "category": "network",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "certificate",
+        "rotation"
+      ]
+    },
+    {
+      "id": "cnipluginnotready",
+      "error_signature": "CNIPluginNotReady",
+      "target_component": "network",
+      "category": "network",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/"
+      ],
+      "keywords": [
+        "c",
+        "n",
+        "i",
+        "plugin",
+        "not",
+        "ready"
+      ]
+    },
+    {
+      "id": "connectionrefused",
+      "error_signature": "ConnectionRefused",
+      "target_component": "network",
+      "category": "network",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "connection",
+        "refused"
+      ]
+    },
+    {
+      "id": "dnsresolutionfailure",
+      "error_signature": "DNSResolutionFailure",
+      "target_component": "network",
+      "category": "network",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "d",
+        "n",
+        "s",
+        "resolution",
+        "failure"
+      ]
+    },
+    {
+      "id": "endpointsliceempty",
+      "error_signature": "EndpointSliceEmpty",
+      "target_component": "network",
+      "category": "network",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/"
+      ],
+      "keywords": [
+        "endpoint",
+        "slice",
+        "empty"
+      ]
+    },
+    {
+      "id": "ingress502",
+      "error_signature": "Ingress502",
+      "target_component": "network",
+      "category": "network",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "ingress502"
+      ]
+    },
+    {
+      "id": "networkpolicydebug",
+      "error_signature": "NetworkPolicyDebug",
+      "target_component": "network",
+      "category": "network",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "network",
+        "policy",
+        "debug"
+      ]
+    },
+    {
+      "id": "openshiftroutenotexposed",
+      "error_signature": "OpenShiftRouteNotExposed",
+      "target_component": "network",
+      "category": "network",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "open",
+        "shift",
+        "route",
+        "not",
+        "exposed"
+      ]
+    },
+    {
+      "id": "servicenoendpoints",
+      "error_signature": "ServiceNoEndpoints",
+      "target_component": "network",
+      "category": "network",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "service",
+        "no",
+        "endpoints"
+      ],
+      "fixture_id": "service_no_endpoints"
+    },
+    {
+      "id": "tlshandshakefailure",
+      "error_signature": "TLSHandshakeFailure",
+      "target_component": "network",
+      "category": "network",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "t",
+        "l",
+        "s",
+        "handshake",
+        "failure"
+      ]
+    },
+    {
+      "id": "mutatingwebhooktimeout",
+      "error_signature": "MutatingWebhookTimeout",
+      "target_component": "security",
+      "category": "security",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#timeout"
+      ],
+      "keywords": [
+        "mutating",
+        "webhook",
+        "timeout"
+      ]
+    },
+    {
+      "id": "podsecurityviolation",
+      "error_signature": "PodSecurityViolation",
+      "target_component": "security",
+      "category": "security",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "pod",
+        "security",
+        "violation"
+      ]
+    },
+    {
+      "id": "rbacforbidden",
+      "error_signature": "RBACForbidden",
+      "target_component": "security",
+      "category": "security",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "r",
+        "b",
+        "a",
+        "c",
+        "forbidden"
+      ]
+    },
+    {
+      "id": "sccdenied",
+      "error_signature": "SCCDenied",
+      "target_component": "security",
+      "category": "security",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "s",
+        "c",
+        "c",
+        "denied"
+      ]
+    },
+    {
+      "id": "secretnotfound",
+      "error_signature": "SecretNotFound",
+      "target_component": "security",
+      "category": "security",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "secret",
+        "not",
+        "found"
+      ],
+      "fixture_id": "secret_not_found"
+    },
+    {
+      "id": "securityincident",
+      "error_signature": "SecurityIncident",
+      "target_component": "security",
+      "category": "security",
+      "severity": "critical",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "security",
+        "incident"
+      ]
+    },
+    {
+      "id": "tokenexpiration",
+      "error_signature": "TokenExpiration",
+      "target_component": "security",
+      "category": "security",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "token",
+        "expiration"
+      ]
+    },
+    {
+      "id": "webhookconfigurationrejected",
+      "error_signature": "WebhookConfigurationRejected",
+      "target_component": "security",
+      "category": "security",
+      "severity": "high",
+      "sources": [
+        "https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/"
+      ],
+      "keywords": [
+        "webhook",
+        "configuration",
+        "rejected"
+      ]
+    },
+    {
+      "id": "emptydirdiskfull",
+      "error_signature": "EmptyDirDiskFull",
+      "target_component": "storage",
+      "category": "storage",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "empty",
+        "dir",
+        "disk",
+        "full"
+      ]
+    },
+    {
+      "id": "failedmount",
+      "error_signature": "FailedMount",
+      "target_component": "storage",
+      "category": "storage",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "failed",
+        "mount"
+      ],
+      "fixture_id": "failed_mount"
+    },
+    {
+      "id": "orphanedpvc",
+      "error_signature": "OrphanedPVC",
+      "target_component": "storage",
+      "category": "storage",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "orphaned",
+        "p",
+        "v",
+        "c"
+      ]
+    },
+    {
+      "id": "persistentvolumeclaimlost",
+      "error_signature": "PersistentVolumeClaimLost",
+      "target_component": "storage",
+      "category": "storage",
+      "severity": "high",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/storage/persistent-volumes/"
+      ],
+      "keywords": [
+        "persistent",
+        "volume",
+        "claim",
+        "lost"
+      ]
+    },
+    {
+      "id": "pvcpending",
+      "error_signature": "PVCPending",
+      "target_component": "storage",
+      "category": "storage",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "p",
+        "v",
+        "c",
+        "pending"
+      ],
+      "fixture_id": "pvc_pending"
+    },
+    {
+      "id": "storageclassnotfound",
+      "error_signature": "StorageClassNotFound",
+      "target_component": "storage",
+      "category": "storage",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "storage",
+        "class",
+        "not",
+        "found"
+      ]
+    },
+    {
+      "id": "volumemultiattacherror",
+      "error_signature": "VolumeMultiAttachError",
+      "target_component": "storage",
+      "category": "storage",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/tasks/debug/"
+      ],
+      "keywords": [
+        "volume",
+        "multi",
+        "attach",
+        "error"
+      ]
+    },
+    {
+      "id": "volumenodeaffinityconflict",
+      "error_signature": "VolumeNodeAffinityConflict",
+      "target_component": "storage",
+      "category": "storage",
+      "severity": "medium",
+      "sources": [
+        "https://kubernetes.io/docs/concepts/storage/persistent-volumes/#node-affinity"
+      ],
+      "keywords": [
+        "volume",
+        "node",
+        "affinity",
+        "conflict"
+      ]
+    }
+  ]
+}

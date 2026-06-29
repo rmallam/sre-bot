@@ -1,0 +1,42 @@
+[
+  {
+    "error_signature": "EmptyDirDiskFull",
+    "target_component": "storage",
+    "playbook_markdown": "# EmptyDir / Ephemeral Disk Full\n\n## Symptoms\n- Pod evicted or crash; ephemeral storage limit exceeded\n\n## Diagnosis\n1. Check ephemeral-storage limits and usage in describe.\n\n## Remediation\n- Increase limits or redirect logs/cache to PVC.\n- Clean temp files in application.\n\n## Verification\n- Pod stable; no disk pressure evictions."
+  },
+  {
+    "error_signature": "FailedMount",
+    "target_component": "storage",
+    "playbook_markdown": "# FailedMount\n\n## Symptoms\n- Pod events: FailedMount for PVC or config volume\n\n## Diagnosis\n1. `oc describe pod` — PVC name, mount path, subPath.\n2. PVC status Bound? StorageClass exists?\n\n## Remediation\n- Fix PVC reference, storage class, or node attachment.\n- Create missing PVC with correct access mode (RWO vs RWX).\n\n## Verification\n- Volume mounts; pod reaches Running."
+  },
+  {
+    "error_signature": "OrphanedPVC",
+    "target_component": "storage",
+    "playbook_markdown": "# Orphaned PVC\n\n## Symptoms\n- PVC remains after workload deleted; reclaim policy Retain\n\n## Diagnosis\n1. Identify unused PVCs and owning workload status.\n\n## Remediation\n- Snapshot if needed; delete PVC or reattach to new workload.\n\n## Verification\n- No unintended data loss; new pod mounts if required."
+  },
+  {
+    "error_signature": "PersistentVolumeClaimLost",
+    "target_component": "storage",
+    "playbook_markdown": "# PersistentVolume Lost\n\n## Symptoms\n- PVC phase Lost; PV unavailable or deleted\n\n## Diagnosis\n- oc get pv,pvc -n <namespace>\n- Check storage backend and reclaim policy\n\n## Remediation\n- Restore from snapshot if available\n- Recreate PV/PVC pair with backup data — requires approval\n\n## Verification\n- PVC Bound; workload mounts data\n\n## Source\n- https://kubernetes.io/docs/concepts/storage/persistent-volumes/"
+  },
+  {
+    "error_signature": "PVCPending",
+    "target_component": "storage",
+    "playbook_markdown": "# PVC Pending\n\n## Symptoms\n- PVC stays Pending; pod cannot schedule mount\n\n## Diagnosis\n1. StorageClass provisioner available?\n2. Size, access mode, and selector match existing PVs?\n\n## Remediation\n- Fix StorageClass or pre-provision PV.\n- OpenShift: check default StorageClass annotation.\n\n## Verification\n- PVC Bound; dependent pods start."
+  },
+  {
+    "error_signature": "StorageClassNotFound",
+    "target_component": "storage",
+    "playbook_markdown": "# StorageClass Not Found\n\n## Symptoms\n- PVC Pending; StorageClass missing or wrong name\n\n## Diagnosis\n1. `oc get storageclass`; compare claim storageClassName.\n\n## Remediation\n- Install provisioner or fix PVC to use existing class.\n\n## Verification\n- PVC provisions and binds."
+  },
+  {
+    "error_signature": "VolumeMultiAttachError",
+    "target_component": "storage",
+    "playbook_markdown": "# Volume Multi-Attach Error\n\n## Symptoms\n- RWO volume already attached to another node\n\n## Diagnosis\n1. Identify pods using same PVC on different nodes.\n2. Check stale attachment after node failure.\n\n## Remediation\n- Scale to one replica for RWO or use RWX storage class.\n- Force detach only per storage vendor guidance.\n\n## Verification\n- Single writer pod mounts successfully."
+  },
+  {
+    "error_signature": "VolumeNodeAffinityConflict",
+    "target_component": "storage",
+    "playbook_markdown": "# Volume Node Affinity Conflict\n\n## Symptoms\n- Pod Pending — volume node affinity does not match selected node\n\n## Diagnosis\n- oc describe pvc and pv — nodeAffinity terms\n- Compare pod scheduled node vs PV zone/region\n\n## Remediation\n- Schedule pod in matching zone or use regional storage class\n- Recreate PVC in correct zone\n\n## Verification\n- Pod scheduled on node matching PV affinity\n\n## Source\n- https://kubernetes.io/docs/concepts/storage/persistent-volumes/#node-affinity"
+  }
+]

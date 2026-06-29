@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fixture-pvc-pending
+  namespace: sre-fixture-lab
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: nonexistent-storage-class-xyz
+  resources:
+    requests:
+      storage: 1Gi

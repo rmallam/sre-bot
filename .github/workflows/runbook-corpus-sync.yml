@@ -1,0 +1,151 @@
+# Weekly sync of K8s/OpenShift runbook corpus from curated doc sources.
+# Opens a PR when content changes; PRs re-run offline GP-RB before merge.
+
+name: Runbook corpus sync
+
+on:
+  schedule:
+    # Sundays 06:00 UTC
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+    inputs:
+      fetch_live:
+        description: Fetch live HTML from k8s.io (otherwise seed_sections only)
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - "shared/data/runbooks/**"
+      - "shared/data/k8s-issue-taxonomy.json"
+      - "shared/data/k8s-doc-sources.json"
+      - "shared/src/runbook-corpus.ts"
+      - "shared/src/runbook-normalize.ts"
+      - "scripts/ingest-runbooks/**"
+      - "scripts/k8s-failure-fixtures/**"
+      - "scripts/test-runbook-fixtures.sh"
+      - "scripts/test-runbook-corpus-ci.sh"
+      - ".github/workflows/runbook-corpus-sync.yml"
+
+concurrency:
+  group: runbook-corpus-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'sync' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate corpus (GP-RB offline)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: sre-agent-platform/requirements.txt
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install platform test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r sre-agent-platform/requirements.txt pytest
+
+      - name: Offline runbook corpus CI
+        run: ./scripts/test-runbook-corpus-ci.sh
+
+  sync:
+    name: Scrape and open PR
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: sre-agent-platform/requirements.txt
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install platform test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r sre-agent-platform/requirements.txt pytest
+
+      - name: Merge doc sources into runbooks
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.fetch_live }}" != "true" ]]; then
+            npm run runbooks:scrape
+          else
+            npm run runbooks:scrape:fetch
+          fi
+          npm run runbooks:sync-taxonomy
+
+      - name: Validate and test before PR
+        run: ./scripts/test-runbook-corpus-ci.sh
+
+      - name: Summarize corpus diff
+        id: diff
+        run: |
+          git add shared/data/runbooks shared/data/k8s-issue-taxonomy.json
+          if git diff --staged --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No runbook corpus changes after sync."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "### Runbook corpus diff" >> "$GITHUB_STEP_SUMMARY"
+            git diff --staged --stat >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Create Pull Request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(runbooks): sync corpus from k8s doc sources"
+          title: "chore(runbooks): automated corpus sync"
+          body: |
+            ## Summary
+            Automated sync from [`shared/data/k8s-doc-sources.json`](shared/data/k8s-doc-sources.json).
+
+            - Merged normalized runbooks into `shared/data/runbooks/*.json`
+            - Regenerated `shared/data/k8s-issue-taxonomy.json`
+            - Passed offline GP-RB: validate, unit tests, platform pytest
+
+            ## Review checklist
+            - [ ] Spot-check new/changed playbook sections for accuracy
+            - [ ] Confirm no duplicate or conflicting signatures
+            - [ ] After merge on Kind: `npm run runbooks:ingest`
+            - [ ] Optional full eval: `./scripts/k8s-failure-fixtures/apply-all.sh && npm run runbooks:fixtures`
+
+            ## Trigger
+            - Event: `${{ github.event_name }}`
+            - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          branch: automated/runbook-corpus-sync
+          delete-branch: true
+          labels: |
+            runbooks
+            automated
+
+      - name: No changes
+        if: steps.diff.outputs.changed != 'true'
+        run: echo "Corpus already up to date — no PR opened."

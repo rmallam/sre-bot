@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fixture-err-image-pull
+  namespace: sre-fixture-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fixture-err-image-pull
+  template:
+    metadata:
+      labels:
+        app: fixture-err-image-pull
+    spec:
+      containers:
+        - name: app
+          image: not-a-real-registry.invalid/app:latest

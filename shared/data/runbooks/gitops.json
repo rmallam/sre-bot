@@ -1,0 +1,57 @@
+[
+  {
+    "error_signature": "ArgoCDSyncFailed",
+    "target_component": "gitops",
+    "playbook_markdown": "# Argo CD Sync Failed\n\n## Symptoms\n- Application OutOfSync or SyncError\n\n## Diagnosis\n1. Argo CD UI / CLI: sync error message and diff.\n2. CRD availability, namespace, and RBAC for apply.\n\n## Remediation\n- Fix manifest or cluster permissions; retry sync.\n\n## Verification\n- Application Synced and Healthy."
+  },
+  {
+    "error_signature": "ConfigDrift",
+    "target_component": "gitops",
+    "playbook_markdown": "# GitOps Config Drift\n\n## Symptoms\n- Cluster state diverges from Git; sync failures\n\n## Diagnosis\n1. Compare live manifest vs Git revision.\n2. Identify manual kubectl edits or failed sync.\n\n## Remediation\n- Reconcile from Git source of truth.\n- Block manual edits via policy if recurring.\n\n## Verification\n- Sync healthy; drift detectors quiet."
+  },
+  {
+    "error_signature": "ErrImageNeverPull",
+    "target_component": "gitops",
+    "playbook_markdown": "# ErrImageNeverPull\n\n## Symptoms\n- Pod events ErrImageNeverPull — image not present locally with imagePullPolicy Never\n\n## Diagnosis\n- oc describe pod — confirm imagePullPolicy: Never\n- Check if image exists on node: crictl/cursor debug node\n\n## Remediation\n- Pre-load image on node or change pull policy to IfNotPresent/Always\n- Use correct tag available on node\n\n## Verification\n- Container starts without image pull errors\n\n## Source\n- https://kubernetes.io/docs/concepts/containers/images/#image-pull-policy"
+  },
+  {
+    "error_signature": "ErrImagePull",
+    "target_component": "gitops",
+    "playbook_markdown": "# ErrImagePull\n\n## Symptoms\n- Immediate image pull failure before BackOff\n\n## Diagnosis\n1. Invalid registry hostname, auth, or malformed image reference.\n2. Architecture mismatch (arm vs amd).\n\n## Remediation\n- Fix image name/tag; configure pull credentials.\n\n## Verification\n- Image pulls successfully; pod starts."
+  },
+  {
+    "error_signature": "GitPatchRejected",
+    "target_component": "gitops",
+    "playbook_markdown": "# Git Patch Rejected\n\n## Symptoms\n- Remediation git_patch fails CI or admission\n\n## Diagnosis\n1. Read PR/check logs — schema, policy, or test failure.\n\n## Remediation\n- Adjust patch to pass validation; split into smaller commits.\n\n## Verification\n- Patch merged; cluster sync shows new revision."
+  },
+  {
+    "error_signature": "HelmHookFailed",
+    "target_component": "gitops",
+    "playbook_markdown": "# Helm Hook Failed\n\n## Symptoms\n- Helm release stuck; pre/post upgrade hook pod failed\n\n## Diagnosis\n1. `helm history` and hook pod logs.\n2. Check hook weights and delete policies.\n\n## Remediation\n- Fix hook Job manifest or resource dependencies.\n- Retry release after correcting chart values.\n\n## Verification\n- `helm status` deployed; hook pods completed."
+  },
+  {
+    "error_signature": "ImagePullBackOff",
+    "target_component": "gitops",
+    "playbook_markdown": "# ImagePullBackOff\n\n## Symptoms\n- ErrImagePull / ImagePullBackOff on pod\n\n## Diagnosis\n1. Verify image tag exists in registry (`crane manifest` or registry UI).\n2. Check imagePullSecrets on ServiceAccount.\n3. OpenShift: verify ImageStream tag and internal registry route.\n\n## Remediation\n- git_patch correct image repository/tag.\n- Add or fix pull secret; wire to ServiceAccount.\n\n## Verification\n- Pod Running; no ErrImagePull events in 5m."
+  },
+  {
+    "error_signature": "InvalidImageName",
+    "target_component": "gitops",
+    "playbook_markdown": "# InvalidImageName\n\n## Symptoms\n- Pod events: invalid reference format\n\n## Diagnosis\n1. Inspect image field for typos, illegal chars, missing tag.\n\n## Remediation\n- Correct image reference in Deployment/StatefulSet manifest.\n\n## Verification\n- Scheduler accepts manifest; pull proceeds."
+  },
+  {
+    "error_signature": "OpenShiftImageStreamImportFailed",
+    "target_component": "gitops",
+    "playbook_markdown": "# OpenShift ImageStream Import Failed\n\n## Symptoms\n- ImageStream tag import failed; deployment cannot resolve internal image\n- Build/deploy references ImageStreamTag not imported\n\n## Diagnosis\n- oc describe imagestream/<name> -n <namespace>\n- oc import-image or check external registry credentials\n\n## Remediation\n- Fix source registry pull secret on builder SA\n- Re-import tag or point deployment to external image directly\n\n## Verification\n- ImageStreamTag shows imported metadata; pods pull successfully\n\n## Source\n- https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/building_applications/images"
+  },
+  {
+    "error_signature": "ReplicaSetMismatch",
+    "target_component": "gitops",
+    "playbook_markdown": "# ReplicaSet Selector Mismatch\n\n## Symptoms\n- Deployment creates new ReplicaSet but pods not selected\n- selector immutable field error on patch\n\n## Diagnosis\n- oc get rs -n <namespace> — show-labels\n- Compare deployment selector vs pod template labels\n\n## Remediation\n- Fix template metadata.labels to match spec.selector\n- Recreate deployment if selector must change (requires migration)\n\n## Verification\n- ReplicaSet owns expected pods; rollout completes\n\n## Source\n- https://kubernetes.io/docs/concepts/workloads/controllers/deployment/"
+  },
+  {
+    "error_signature": "RolloutStuck",
+    "target_component": "gitops",
+    "playbook_markdown": "# Rollout Stuck\n\n## Symptoms\n- Deployment progress deadline exceeded; mixed old/new replicas\n\n## Diagnosis\n1. New ReplicaSet pod failures (image, probes, quota).\n2. `oc rollout status deployment/<name>`.\n\n## Remediation\n- Fix failing new pods; rollback if bad release.\n- OpenShift: check DeploymentConfig vs Deployment strategy.\n\n## Verification\n- All updated replicas Ready; rollout complete."
+  }
+]

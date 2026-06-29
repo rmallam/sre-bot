@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fixture-invalid-image-name
+  namespace: sre-fixture-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fixture-invalid-image-name
+  template:
+    metadata:
+      labels:
+        app: fixture-invalid-image-name
+    spec:
+      containers:
+        - name: app
+          image: "UPPERCASE/not:allowed"

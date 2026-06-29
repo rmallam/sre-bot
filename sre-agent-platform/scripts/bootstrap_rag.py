@@ -7,31 +7,13 @@ import json
 import logging
 import os
 
-logger = logging.getLogger("bootstrap_rag")
+from scripts.runbook_corpus import load_runbook_corpus
 
-_FALLBACK_RUNBOOKS: list[dict] = [
-    {
-        "error_signature": "OOMKilled",
-        "target_component": "compute",
-        "playbook_markdown": "# OOMKilled Runbook\n\nSee shared/data/sre-rag-runbooks.json",
-    },
-]
+logger = logging.getLogger("bootstrap_rag")
 
 
 def _load_runbook_seed() -> list[dict]:
-    candidates = [
-        os.path.join(os.path.dirname(__file__), "..", "..", "shared", "data", "sre-rag-runbooks.json"),
-        os.path.join("/app", "shared", "data", "sre-rag-runbooks.json"),
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, list) and data:
-                logger.info("Loaded %s runbooks from %s", len(data), path)
-                return data
-    logger.warning("No sre-rag-runbooks.json found — using fallback seed")
-    return _FALLBACK_RUNBOOKS
+    return load_runbook_corpus()
 
 
 def _expected_vector_type(dimensions: int) -> str:
