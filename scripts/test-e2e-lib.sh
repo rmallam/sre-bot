@@ -28,8 +28,9 @@ fi
 : "${DEBUG_MCP_URL:=http://localhost:9093}"
 
 : "${WORKFLOW_RUN_TIMEOUT_SEC:=120}"
+: "${GOLDEN_FULL_TIMEOUT_SEC:=240}"
 : "${E2E_ENABLE_LIVE_DEPLOY:=false}"
-: "${E2E_ENABLE_GITHUB_CI:=false}"
+: "${E2E_DEPLOY_GIT_REPO:=github.com/rmallam/sre-bot}"
 
 if [[ -f "$ROOT/scripts/test-e2e.env" ]]; then
   # shellcheck disable=SC1091
@@ -48,9 +49,13 @@ skip() { SKIP=$((SKIP + 1)); echo "  ○ $1 (skipped)"; }
 load_e2e_internal_token() {
   [[ -n "${SRE_INTERNAL_TOKEN:-}" ]] && return 0
   command -v kubectl >/dev/null || return 0
-  kubectl --context "$KIND_CONTEXT" get ns "$NS" >/dev/null 2>&1 || return 0
+  local kctl="${KUBECTL:-kubectl}"
+  local ctx=()
+  [[ -n "${KIND_CONTEXT:-}" ]] && ctx=(--context "$KIND_CONTEXT")
+  [[ -n "${KUBECONFIG:-}" ]] && kctl="${KUBECTL:-/opt/homebrew/bin/kubectl}"
+  $kctl "${ctx[@]}" get ns "$NS" >/dev/null 2>&1 || return 0
   SRE_INTERNAL_TOKEN="$(
-    kubectl --context "$KIND_CONTEXT" -n "$NS" get secret sre-bot-secrets \
+    $kctl "${ctx[@]}" -n "$NS" get secret sre-bot-secrets \
       -o jsonpath='{.data.sre_internal_token}' 2>/dev/null | base64 -d 2>/dev/null || true
   )"
   export SRE_INTERNAL_TOKEN
@@ -169,6 +174,175 @@ poll_run_status() {
   done
   echo "${status:-timeout}"
   return 1
+}
+
+poll_run_terminal_by_incident() {
+  local incident_id="$1" max_sec="${2:-$GOLDEN_FULL_TIMEOUT_SEC}"
+  local elapsed=0 runs='{}' run_id="" status="running"
+  while [[ "$elapsed" -lt "$max_sec" ]]; do
+    runs="$(e2e_curl -sf -m 15 "$ORCHESTRATOR_URL/runs?incidentId=$incident_id&limit=3" 2>/dev/null || echo '{}')"
+    run_id="$(echo "$runs" | python3 -c "import json,sys; r=json.load(sys.stdin).get('runs',[]); print(r[0]['runId'] if r else '')" 2>/dev/null || echo '')"
+    if [[ -n "$run_id" ]]; then
+      status="$(e2e_curl -sf -m 15 "$ORCHESTRATOR_URL/runs/$run_id" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo '')"
+      if [[ -n "$status" && "$status" != "running" ]]; then
+        echo "$status|$run_id"
+        return 0
+      fi
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+  echo "${status:-timeout}|${run_id}"
+  return 1
+}
+
+kubectl_deployment_ready() {
+  local namespace="$1" name="$2" timeout_sec="${3:-120}"
+  command -v kubectl >/dev/null || return 1
+  kubectl --context "$KIND_CONTEXT" -n "$namespace" wait --for=condition=available "deployment/$name" --timeout="${timeout_sec}s" >/dev/null 2>&1
+}
+
+kubectl_deployment_image() {
+  local namespace="$1" name="$2"
+  command -v kubectl >/dev/null || return 1
+  kubectl --context "$KIND_CONTEXT" -n "$namespace" get deploy "$name" \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true
+}
+
+run_has_break_glass() {
+  local run_id="$1"
+  e2e_curl -sf -m 15 "$ORCHESTRATOR_URL/runs/$run_id" 2>/dev/null \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); m=d.get('metadata') or {}; exit(0 if m.get('breakGlassPlan') else 1)" 2>/dev/null
+}
+
+poll_run_awaiting_human_by_incident() {
+  local incident_id="$1" max_sec="${2:-$GOLDEN_FULL_TIMEOUT_SEC}"
+  local elapsed=0 runs='{}' run_id="" status=""
+  while [[ "$elapsed" -lt "$max_sec" ]]; do
+    runs="$(e2e_curl -sf -m 15 "$ORCHESTRATOR_URL/runs?incidentId=$incident_id&limit=3" 2>/dev/null || echo '{}')"
+    run_id="$(echo "$runs" | python3 -c "import json,sys; r=json.load(sys.stdin).get('runs',[]); print(r[0]['runId'] if r else '')" 2>/dev/null || echo '')"
+    if [[ -n "$run_id" ]]; then
+      status="$(e2e_curl -sf -m 15 "$ORCHESTRATOR_URL/runs/$run_id" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo '')"
+      if [[ "$status" == "awaiting_human" ]]; then
+        echo "$status|$run_id"
+        return 0
+      fi
+      if [[ -n "$status" && "$status" != "running" ]]; then
+        echo "$status|$run_id"
+        return 0
+      fi
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+  echo "${status:-timeout}|${run_id}"
+  return 1
+}
+
+hil_approve_incident() {
+  local incident_id="$1" user_id="${2:-golden-e2e}"
+  e2e_curl -sf -m 60 -X POST "$HIL_URL/api/approve/$incident_id" \
+    -H 'Content-Type: application/json' \
+    -d "{\"userId\":\"$user_id\",\"platform\":\"web\"}" 2>/dev/null || echo '{}'
+}
+
+console_approve_incident() {
+  local incident_id="$1"
+  curl -sf -m 60 -X POST "$CONSOLE_URL/api/approvals/$incident_id/approve" \
+    -H 'Content-Type: application/json' \
+    -d '{}' 2>/dev/null || echo '{}'
+}
+
+wait_hil_pending() {
+  local incident_id="$1" max_sec="${2:-30}"
+  local elapsed=0
+  while [[ "$elapsed" -lt "$max_sec" ]]; do
+    if INCIDENT_ID="$incident_id" e2e_curl -sf -m 10 "$HIL_URL/api/approvals" 2>/dev/null \
+      | python3 -c "import json,sys,os; d=json.load(sys.stdin); items=d if isinstance(d,list) else d.get('approvals',[]); iid=os.environ['INCIDENT_ID']; exit(0 if any(a.get('incidentId')==iid for a in items) else 1)" 2>/dev/null; then
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  return 1
+}
+
+e2e_fixtures_enabled() {
+  e2e_curl -sf -m 10 "$ORCHESTRATOR_URL/health" 2>/dev/null \
+    | python3 -c "import json,sys; exit(0 if json.load(sys.stdin).get('e2eFixturesEnabled') else 1)" 2>/dev/null
+}
+
+e2e_seed_awaiting_hil() {
+  local incident_id="${1:-}"
+  local body='{}'
+  if [[ -n "$incident_id" ]]; then
+    body="$(INCIDENT_ID="$incident_id" python3 -c 'import json,os; print(json.dumps({"incidentId": os.environ["INCIDENT_ID"]}))')"
+  fi
+  e2e_curl -sf -m 30 -X POST "$ORCHESTRATOR_URL/e2e/seed-awaiting-hil" \
+    -H 'Content-Type: application/json' -d "$body" 2>/dev/null || echo '{}'
+}
+
+e2e_seed_break_glass() {
+  local incident_id="${1:-}"
+  local body='{}'
+  if [[ -n "$incident_id" ]]; then
+    body="$(INCIDENT_ID="$incident_id" python3 -c 'import json,os; print(json.dumps({"incidentId": os.environ["INCIDENT_ID"]}))')"
+  fi
+  e2e_curl -sf -m 30 -X POST "$ORCHESTRATOR_URL/e2e/seed-break-glass" \
+    -H 'Content-Type: application/json' -d "$body" 2>/dev/null || echo '{}'
+}
+
+e2e_seed_chat_ui() {
+  local channel_id="$1" variant="${2:-hil_required}"
+  CHANNEL_ID="$channel_id" VARIANT="$variant" e2e_curl -sf -m 45 -X POST "$ORCHESTRATOR_URL/e2e/seed-chat-ui" \
+    -H 'Content-Type: application/json' \
+    -d "$(python3 -c 'import json,os; print(json.dumps({"channelId": os.environ["CHANNEL_ID"], "variant": os.environ["VARIANT"]}))')" \
+    2>/dev/null || echo '{}'
+}
+
+kubectl_clusterrole_exists() {
+  local name="$1"
+  command -v kubectl >/dev/null || return 1
+  kubectl --context "$KIND_CONTEXT" get clusterrole "$name" >/dev/null 2>&1
+}
+
+kubectl_delete_clusterrole() {
+  local name="$1"
+  command -v kubectl >/dev/null || return 0
+  kubectl --context "$KIND_CONTEXT" delete clusterrole "$name" --ignore-not-found >/dev/null 2>&1 || true
+}
+
+approve_via_console_or_hil() {
+  local incident_id="$1" user_id="${2:-golden-e2e}"
+  if wait_hil_pending "$incident_id" 30; then
+    local console_res
+    console_res="$(console_approve_incident "$incident_id")"
+    if echo "$console_res" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('status') in ('approved','accepted','DONE','done','ok','already_handled') or d.get('ok') else 1)" 2>/dev/null; then
+      echo "console"
+      return 0
+    fi
+  fi
+  hil_approve_incident "$incident_id" "$user_id" >/dev/null 2>&1 || true
+  echo "hil"
+}
+
+console_approve_ok() {
+  local json="$1"
+  echo "$json" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('status') in ('approved','accepted','DONE','done','ok','already_handled') or d.get('ok') else 1)" 2>/dev/null
+}
+
+commander_chat() {
+  local channel_id="$1" user_id="$2" message="$3"
+  local body
+  body="$(CHANNEL_ID="$channel_id" USER_ID="$user_id" MESSAGE="$message" python3 -c '
+import json, os
+print(json.dumps({
+  "channelId": os.environ["CHANNEL_ID"],
+  "userId": os.environ["USER_ID"],
+  "message": os.environ["MESSAGE"],
+}))
+')"
+  curl -sf -m 120 -X POST "$COMMANDER_URL/chat" -H 'Content-Type: application/json' -d "$body" 2>/dev/null || echo '{}'
 }
 
 setup_e2e_namespace() {

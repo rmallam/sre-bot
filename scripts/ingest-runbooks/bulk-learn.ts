@@ -33,6 +33,7 @@ async function learnRunbook(
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
+  const timeoutMs = Number(process.env['RUNBOOK_INGEST_TIMEOUT_MS'] ?? 120_000);
   const res = await fetch(`${baseUrl}/rag/learn`, {
     method: 'POST',
     headers,
@@ -42,7 +43,7 @@ async function learnRunbook(
       playbook_markdown: entry.playbook_markdown,
       incident_id: 'runbook-corpus-ingest',
     }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const body = await res.text();
   return { ok: res.ok, status: res.status, body: body.slice(0, 300) };

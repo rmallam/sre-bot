@@ -74,7 +74,7 @@ FIXTURES_JSON="$ROOT/scripts/k8s-failure-fixtures/fixtures.json"
 
 cluster_ready() {
   command -v "$KUBECTL_BIN" >/dev/null && \
-    "$KUBECTL_BIN" --context "${KIND_CONTEXT:-kind-test-upgrade-cluster}" get ns "$NS" >/dev/null 2>&1
+    "$KUBECTL_BIN" get ns "$NS" >/dev/null 2>&1
 }
 
 if [[ "$FIXTURE_APPLY" != "true" ]] || ! cluster_ready; then
@@ -113,7 +113,7 @@ for f in d['fixtures']:
   fi
 
   # PVC pending
-  PVC_PHASE="$("$KUBECTL_BIN" --context "${KIND_CONTEXT:-kind-test-upgrade-cluster}" get pvc fixture-pvc-pending -n "$FIXTURE_NS" -o jsonpath='{.status.phase}' 2>/dev/null || echo '')"
+  PVC_PHASE="$("$KUBECTL_BIN" get pvc fixture-pvc-pending -n "$FIXTURE_NS" -o jsonpath='{.status.phase}' 2>/dev/null || echo '')"
   if [[ "$PVC_PHASE" == "Pending" ]]; then
     pass "GP-RB-2 PVC fixture-pvc-pending is Pending"
   else
